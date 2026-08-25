@@ -6,17 +6,66 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <gtk/gtk.h>
+
 #ifndef RILL_KAPSULE_BIN
 #define RILL_KAPSULE_BIN "kapsule"
 #endif
 
 static void
+lookup_icon_path(const char *name, char *out, int out_size)
+{
+    static int gtk_attempted = 0;
+    static int gtk_ready = 0;
+    GtkIconTheme *theme;
+    GdkPixbuf *pixbuf;
+    GError *error = NULL;
+    char path[512];
+    char safe[128];
+    int i;
+
+    if(out == NULL || out_size <= 0)
+        return;
+    out[0] = '\0';
+    if(name == NULL || name[0] == '\0')
+        return;
+    if(!gtk_attempted) {
+        gtk_attempted = 1;
+        gtk_ready = gtk_init_check(NULL, NULL) ? 1 : 0;
+    }
+    if(!gtk_ready)
+        return;
+    theme = gtk_icon_theme_get_default();
+    if(theme == NULL)
+        return;
+    pixbuf = gtk_icon_theme_load_icon(theme, name, 32, 0, &error);
+    if(pixbuf == NULL) {
+        if(error != NULL)
+            g_error_free(error);
+        return;
+    }
+    for(i = 0; name[i] != '\0' && i < (int)sizeof(safe) - 1; i++) {
+        char c = name[i];
+        safe[i] = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                  (c >= '0' && c <= '9') || c == '-' ? c : '_';
+    }
+    safe[i] = '\0';
+    snprintf(path, sizeof(path), "/tmp/rill-icon-%s.png", safe);
+    if(gdk_pixbuf_save(pixbuf, path, "png", &error, NULL))
+        snprintf(out, (size_t)out_size, "%s", path);
+    if(error != NULL)
+        g_error_free(error);
+    g_object_unref(pixbuf);
+}
+
+static void
 launcher(RillLauncher *out, const char *id, const char *name,
-         const char *command)
+         const char *command, const char *icon)
 {
     snprintf(out->id, sizeof(out->id), "%s", id);
     snprintf(out->name, sizeof(out->name), "%s", name);
     snprintf(out->command, sizeof(out->command), "%s", command);
+    lookup_icon_path(icon, out->icon_path, (int)sizeof(out->icon_path));
 }
 
 static int
@@ -29,13 +78,17 @@ linux_list_launchers(RillLauncher *out, int cap)
 
     count = 0;
     if(count < cap)
-        launcher(&out[count++], "terminal", "Terminal", "host:kapsule");
+        launcher(&out[count++], "terminal", "Terminal", "host:kapsule",
+                 "utilities-terminal");
     if(count < cap)
-        launcher(&out[count++], "files", "Files", "internal:files");
+        launcher(&out[count++], "files", "Files", "internal:files",
+                 "system-file-manager");
     if(count < cap)
-        launcher(&out[count++], "settings", "Settings", "internal:settings");
+        launcher(&out[count++], "settings", "Settings", "internal:settings",
+                 "preferences-system");
     if(count < cap)
-        launcher(&out[count++], "about", "About Rill", "internal:about");
+        launcher(&out[count++], "about", "About Rill", "internal:about",
+                 "help-about");
     return count;
 }
 

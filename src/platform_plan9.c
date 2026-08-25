@@ -10,6 +10,7 @@ launcher(RillLauncher *out, const char *id, const char *name,
     snprintf(out->id, sizeof(out->id), "%s", id);
     snprintf(out->name, sizeof(out->name), "%s", name);
     snprintf(out->command, sizeof(out->command), "%s", command);
+    out->icon_path[0] = '\0';
 }
 
 static int

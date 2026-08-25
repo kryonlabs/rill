@@ -8,6 +8,7 @@ typedef struct RillLauncher {
     char id[64];
     char name[96];
     char command[256];
+    char icon_path[512];
 } RillLauncher;
 
 typedef struct RillTask {
