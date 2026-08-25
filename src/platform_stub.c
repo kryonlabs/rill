@@ -18,7 +18,7 @@ stub_list_launchers(RillLauncher *out, int cap)
 {
     if(out == NULL || cap <= 0)
         return 0;
-    launcher(&out[0], "terminal", "Kapsule", "host:kapsule");
+    launcher(&out[0], "terminal", "ktrem", "host:ktrem");
     if(cap > 1)
         launcher(&out[1], "files", "Files", "host:shelf");
     if(cap > 2)

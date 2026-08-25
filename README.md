@@ -16,8 +16,8 @@ adapters.
 - Plan 9 adapter using native Rill launcher commands.
 - Rill top panel with Applications, Places, System, quick launchers,
   task buttons, tray indicators, and clock.
-- Desktop icons for Shelf, Kapsule, and Settings.
-- Kapsule and Shelf exposed through Rill launchers.
+- Desktop icons for Shelf, ktrem, and Settings.
+- ktrem and Shelf exposed through Rill launchers.
 
 ## Build
 

@@ -74,7 +74,7 @@ linux_list_launchers(RillLauncher *out, int cap)
 
     count = 0;
     if(count < cap)
-        launcher(&out[count++], "terminal", "Kapsule", "host:kapsule",
+        launcher(&out[count++], "terminal", "ktrem", "host:ktrem",
                  "utilities-terminal");
     if(count < cap)
         launcher(&out[count++], "files", "Files", "host:shelf",

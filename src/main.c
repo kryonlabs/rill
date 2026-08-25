@@ -331,7 +331,8 @@ load_static_host(RillHostModule *slot, const char *id)
 
     if(slot == NULL || id == NULL)
         return 0;
-    if(strcmp(id, "kterm") == 0 || strcmp(id, "kapsule") == 0) {
+    if(strcmp(id, "ktrem") == 0 || strcmp(id, "kterm") == 0 ||
+       strcmp(id, "kapsule") == 0) {
         create = KtermCreateAppHost;
         destroy = KtermDestroyAppHost;
     } else if(strcmp(id, "shelf") == 0) {
@@ -680,7 +681,8 @@ rill_control_process_line(RillShellState *shell,
         line[--len] = '\0';
     while(*line == ' ' || *line == '\t')
         line++;
-    if(strcmp(line, "open kterm") == 0 || strcmp(line, "open terminal") == 0 ||
+    if(strcmp(line, "open ktrem") == 0 || strcmp(line, "open kterm") == 0 ||
+       strcmp(line, "open terminal") == 0 || strcmp(line, "ktrem") == 0 ||
        strcmp(line, "kterm") == 0 || strcmp(line, "terminal") == 0)
         open_launcher_id(shell, platform, "terminal");
 }
@@ -739,7 +741,7 @@ draw_desktop(RillShellState *shell, const RillPlatformServices *platform,
 {
     draw_desktop_icon(shell, platform, visuals, 28, PANEL_H + 28, "Home",
                       "files", GetThemeLink());
-    draw_desktop_icon(shell, platform, visuals, 28, PANEL_H + 122, "Kapsule",
+    draw_desktop_icon(shell, platform, visuals, 28, PANEL_H + 122, "ktrem",
                       "terminal", GetThemeButtonHover());
     draw_desktop_icon(shell, platform, visuals, 28, PANEL_H + 216, "Settings",
                       "settings", GetThemeIcon());
@@ -1247,7 +1249,7 @@ draw_host_app(RillAppWindow *app, Rectangle content, RillVisualState *visuals)
     if(visuals == NULL || app == NULL)
         return;
     host_id = app->host_id[0] != '\0' ? app->host_id :
-              (app->kind == RILL_APP_TERMINAL ? "kapsule" : "shelf");
+              (app->kind == RILL_APP_TERMINAL ? "ktrem" : "shelf");
     module = load_host_module(visuals, host_id);
     if(module == NULL || module->host == NULL) {
         draw_text_fit("Host module not installed", (int)content.x + 16,
@@ -1435,7 +1437,7 @@ draw_menu_stack_test_scene(void)
     draw_window_close_button((Rectangle){lower.x + lower.width - 30,
                                          lower.y + 4, 22, 22});
     draw_menu_panel(menu);
-    draw_menu_row((Rectangle){182, 124, 226, 28}, "Kapsule", "terminal");
+    draw_menu_row((Rectangle){182, 124, 226, 28}, "ktrem", "terminal");
     draw_menu_row((Rectangle){182, 156, 226, 28}, "Files", "files");
     draw_menu_row((Rectangle){182, 188, 226, 28}, "Settings", "settings");
 }
