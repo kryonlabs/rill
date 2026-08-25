@@ -19,7 +19,7 @@ all:V: $BIN
 install:V: $BIN
 
 $BIN: $OFILES
-	$LD -o $target $OFILES -lkryon -ldraw -lmemdraw -lthread -l9
+	$LD -o $target $OFILES -lkryon -ldraw -lmemdraw -lthread
 
 clean:V:
 	rm -f src/*.$O src/*.i

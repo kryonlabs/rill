@@ -68,6 +68,29 @@ typedef struct RillTestState {
     int ready_written;
 } RillTestState;
 
+typedef enum RillPanelPluginKind {
+    RILL_PANEL_SEPARATOR,
+    RILL_PANEL_MENU,
+    RILL_PANEL_LAUNCHER,
+    RILL_PANEL_TASK_LIST,
+    RILL_PANEL_WORKSPACES,
+    RILL_PANEL_TRAY,
+    RILL_PANEL_LANGUAGE,
+    RILL_PANEL_CLOCK,
+    RILL_PANEL_RESOURCE
+} RillPanelPluginKind;
+
+typedef struct RillPanelPlugin {
+    RillPanelPluginKind kind;
+    const char *id;
+    const char *label;
+    const char *launcher_id;
+    int menu_id;
+    int width;
+    int advance;
+    int variant;
+} RillPanelPlugin;
+
 static Color
 mix_color(Color a, Color b, float t)
 {
@@ -303,15 +326,19 @@ static int
 try_host_dir_list(RillHostModule *slot, const char *dirs)
 {
     char copy[1024];
-    char *save = NULL;
+    char *start;
+    char *end;
     char *dir;
 
     if(slot == NULL || dirs == NULL || dirs[0] == '\0')
         return 0;
     snprintf(copy, sizeof(copy), "%s", dirs);
-    for(dir = strtok_r(copy, ":", &save); dir != NULL;
-        dir = strtok_r(NULL, ":", &save)) {
-        if(try_host_dir(slot, dir))
+    for(start = copy; start != NULL && start[0] != '\0'; start = end) {
+        end = strchr(start, ':');
+        if(end != NULL)
+            *end++ = '\0';
+        dir = start;
+        if(dir[0] != '\0' && try_host_dir(slot, dir))
             return 1;
     }
     return 0;
@@ -693,43 +720,35 @@ static void
 draw_task_icon(RillVisualState *visuals, RillShellState *shell,
                const RillTask *task, Rectangle icon);
 
-static void
-draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
-               RillVisualState *visuals)
+static const RillPanelPlugin rill_panel_left_plugins[] = {
+    {RILL_PANEL_MENU, "applications", "Applications", NULL, 1, 104, 106, 0},
+    {RILL_PANEL_SEPARATOR, "sep-launchers", NULL, NULL, 0, 0, 6, 0},
+    {RILL_PANEL_LAUNCHER, "terminal", NULL, "terminal", 0, 22, 24, 0},
+    {RILL_PANEL_LAUNCHER, "files", NULL, "files", 0, 22, 24, 0},
+    {RILL_PANEL_MENU, "places", "Places", NULL, 2, 58, 60, 0},
+    {RILL_PANEL_MENU, "system", "System", NULL, 3, 58, 60, 0},
+    {RILL_PANEL_SEPARATOR, "sep-tasks", NULL, NULL, 0, 0, 6, 0},
+    {RILL_PANEL_TASK_LIST, "task-list", NULL, NULL, 0, 0, 0, 0}
+};
+
+static const RillPanelPlugin rill_panel_right_plugins[] = {
+    {RILL_PANEL_WORKSPACES, "workspaces", NULL, NULL, 0, 42, 42, 0},
+    {RILL_PANEL_SEPARATOR, "sep-status", NULL, NULL, 0, 0, 8, 0},
+    {RILL_PANEL_TRAY, "activity", NULL, NULL, 0, 22, 24, 0},
+    {RILL_PANEL_LANGUAGE, "keyboard-layout", "EN", NULL, 0, 30, 30, 0},
+    {RILL_PANEL_TRAY, "audio", NULL, NULL, 0, 22, 24, 1},
+    {RILL_PANEL_TRAY, "power", NULL, NULL, 0, 20, 22, 2},
+    {RILL_PANEL_CLOCK, "clock", NULL, NULL, 0, 54, 58, 0},
+    {RILL_PANEL_RESOURCE, "cpu", "cpu", NULL, 0, 54, 60, 0},
+    {RILL_PANEL_RESOURCE, "mem", "mem", NULL, 0, 54, 60, 1}
+};
+
+static int
+draw_panel_task_list(RillShellState *shell, const RillPlatformServices *platform,
+                     RillVisualState *visuals, int x, int right)
 {
-    char clock_text[32];
-    time_t now;
-    struct tm *local;
-    int x;
-    int right;
-    int tray_x;
-    int screen_w;
     int i;
 
-    screen_w = GetScreenWidth();
-    DrawRectangle(0, 0, screen_w, PANEL_H, panel_color());
-    DrawRectangle(0, PANEL_H - 1, screen_w, 1, Fade(BLACK, 0.72f));
-    DrawRectangle(0, 0, screen_w, 1, Fade(WHITE, 0.10f));
-
-    x = 0;
-    panel_menu_button(shell, 1, x, 104, "Applications", 100);
-    x += 106;
-    draw_panel_separator(x);
-    x += 6;
-    draw_quick_launcher(shell, platform, visuals, x, "terminal", 130);
-    x += 24;
-    draw_quick_launcher(shell, platform, visuals, x, "files", 131);
-    x += 24;
-    if(screen_w >= 620) {
-        panel_menu_button(shell, 2, x, 58, "Places", 101);
-        x += 60;
-        panel_menu_button(shell, 3, x, 58, "System", 102);
-        x += 60;
-    }
-    draw_panel_separator(x);
-    x += 6;
-
-    right = screen_w - (screen_w >= 760 ? 288 : 72);
     for(i = 0; i < shell->task_count && x < right - 120; i++) {
         Rectangle task_rect;
         int hover;
@@ -754,6 +773,77 @@ draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
         }
         x += width + 4;
     }
+    return x;
+}
+
+static int
+draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
+                  const RillPlatformServices *platform,
+                  RillVisualState *visuals, int x, int task_right,
+                  const char *clock_text)
+{
+    if(plugin == NULL)
+        return x;
+    switch(plugin->kind) {
+    case RILL_PANEL_SEPARATOR:
+        draw_panel_separator(x);
+        return x + plugin->advance;
+    case RILL_PANEL_MENU:
+        if(plugin->menu_id != 1 && GetScreenWidth() < 620)
+            return x;
+        panel_menu_button(shell, plugin->menu_id, x, plugin->width,
+                          plugin->label, 0);
+        return x + plugin->advance;
+    case RILL_PANEL_LAUNCHER:
+        draw_quick_launcher(shell, platform, visuals, x, plugin->launcher_id,
+                            0);
+        return x + plugin->advance;
+    case RILL_PANEL_TASK_LIST:
+        return draw_panel_task_list(shell, platform, visuals, x, task_right);
+    case RILL_PANEL_WORKSPACES:
+        draw_workspace_switcher(x);
+        return x + plugin->advance;
+    case RILL_PANEL_TRAY:
+        draw_tray_indicator(x, plugin->variant,
+                            plugin->variant == 0 ? GetThemeLink() :
+                            (plugin->variant == 1 ? GetThemeIcon() :
+                             GetThemeButtonHover()));
+        return x + plugin->advance;
+    case RILL_PANEL_LANGUAGE:
+        Text(plugin->label != NULL ? plugin->label : "", x, 7, Text12,
+             (Color){92, 185, 255, 255});
+        return x + plugin->advance;
+    case RILL_PANEL_CLOCK:
+        draw_text_fit(clock_text, x, 7, plugin->width, Text12,
+                      GetThemeText());
+        return x + plugin->advance;
+    case RILL_PANEL_RESOURCE:
+        draw_panel_resource(x, plugin->label,
+                            plugin->variant == 0 ?
+                            (Color){104, 190, 255, 255} :
+                            (Color){86, 218, 154, 255});
+        return x + plugin->advance;
+    default:
+        return x;
+    }
+}
+
+static void
+draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
+               RillVisualState *visuals)
+{
+    char clock_text[32];
+    time_t now;
+    struct tm *local;
+    int x;
+    int right;
+    int screen_w;
+    int i;
+
+    screen_w = GetScreenWidth();
+    DrawRectangle(0, 0, screen_w, PANEL_H, panel_color());
+    DrawRectangle(0, PANEL_H - 1, screen_w, 1, Fade(BLACK, 0.72f));
+    DrawRectangle(0, 0, screen_w, 1, Fade(WHITE, 0.10f));
 
     now = time(NULL);
     local = localtime(&now);
@@ -762,6 +852,13 @@ draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
     else
         snprintf(clock_text, sizeof(clock_text), "--:--");
 
+    right = screen_w - (screen_w >= 760 ? 288 : 72);
+    x = 0;
+    for(i = 0; i < (int)(sizeof(rill_panel_left_plugins) /
+                         sizeof(rill_panel_left_plugins[0])); i++)
+        x = draw_panel_plugin(&rill_panel_left_plugins[i], shell, platform,
+                              visuals, x, right, clock_text);
+
     if(screen_w < 760) {
         if(screen_w > 70)
             draw_text_fit(clock_text, screen_w - 58, 7, 54, Text12,
@@ -769,25 +866,12 @@ draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
         return;
     }
 
-    tray_x = screen_w - 286;
-    draw_panel_separator(tray_x - 6);
-    draw_workspace_switcher(tray_x);
-    tray_x += 42;
-    draw_panel_separator(tray_x);
-    tray_x += 8;
-    draw_tray_indicator(tray_x, 0, GetThemeLink());
-    tray_x += 24;
-    Text("EN", tray_x, 7, Text12, (Color){92, 185, 255, 255});
-    tray_x += 30;
-    draw_tray_indicator(tray_x, 1, GetThemeIcon());
-    tray_x += 24;
-    draw_tray_indicator(tray_x, 2, GetThemeButtonHover());
-    tray_x += 22;
-    draw_text_fit(clock_text, tray_x, 7, 54, Text12, GetThemeText());
-    tray_x += 58;
-    draw_panel_resource(tray_x, "cpu", (Color){104, 190, 255, 255});
-    tray_x += 60;
-    draw_panel_resource(tray_x, "mem", (Color){86, 218, 154, 255});
+    x = screen_w - 286;
+    draw_panel_separator(x - 6);
+    for(i = 0; i < (int)(sizeof(rill_panel_right_plugins) /
+                         sizeof(rill_panel_right_plugins[0])); i++)
+        x = draw_panel_plugin(&rill_panel_right_plugins[i], shell, platform,
+                              visuals, x, right, clock_text);
 }
 
 static void
@@ -1048,7 +1132,7 @@ draw_host_app(RillAppWindow *app, Rectangle content, RillVisualState *visuals)
 
     mouse = GetMousePosition();
     delta = GetMouseDelta();
-    input = (KryonInputOverride){0};
+    memset(&input, 0, sizeof(input));
     input.enabled = 1;
     input.mouse_inside = app != NULL && app->focused &&
                          CheckCollisionPointRec(mouse, content);
@@ -1088,7 +1172,7 @@ draw_about_app(Rectangle content)
 {
     Text("Rill", (int)content.x + 16, (int)content.y + 14, Text24,
          GetThemeText());
-    Text("A Kryon/libdraw desktop inspired by rio and XFCE.",
+    Text("A Kryon/libdraw desktop for Taiji and Plan 9.",
          (int)content.x + 16, (int)content.y + 54, Text14, GetThemeText());
 }
 
