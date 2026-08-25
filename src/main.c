@@ -657,7 +657,10 @@ draw_app_window(RillShellState *shell, RillAppWindow *app,
     DrawRectangleRounded(frame, 0.025f, 8, Fade(GetThemeSurface(), 0.97f));
     DrawRectangleRoundedLinesEx(frame, 0.025f, 8, 2.0f, frame_color);
     DrawRectangleRec(title, mix_color(GetThemeSurface(), frame_color, 0.18f));
+    BeginScissorMode((int)title.x + 6, (int)title.y,
+                     (int)title.width - 42, (int)title.height);
     Text(app->title, app->x + 10, app->y + 8, Text14, GetThemeText());
+    EndScissorMode();
     if(Button((ButtonProps){(Rectangle){app->x + app->w - 30, app->y + 4,
                                         22, 22},
                             "x", ButtonStyleSecondary, Text12,
@@ -666,6 +669,8 @@ draw_app_window(RillShellState *shell, RillAppWindow *app,
         return;
     }
 
+    BeginScissorMode((int)content.x, (int)content.y, (int)content.width,
+                     (int)content.height);
     if(app->kind == RILL_APP_TERMINAL)
         draw_terminal_app(app, content, visuals);
     else if(app->kind == RILL_APP_FILES)
@@ -674,6 +679,7 @@ draw_app_window(RillShellState *shell, RillAppWindow *app,
         draw_settings_app(content, visuals);
     else
         draw_about_app(content);
+    EndScissorMode();
 }
 
 static void
