@@ -34,7 +34,8 @@ KRYON_BUILD_DIR := $(KRYON_BUILD_ROOT)/$(PLATFORM)-$(ARCH)
 KRYON_LIB := $(KRYON_BUILD_DIR)/libkryon.a
 KAPSULE_BUILD_ROOT := $(abspath build/kapsule-$(KRYON_BACKEND))
 KAPSULE_BIN := $(KAPSULE_BUILD_ROOT)/$(PLATFORM)-$(ARCH)/bin/kapsule
-LDLIBS += -L$(KRYON_BUILD_DIR) -lkryon
+KAPSULE_HOST_LIB := $(KAPSULE_BUILD_ROOT)/$(PLATFORM)-$(ARCH)/lib/libkapsule_host.a
+LDLIBS += $(KAPSULE_HOST_LIB) -L$(KRYON_BUILD_DIR) -lkryon
 CPPFLAGS += $(GTK_PKG_CFLAGS) -DRILL_KAPSULE_BIN=\"$(KAPSULE_BIN)\"
 
 ifeq ($(KRYON_BACKEND),libdraw)
@@ -52,7 +53,7 @@ TEST_SRCS := tests/rill_shell_test.c src/rill_shell.c src/platform_stub.c
 
 .PHONY: all clean run test kryon kapsule
 
-all: $(BIN) $(KAPSULE_BIN)
+all: $(BIN) $(KAPSULE_BIN) $(KAPSULE_HOST_LIB)
 
 kryon:
 	$(MAKE) -C $(KRYON_DIR) KRYON_BACKEND=$(KRYON_BACKEND) \
@@ -60,9 +61,9 @@ kryon:
 
 $(KRYON_LIB): kryon
 
-kapsule: $(KAPSULE_BIN)
+kapsule: $(KAPSULE_BIN) $(KAPSULE_HOST_LIB)
 
-$(KAPSULE_BIN): $(KRYON_LIB)
+$(KAPSULE_BIN) $(KAPSULE_HOST_LIB): $(KRYON_LIB)
 	$(MAKE) -C $(KAPSULE_DIR) KRYON_BACKEND=$(KRYON_BACKEND) \
 		ENGINE_DIR=$(abspath $(KRYON_DIR)) \
 		ENGINE_BUILD_ROOT=$(KRYON_BUILD_ROOT) \
@@ -72,7 +73,7 @@ $(KAPSULE_BIN): $(KRYON_LIB)
 $(BUILD_DIR):
 	mkdir -p $@
 
-$(BIN): $(SRCS) $(KRYON_LIB) | $(BUILD_DIR)
+$(BIN): $(SRCS) $(KRYON_LIB) $(KAPSULE_HOST_LIB) | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(SRCS) $(LDFLAGS) $(LDLIBS)
 
 $(TEST_BIN): $(TEST_SRCS) | $(BUILD_DIR)

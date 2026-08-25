@@ -14,7 +14,7 @@ test_launchers(RillLauncher *out, int cap)
     snprintf(out[0].id, sizeof(out[0].id), "%s", "terminal");
     snprintf(out[0].name, sizeof(out[0].name), "%s", "Terminal");
     snprintf(out[0].command, sizeof(out[0].command), "%s",
-             "external:kapsule");
+             "host:kapsule");
     snprintf(out[1].id, sizeof(out[1].id), "%s", "settings");
     snprintf(out[1].name, sizeof(out[1].name), "%s", "Settings");
     snprintf(out[1].command, sizeof(out[1].command), "%s",
@@ -102,9 +102,10 @@ main(void)
     check("status updated", strstr(shell.status, "Settings") != NULL,
           &failures);
     check("select terminal", RillShellSelectLauncher(&shell, 0), &failures);
-    check("launch external terminal", RillShellLaunchSelected(&shell, &services),
+    check("launch hosted terminal", RillShellLaunchSelected(&shell, &services),
           &failures);
-    check("external launch call count", launches == 1, &failures);
+    check("terminal opened in shell", shell.app_count == 2, &failures);
+    check("external launch call count unchanged", launches == 0, &failures);
 
     return failures == 0 ? 0 : 1;
 }

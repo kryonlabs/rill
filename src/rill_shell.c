@@ -91,7 +91,8 @@ kind_for_launcher(const RillLauncher *launcher)
     if(launcher == NULL)
         return RILL_APP_ABOUT;
     command = launcher->command;
-    if(strcmp(command, "internal:terminal") == 0)
+    if(strcmp(command, "internal:terminal") == 0 ||
+       strcmp(command, "host:kapsule") == 0)
         return RILL_APP_TERMINAL;
     if(strcmp(command, "internal:files") == 0)
         return RILL_APP_FILES;
@@ -259,7 +260,8 @@ RillShellLaunchSelected(RillShellState *shell,
         return 0;
 
     launcher = &shell->launchers[shell->selected_launcher];
-    if(strncmp(launcher->command, "internal:", 9) == 0)
+    if(strncmp(launcher->command, "internal:", 9) == 0 ||
+       strncmp(launcher->command, "host:", 5) == 0)
         return RillShellOpenLauncher(shell, launcher);
 
     if(platform->launch(launcher)) {

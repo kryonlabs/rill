@@ -15,11 +15,15 @@ enum {
 typedef struct RillVisualState {
     Texture2D wallpaper;
     int wallpaper_ready;
+    AppHost *kapsule_host;
     char system_theme_name[128];
     char wallpaper_path[512];
     char system_font_name[128];
     char system_font_path[512];
 } RillVisualState;
+
+extern AppHost *CreateAppHost(int abi_version, const char *project_path);
+extern void DestroyAppHost(AppHost *host);
 
 static Color
 mix_color(Color a, Color b, float t)
@@ -395,6 +399,35 @@ draw_files_app(Rectangle content)
 }
 
 static void
+draw_terminal_app(RillAppWindow *app, Rectangle content,
+                  RillVisualState *visuals)
+{
+    Vector2 mouse;
+    Vector2 delta;
+    KryonInputOverride input;
+
+    if(visuals == NULL || visuals->kapsule_host == NULL) {
+        return;
+    }
+
+    mouse = GetMousePosition();
+    delta = GetMouseDelta();
+    input.enabled = 1;
+    input.mouse_inside = app != NULL && app->focused &&
+                         CheckCollisionPointRec(mouse, content);
+    input.pass_buttons = app != NULL && app->focused;
+    input.mouse_position = mouse;
+    input.mouse_delta = delta;
+
+    SetAppHostFocused(visuals->kapsule_host, app != NULL && app->focused);
+    ResizeAppHost(visuals->kapsule_host, (int)content.width,
+                  (int)content.height);
+    BeginKryonInputOverride(input);
+    DrawAppScreen(visuals->kapsule_host, content);
+    EndKryonInputOverride();
+}
+
+static void
 draw_settings_app(Rectangle content, const RillVisualState *visuals)
 {
     Text("Appearance", (int)content.x + 16, (int)content.y + 14, Text18,
@@ -424,7 +457,7 @@ draw_about_app(Rectangle content)
 
 static void
 draw_app_window(RillShellState *shell, RillAppWindow *app,
-                const RillVisualState *visuals)
+                RillVisualState *visuals)
 {
     Rectangle frame;
     Rectangle title;
@@ -448,7 +481,9 @@ draw_app_window(RillShellState *shell, RillAppWindow *app,
         return;
     }
 
-    if(app->kind == RILL_APP_FILES)
+    if(app->kind == RILL_APP_TERMINAL)
+        draw_terminal_app(app, content, visuals);
+    else if(app->kind == RILL_APP_FILES)
         draw_files_app(content);
     else if(app->kind == RILL_APP_SETTINGS)
         draw_settings_app(content, visuals);
@@ -457,7 +492,7 @@ draw_app_window(RillShellState *shell, RillAppWindow *app,
 }
 
 static void
-draw_apps(RillShellState *shell, const RillVisualState *visuals)
+draw_apps(RillShellState *shell, RillVisualState *visuals)
 {
     int i;
 
@@ -486,6 +521,13 @@ main(void)
     SetTargetFPS(60);
     SetUIDefaultFontAutoLoad(1);
     configure_system_look(&visuals);
+    visuals.kapsule_host = CreateAppHost(APP_HOST_ABI_VERSION,
+                                         "vendor/kapsule");
+    if(visuals.kapsule_host == NULL) {
+        fprintf(stderr, "rill: failed to create Kapsule app host\n");
+        CloseWindow();
+        return 1;
+    }
 
     next_refresh = 0.0;
     while(!WindowShouldClose()) {
@@ -513,5 +555,7 @@ main(void)
     }
 
     CloseWindow();
+    if(visuals.kapsule_host != NULL)
+        DestroyAppHost(visuals.kapsule_host);
     return 0;
 }

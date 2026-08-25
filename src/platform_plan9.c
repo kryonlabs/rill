@@ -22,7 +22,7 @@ plan9_list_launchers(RillLauncher *out, int cap)
 
     count = 0;
     if(count < cap)
-        launcher(&out[count++], "terminal", "Terminal", "external:kapsule");
+        launcher(&out[count++], "terminal", "Terminal", "host:kapsule");
     if(count < cap)
         launcher(&out[count++], "rc", "rc", "external:rc");
     if(count < cap)
