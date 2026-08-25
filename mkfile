@@ -1,13 +1,14 @@
-</$objtype/mkfile
+< /$objtype/mkfile
 
-BIN=/$objtype/bin/rill
-ROOT=/sys/src/rill
+TARG=rill
 KRYON=/sys/src/kryon
 KAPSULE=/sys/src/kapsule
 SHELF=/sys/src/shelf
-SHIM=$KRYON/src/platform/plan9/include
+BIN=/$objtype/bin
+OUT=$O.out
 
-CPPFLAGS=-I$SHIM -I$ROOT/include -I$KRYON/include -I$KAPSULE/src -I$SHELF/src \
+CPPFLAGS=-I../include -I$KRYON/src/platform/plan9/include -I$KRYON/include \
+	-I$KAPSULE/src -I$SHELF/src \
 	-DKRYON_BACKEND_LIBDRAW -DKRYON_PLATFORM_PLAN9 -DKRYON_NATIVE_PLAN9
 KTERMFLAGS=-DKAPSULE_PLAN9_EMBEDDED_HOST
 CFLAGS=-FTVw
@@ -53,18 +54,24 @@ OFILES=\
 	$SHELF/src/shelf.$O\
 	$SHELF/src/shelf_host.$O\
 
-all:V: $BIN
+LIB=/$objtype/lib/libkryon.a /$objtype/lib/libstdio.a
 
-install:V: $BIN
+all:V: $OUT
 
-$BIN: $OFILES
-	$LD -o $target $OFILES -lkryon -ldraw -lmemdraw -lthread
+install:V: $BIN/$TARG
 
-clean:V:
-	rm -f src/*.$O src/*.i $KAPSULE/src/*.$O $KAPSULE/src/*.i $SHELF/src/*.$O $SHELF/src/*.i
+$BIN/$TARG: $OUT
+	cp $OUT $BIN/$TARG
+
+$OUT: $OFILES $LIB
+	$LD -o $target $prereq -ldraw -lmemdraw -lthread
 
 src/%.$O: src/%.c
 	cd src && cpp -+ $CPPFLAGS $stem.c > $stem.i && $CC $CFLAGS -c $stem.i && mv $stem.i.$O $stem.$O && rm -f $stem.i
+
+clean:V:
+	rm -f src/*.[$OS] src/*.i [$OS].out $TARG $KAPSULE/src/*.[$OS] \
+		$KAPSULE/src/*.i $SHELF/src/*.[$OS] $SHELF/src/*.i
 
 $KAPSULE/src/kapsule_host.$O: $KAPSULE/src/kapsule_host.c
 	cd $KAPSULE/src && cpp -+ $CPPFLAGS $KTERMFLAGS '-DCreateAppHost=KtermCreateAppHost' '-DDestroyAppHost=KtermDestroyAppHost' kapsule_host.c > kapsule_host.i && $CC $CFLAGS -c kapsule_host.i && mv kapsule_host.i.$O kapsule_host.$O && rm -f kapsule_host.i

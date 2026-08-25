@@ -1,6 +1,6 @@
 # Rill
 
-Rill is a Kryon/libdraw desktop shell inspired by rio and XFCE.
+Rill is a Kryon/libdraw desktop shell for Taiji and Plan 9.
 
 The project keeps shell behavior outside Kryon. Kryon provides the UI runtime,
 renderer backends, widgets, and reusable platform primitives; Rill owns panels,
@@ -13,12 +13,11 @@ adapters.
 - Platform service interface for launcher/task/session operations.
 - Linux adapter using plan9port/libdraw for the UI and process launching,
   without direct X11 task-management calls.
-- Plan 9 adapter using native launcher commands and `/dev/wctl`.
-- XFCE-style top panel with Applications, Places, System, quick launchers,
+- Plan 9 adapter using native Rill launcher commands.
+- Rill top panel with Applications, Places, System, quick launchers,
   task buttons, tray indicators, and clock.
-- Desktop icons for Home, Terminal, and Settings.
-- Kapsule vendored as `vendor/kapsule` and built as the real libdraw terminal
-  launched from Rill.
+- Desktop icons for Shelf, Kapsule, and Settings.
+- Kapsule and Shelf exposed through Rill launchers.
 
 ## Build
 
@@ -49,5 +48,4 @@ make run
 ```
 
 Native Plan 9 uses Kryon's native `mkfile` plus Rill's Plan 9 adapter. In
-Taiji, `/sys/src/cmd/rill` installs the system desktop command and keeps the
-rio-compatible `/dev` and `/mnt/wsys` contract for native graphical clients.
+Taiji, `/sys/src/cmd/rill` installs the system desktop command.

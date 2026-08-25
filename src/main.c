@@ -739,7 +739,7 @@ draw_desktop(RillShellState *shell, const RillPlatformServices *platform,
 {
     draw_desktop_icon(shell, platform, visuals, 28, PANEL_H + 28, "Home",
                       "files", GetThemeLink());
-    draw_desktop_icon(shell, platform, visuals, 28, PANEL_H + 122, "Terminal",
+    draw_desktop_icon(shell, platform, visuals, 28, PANEL_H + 122, "Kapsule",
                       "terminal", GetThemeButtonHover());
     draw_desktop_icon(shell, platform, visuals, 28, PANEL_H + 216, "Settings",
                       "settings", GetThemeIcon());
@@ -1435,7 +1435,7 @@ draw_menu_stack_test_scene(void)
     draw_window_close_button((Rectangle){lower.x + lower.width - 30,
                                          lower.y + 4, 22, 22});
     draw_menu_panel(menu);
-    draw_menu_row((Rectangle){182, 124, 226, 28}, "Terminal", "terminal");
+    draw_menu_row((Rectangle){182, 124, 226, 28}, "Kapsule", "terminal");
     draw_menu_row((Rectangle){182, 156, 226, 28}, "Files", "files");
     draw_menu_row((Rectangle){182, 188, 226, 28}, "Settings", "settings");
 }

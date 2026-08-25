@@ -12,7 +12,7 @@ test_launchers(RillLauncher *out, int cap)
     if(cap < 2)
         return 0;
     snprintf(out[0].id, sizeof(out[0].id), "%s", "terminal");
-    snprintf(out[0].name, sizeof(out[0].name), "%s", "Terminal");
+    snprintf(out[0].name, sizeof(out[0].name), "%s", "Kapsule");
     snprintf(out[0].command, sizeof(out[0].command), "%s",
              "host:kapsule");
     snprintf(out[1].id, sizeof(out[1].id), "%s", "settings");
@@ -106,10 +106,10 @@ main(void)
     check("platform focus not used", focused_task == 0, &failures);
     check("status updated", strstr(shell.status, "Settings") != NULL,
           &failures);
-    check("select terminal", RillShellSelectLauncher(&shell, 0), &failures);
-    check("launch hosted terminal", RillShellLaunchSelected(&shell, &services),
+    check("select Kapsule", RillShellSelectLauncher(&shell, 0), &failures);
+    check("launch hosted Kapsule", RillShellLaunchSelected(&shell, &services),
           &failures);
-    check("terminal opened in shell", shell.app_count == 2, &failures);
+    check("Kapsule opened in shell", shell.app_count == 2, &failures);
     check("external launch call count unchanged", launches == 0, &failures);
 
     return failures == 0 ? 0 : 1;
