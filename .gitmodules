@@ -1,0 +1,3 @@
+[submodule "vendor/kapsule"]
+	path = vendor/kapsule
+	url = https://github.com/kryonlabs/kapsule.git
