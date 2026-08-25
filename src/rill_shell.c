@@ -148,6 +148,9 @@ RillShellOpenLauncher(RillShellState *shell, const RillLauncher *launcher)
     memset(app, 0, sizeof(*app));
     app->id = shell->next_app_id++;
     app->kind = kind_for_launcher(launcher);
+    if(strncmp(launcher->command, "host:", 5) == 0)
+        snprintf(app->host_id, sizeof(app->host_id), "%s",
+                 launcher->command + 5);
     snprintf(app->title, sizeof(app->title), "%s", launcher->name);
     app->x = 150 + offset;
     app->y = 86 + offset;

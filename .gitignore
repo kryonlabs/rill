@@ -1,4 +1,5 @@
 build/
+vendor/
 *.o
 *.8
 *.6

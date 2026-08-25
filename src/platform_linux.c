@@ -8,10 +8,6 @@
 
 #include <gtk/gtk.h>
 
-#ifndef RILL_KAPSULE_BIN
-#define RILL_KAPSULE_BIN "kapsule"
-#endif
-
 static void
 lookup_icon_path(const char *name, char *out, int out_size)
 {
@@ -128,10 +124,6 @@ linux_launch(const RillLauncher *launcher)
         return 0;
     if(pid == 0) {
         setsid();
-        if(strcmp(launcher->command, "external:kapsule") == 0) {
-            execl(RILL_KAPSULE_BIN, "kapsule", (char *)NULL);
-            _exit(127);
-        }
         execl("/bin/sh", "sh", "-c", launcher->command, (char *)NULL);
         _exit(127);
     }

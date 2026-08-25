@@ -4,13 +4,23 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#if defined(__linux__) && !defined(KRYON_NATIVE_PLAN9)
+#define RILL_HAS_DLOPEN 1
+#include <dlfcn.h>
+#include <unistd.h>
+#else
+#define RILL_HAS_DLOPEN 0
+#endif
 
 enum {
     RILL_WIDTH = 1120,
     RILL_HEIGHT = 720,
     PANEL_H = 32,
+    RILL_HOST_CACHE_MAX = 8,
     RILL_ICON_CACHE_MAX = 32
 };
 
@@ -20,11 +30,19 @@ typedef struct RillIconCacheEntry {
     int ready;
 } RillIconCacheEntry;
 
+typedef struct RillHostModule {
+    char id[64];
+    char path[512];
+    void *library;
+    AppHost *host;
+    DestroyAppHostCallback destroy;
+} RillHostModule;
+
 typedef struct RillVisualState {
     Texture2D wallpaper;
     int wallpaper_ready;
-    AppHost *kapsule_host;
-    AppHost *shelf_host;
+    RillHostModule hosts[RILL_HOST_CACHE_MAX];
+    int host_count;
     RillIconCacheEntry icons[RILL_ICON_CACHE_MAX];
     int icon_count;
     char system_theme_name[128];
@@ -32,11 +50,6 @@ typedef struct RillVisualState {
     char system_font_name[128];
     char system_font_path[512];
 } RillVisualState;
-
-extern AppHost *CreateAppHost(int abi_version, const char *project_path);
-extern void DestroyAppHost(AppHost *host);
-extern AppHost *ShelfCreateAppHost(int abi_version, const char *project_path);
-extern void ShelfDestroyAppHost(AppHost *host);
 
 static Color
 mix_color(Color a, Color b, float t)
@@ -102,6 +115,137 @@ configure_system_look(RillVisualState *visuals)
                      "%s", wallpaper);
         }
     }
+}
+
+static int
+path_exists(const char *path)
+{
+#if RILL_HAS_DLOPEN
+    return path != NULL && path[0] != '\0' && access(path, R_OK) == 0;
+#else
+    (void)path;
+    return 0;
+#endif
+}
+
+static RillHostModule *
+host_slot(RillVisualState *visuals, const char *id)
+{
+    RillHostModule *slot;
+
+    if(visuals == NULL || id == NULL || id[0] == '\0')
+        return NULL;
+    for(int i = 0; i < visuals->host_count; i++)
+        if(strcmp(visuals->hosts[i].id, id) == 0)
+            return &visuals->hosts[i];
+    if(visuals->host_count >= RILL_HOST_CACHE_MAX)
+        return NULL;
+    slot = &visuals->hosts[visuals->host_count++];
+    memset(slot, 0, sizeof(*slot));
+    snprintf(slot->id, sizeof(slot->id), "%s", id);
+    return slot;
+}
+
+static int
+load_host_path(RillHostModule *slot, const char *path)
+{
+#if RILL_HAS_DLOPEN
+    CreateAppHostCallback create;
+
+    if(slot == NULL || path == NULL || path[0] == '\0')
+        return 0;
+    slot->library = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if(slot->library == NULL)
+        return 0;
+    create = (CreateAppHostCallback)dlsym(slot->library, "CreateAppHost");
+    slot->destroy =
+        (DestroyAppHostCallback)dlsym(slot->library, "DestroyAppHost");
+    if(create == NULL || slot->destroy == NULL) {
+        dlclose(slot->library);
+        slot->library = NULL;
+        slot->destroy = NULL;
+        return 0;
+    }
+    slot->host = create(APP_HOST_ABI_VERSION, NULL);
+    if(slot->host == NULL) {
+        dlclose(slot->library);
+        slot->library = NULL;
+        slot->destroy = NULL;
+        return 0;
+    }
+    snprintf(slot->path, sizeof(slot->path), "%s", path);
+    return 1;
+#else
+    (void)slot;
+    (void)path;
+    return 0;
+#endif
+}
+
+static int
+try_host_dir(RillHostModule *slot, const char *dir)
+{
+    char path[512];
+
+    if(slot == NULL || dir == NULL || dir[0] == '\0')
+        return 0;
+    snprintf(path, sizeof(path), "%s/%s-host.so", dir, slot->id);
+    if(path_exists(path) && load_host_path(slot, path))
+        return 1;
+    return 0;
+}
+
+static int
+try_host_dir_list(RillHostModule *slot, const char *dirs)
+{
+    char copy[1024];
+    char *save = NULL;
+    char *dir;
+
+    if(slot == NULL || dirs == NULL || dirs[0] == '\0')
+        return 0;
+    snprintf(copy, sizeof(copy), "%s", dirs);
+    for(dir = strtok_r(copy, ":", &save); dir != NULL;
+        dir = strtok_r(NULL, ":", &save)) {
+        if(try_host_dir(slot, dir))
+            return 1;
+    }
+    return 0;
+}
+
+static RillHostModule *
+load_host_module(RillVisualState *visuals, const char *id)
+{
+    RillHostModule *slot;
+    char dir[512];
+    const char *env_dir;
+    const char *home;
+
+    slot = host_slot(visuals, id);
+    if(slot == NULL)
+        return NULL;
+    if(slot->host != NULL)
+        return slot;
+
+    env_dir = getenv("RILL_APP_HOST_DIR");
+    if(try_host_dir_list(slot, env_dir))
+        return slot;
+    home = getenv("HOME");
+    if(home != NULL && home[0] != '\0') {
+        snprintf(dir, sizeof(dir), "%s/.local/lib/rill/apps", home);
+        if(try_host_dir(slot, dir))
+            return slot;
+    }
+    if(try_host_dir(slot, "/usr/local/lib/rill/apps") ||
+       try_host_dir(slot, "/usr/lib/rill/apps"))
+        return slot;
+    snprintf(dir, sizeof(dir), "/mnt/storage/Projects/%s/build/linux-x86_64/lib",
+             id);
+    if(try_host_dir(slot, dir))
+        return slot;
+
+    fprintf(stderr, "rill: no host module found for %s\n", id);
+    return slot;
 }
 
 static void
@@ -667,14 +811,25 @@ process_window_mouse(RillShellState *shell)
 }
 
 static void
-draw_terminal_app(RillAppWindow *app, Rectangle content,
-                  RillVisualState *visuals)
+draw_host_app(RillAppWindow *app, Rectangle content, RillVisualState *visuals)
 {
     Vector2 mouse;
     Vector2 delta;
     KryonInputOverride input;
+    RillHostModule *module;
+    const char *host_id;
 
-    if(visuals == NULL || visuals->kapsule_host == NULL) {
+    if(visuals == NULL || app == NULL)
+        return;
+    host_id = app->host_id[0] != '\0' ? app->host_id :
+              (app->kind == RILL_APP_TERMINAL ? "kapsule" : "shelf");
+    module = load_host_module(visuals, host_id);
+    if(module == NULL || module->host == NULL) {
+        draw_text_fit("Host module not installed", (int)content.x + 16,
+                      (int)content.y + 18, (int)content.width - 32, Text14,
+                      GetThemeText());
+        draw_text_fit(host_id, (int)content.x + 16, (int)content.y + 46,
+                      (int)content.width - 32, Text12, GetThemeIcon());
         return;
     }
 
@@ -689,40 +844,10 @@ draw_terminal_app(RillAppWindow *app, Rectangle content,
     input.mouse_position = mouse;
     input.mouse_delta = delta;
 
-    SetAppHostFocused(visuals->kapsule_host, app != NULL && app->focused);
-    ResizeAppHost(visuals->kapsule_host, (int)content.width,
-                  (int)content.height);
+    SetAppHostFocused(module->host, app != NULL && app->focused);
+    ResizeAppHost(module->host, (int)content.width, (int)content.height);
     BeginKryonInputOverride(input);
-    DrawAppScreen(visuals->kapsule_host, content);
-    EndKryonInputOverride();
-}
-
-static void
-draw_files_app(RillAppWindow *app, Rectangle content, RillVisualState *visuals)
-{
-    Vector2 mouse;
-    Vector2 delta;
-    KryonInputOverride input;
-
-    if(visuals == NULL || visuals->shelf_host == NULL)
-        return;
-
-    mouse = GetMousePosition();
-    delta = GetMouseDelta();
-    input = (KryonInputOverride){0};
-    input.enabled = 1;
-    input.mouse_inside = app != NULL && app->focused &&
-                         CheckCollisionPointRec(mouse, content);
-    input.pass_buttons = app != NULL && app->focused;
-    input.pass_keyboard = app != NULL && app->focused;
-    input.mouse_position = mouse;
-    input.mouse_delta = delta;
-
-    SetAppHostFocused(visuals->shelf_host, app != NULL && app->focused);
-    ResizeAppHost(visuals->shelf_host, (int)content.width,
-                  (int)content.height);
-    BeginKryonInputOverride(input);
-    DrawAppScreen(visuals->shelf_host, content);
+    DrawAppScreen(module->host, content);
     EndKryonInputOverride();
 }
 
@@ -787,10 +912,8 @@ draw_app_window(RillShellState *shell, RillAppWindow *app,
     BeginScissorMode((int)content.x, (int)content.y, (int)content.width,
                      (int)content.height);
     DrawRectangleRec(content, GetThemeBackground());
-    if(app->kind == RILL_APP_TERMINAL)
-        draw_terminal_app(app, content, visuals);
-    else if(app->kind == RILL_APP_FILES)
-        draw_files_app(app, content, visuals);
+    if(app->kind == RILL_APP_TERMINAL || app->kind == RILL_APP_FILES)
+        draw_host_app(app, content, visuals);
     else if(app->kind == RILL_APP_SETTINGS)
         draw_settings_app(content, visuals);
     else
@@ -824,25 +947,21 @@ main(void)
     RillShellRefresh(&shell, platform);
     RillShellSetStatus(&shell, "Ready");
 
+    SetSingleInstance(0);
     InitWindow(RILL_WIDTH, RILL_HEIGHT, "Rill");
+    if(!IsWindowReady()) {
+        fprintf(stderr, "rill: failed to open Kryon window\n");
+        CloseWindow();
+        return 1;
+    }
+    if(WindowShouldClose()) {
+        fprintf(stderr, "rill: Kryon window closed during startup\n");
+        CloseWindow();
+        return 1;
+    }
     SetTargetFPS(60);
     SetUIDefaultFontAutoLoad(1);
     configure_system_look(&visuals);
-    visuals.kapsule_host = CreateAppHost(APP_HOST_ABI_VERSION,
-                                         "vendor/kapsule");
-    if(visuals.kapsule_host == NULL) {
-        fprintf(stderr, "rill: failed to create Kapsule app host\n");
-        CloseWindow();
-        return 1;
-    }
-    visuals.shelf_host = ShelfCreateAppHost(APP_HOST_ABI_VERSION,
-                                            "vendor/shelf");
-    if(visuals.shelf_host == NULL) {
-        fprintf(stderr, "rill: failed to create Shelf app host\n");
-        DestroyAppHost(visuals.kapsule_host);
-        CloseWindow();
-        return 1;
-    }
 
     next_refresh = 0.0;
     while(!WindowShouldClose()) {
@@ -871,10 +990,14 @@ main(void)
         EndDrawing();
     }
 
-    if(visuals.kapsule_host != NULL)
-        DestroyAppHost(visuals.kapsule_host);
-    if(visuals.shelf_host != NULL)
-        ShelfDestroyAppHost(visuals.shelf_host);
+    for(int i = 0; i < visuals.host_count; i++) {
+        if(visuals.hosts[i].host != NULL && visuals.hosts[i].destroy != NULL)
+            visuals.hosts[i].destroy(visuals.hosts[i].host);
+#if RILL_HAS_DLOPEN
+        if(visuals.hosts[i].library != NULL)
+            dlclose(visuals.hosts[i].library);
+#endif
+    }
     for(int i = 0; i < visuals.icon_count; i++)
         if(visuals.icons[i].ready)
             UnloadTexture(visuals.icons[i].texture);

@@ -26,6 +26,7 @@ typedef struct RillAppWindow {
     int w;
     int h;
     int focused;
+    char host_id[64];
 } RillAppWindow;
 
 #define RILL_MAX_APPS 16
