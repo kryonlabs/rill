@@ -20,7 +20,7 @@ stub_list_launchers(RillLauncher *out, int cap)
         return 0;
     launcher(&out[0], "terminal", "Terminal", "host:kapsule");
     if(cap > 1)
-        launcher(&out[1], "files", "Files", "internal:files");
+        launcher(&out[1], "files", "Files", "host:shelf");
     if(cap > 2)
         launcher(&out[2], "settings", "Settings", "internal:settings");
     return cap < 3 ? cap : 3;

@@ -81,7 +81,7 @@ linux_list_launchers(RillLauncher *out, int cap)
         launcher(&out[count++], "terminal", "Terminal", "host:kapsule",
                  "utilities-terminal");
     if(count < cap)
-        launcher(&out[count++], "files", "Files", "internal:files",
+        launcher(&out[count++], "files", "Files", "host:shelf",
                  "system-file-manager");
     if(count < cap)
         launcher(&out[count++], "settings", "Settings", "internal:settings",

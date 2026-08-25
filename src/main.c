@@ -24,6 +24,7 @@ typedef struct RillVisualState {
     Texture2D wallpaper;
     int wallpaper_ready;
     AppHost *kapsule_host;
+    AppHost *shelf_host;
     RillIconCacheEntry icons[RILL_ICON_CACHE_MAX];
     int icon_count;
     char system_theme_name[128];
@@ -34,6 +35,8 @@ typedef struct RillVisualState {
 
 extern AppHost *CreateAppHost(int abi_version, const char *project_path);
 extern void DestroyAppHost(AppHost *host);
+extern AppHost *ShelfCreateAppHost(int abi_version, const char *project_path);
+extern void ShelfDestroyAppHost(AppHost *host);
 
 static Color
 mix_color(Color a, Color b, float t)
@@ -110,6 +113,20 @@ draw_text_fit(const char *text, int x, int y, int max_width, int font_size,
     while(font_size > Text8 && TextWidth(text, font_size) > max_width)
         font_size -= 2;
     Text(text, x, y, font_size, color);
+}
+
+static void
+draw_text_fit_centered(const char *text, int x, int y, int max_width,
+                       int font_size, Color color)
+{
+    int width;
+
+    if(text == NULL)
+        text = "";
+    while(font_size > Text8 && TextWidth(text, font_size) > max_width)
+        font_size -= 2;
+    width = TextWidth(text, font_size);
+    Text(text, x + (max_width - width) / 2, y, font_size, color);
 }
 
 static void
@@ -302,7 +319,7 @@ draw_desktop_icon(RillShellState *shell, const RillPlatformServices *platform,
     if(icon_hit_button(box, 7000 + x + y))
         open_launcher_id(shell, platform, launcher_id);
     draw_launcher_icon(visuals, launcher, icon, accent);
-    draw_text_fit(label, x + 4, y + 52, 76, Text12, GetThemeText());
+    draw_text_fit_centered(label, x + 4, y + 52, 76, Text12, GetThemeText());
 }
 
 static void
@@ -570,20 +587,6 @@ draw_system_menu(RillShellState *shell, const RillPlatformServices *platform)
 }
 
 static void
-draw_files_app(Rectangle content)
-{
-    Text("Files", (int)content.x + 16, (int)content.y + 14, Text18,
-         GetThemeText());
-    Text("/home /mnt /tmp", (int)content.x + 16, (int)content.y + 48, Text14,
-         GetThemeIcon());
-    DrawRectangleRounded((Rectangle){content.x + 16, content.y + 82,
-                                     content.width - 32, 36},
-                         0.04f, 8, Fade(GetThemeButton(), 0.82f));
-    Text("Filesystem browser will use Plan 9 namespaces and XDG paths.",
-         (int)content.x + 28, (int)content.y + 92, Text14, GetThemeText());
-}
-
-static void
 draw_terminal_app(RillAppWindow *app, Rectangle content,
                   RillVisualState *visuals)
 {
@@ -609,6 +612,33 @@ draw_terminal_app(RillAppWindow *app, Rectangle content,
                   (int)content.height);
     BeginKryonInputOverride(input);
     DrawAppScreen(visuals->kapsule_host, content);
+    EndKryonInputOverride();
+}
+
+static void
+draw_files_app(RillAppWindow *app, Rectangle content, RillVisualState *visuals)
+{
+    Vector2 mouse;
+    Vector2 delta;
+    KryonInputOverride input;
+
+    if(visuals == NULL || visuals->shelf_host == NULL)
+        return;
+
+    mouse = GetMousePosition();
+    delta = GetMouseDelta();
+    input.enabled = 1;
+    input.mouse_inside = app != NULL && app->focused &&
+                         CheckCollisionPointRec(mouse, content);
+    input.pass_buttons = app != NULL && app->focused;
+    input.mouse_position = mouse;
+    input.mouse_delta = delta;
+
+    SetAppHostFocused(visuals->shelf_host, app != NULL && app->focused);
+    ResizeAppHost(visuals->shelf_host, (int)content.width,
+                  (int)content.height);
+    BeginKryonInputOverride(input);
+    DrawAppScreen(visuals->shelf_host, content);
     EndKryonInputOverride();
 }
 
@@ -674,7 +704,7 @@ draw_app_window(RillShellState *shell, RillAppWindow *app,
     if(app->kind == RILL_APP_TERMINAL)
         draw_terminal_app(app, content, visuals);
     else if(app->kind == RILL_APP_FILES)
-        draw_files_app(content);
+        draw_files_app(app, content, visuals);
     else if(app->kind == RILL_APP_SETTINGS)
         draw_settings_app(content, visuals);
     else
@@ -719,6 +749,14 @@ main(void)
         CloseWindow();
         return 1;
     }
+    visuals.shelf_host = ShelfCreateAppHost(APP_HOST_ABI_VERSION,
+                                            "vendor/shelf");
+    if(visuals.shelf_host == NULL) {
+        fprintf(stderr, "rill: failed to create Shelf app host\n");
+        DestroyAppHost(visuals.kapsule_host);
+        CloseWindow();
+        return 1;
+    }
 
     next_refresh = 0.0;
     while(!WindowShouldClose()) {
@@ -748,6 +786,8 @@ main(void)
 
     if(visuals.kapsule_host != NULL)
         DestroyAppHost(visuals.kapsule_host);
+    if(visuals.shelf_host != NULL)
+        ShelfDestroyAppHost(visuals.shelf_host);
     for(int i = 0; i < visuals.icon_count; i++)
         if(visuals.icons[i].ready)
             UnloadTexture(visuals.icons[i].texture);

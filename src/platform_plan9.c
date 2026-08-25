@@ -27,7 +27,7 @@ plan9_list_launchers(RillLauncher *out, int cap)
     if(count < cap)
         launcher(&out[count++], "rc", "rc", "external:rc");
     if(count < cap)
-        launcher(&out[count++], "Files", "Files", "internal:files");
+        launcher(&out[count++], "Files", "Files", "host:shelf");
     if(count < cap)
         launcher(&out[count++], "settings", "Rill Settings", "internal:settings");
     return count;

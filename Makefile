@@ -3,6 +3,7 @@ KRYON_DIR ?= ../kryon
 PLAN9PORT_DIR ?= ../plan9port
 KRYON_BACKEND ?= libdraw
 KAPSULE_DIR ?= vendor/kapsule
+SHELF_DIR ?= vendor/shelf
 
 CC ?= cc
 CFLAGS ?= -Wall -Wextra -O2
@@ -35,7 +36,10 @@ KRYON_LIB := $(KRYON_BUILD_DIR)/libkryon.a
 KAPSULE_BUILD_ROOT := $(abspath build/kapsule-$(KRYON_BACKEND))
 KAPSULE_BIN := $(KAPSULE_BUILD_ROOT)/$(PLATFORM)-$(ARCH)/bin/kapsule
 KAPSULE_HOST_LIB := $(KAPSULE_BUILD_ROOT)/$(PLATFORM)-$(ARCH)/lib/libkapsule_host.a
-LDLIBS += $(KAPSULE_HOST_LIB) -L$(KRYON_BUILD_DIR) -lkryon
+SHELF_BUILD_ROOT := $(abspath build/shelf-$(KRYON_BACKEND))
+SHELF_BIN := $(SHELF_BUILD_ROOT)/$(PLATFORM)-$(ARCH)/bin/shelf
+SHELF_HOST_LIB := $(SHELF_BUILD_ROOT)/$(PLATFORM)-$(ARCH)/lib/libshelf_host.a
+LDLIBS += $(KAPSULE_HOST_LIB) $(SHELF_HOST_LIB) -L$(KRYON_BUILD_DIR) -lkryon
 CPPFLAGS += $(GTK_PKG_CFLAGS) -DRILL_KAPSULE_BIN=\"$(KAPSULE_BIN)\"
 
 ifeq ($(KRYON_BACKEND),libdraw)
@@ -51,9 +55,9 @@ TEST_BIN := $(BUILD_DIR)/rill_shell_test
 SRCS := src/main.c src/rill_shell.c $(PLATFORM_SRC)
 TEST_SRCS := tests/rill_shell_test.c src/rill_shell.c src/platform_stub.c
 
-.PHONY: all clean run test kryon kapsule
+.PHONY: all clean run test kryon kapsule shelf
 
-all: $(BIN) $(KAPSULE_BIN) $(KAPSULE_HOST_LIB)
+all: $(BIN) $(KAPSULE_BIN) $(KAPSULE_HOST_LIB) $(SHELF_BIN) $(SHELF_HOST_LIB)
 
 kryon:
 	$(MAKE) -C $(KRYON_DIR) KRYON_BACKEND=$(KRYON_BACKEND) \
@@ -70,10 +74,19 @@ $(KAPSULE_BIN) $(KAPSULE_HOST_LIB): $(KRYON_LIB)
 		BUILD_ROOT=$(KAPSULE_BUILD_ROOT) \
 		PLAN9PORT_DIR=$(abspath $(PLAN9PORT_DIR))
 
+shelf: $(SHELF_BIN) $(SHELF_HOST_LIB)
+
+$(SHELF_BIN) $(SHELF_HOST_LIB): $(KRYON_LIB)
+	$(MAKE) -C $(SHELF_DIR) KRYON_BACKEND=$(KRYON_BACKEND) \
+		ENGINE_DIR=$(abspath $(KRYON_DIR)) \
+		ENGINE_BUILD_ROOT=$(KRYON_BUILD_ROOT) \
+		BUILD_ROOT=$(SHELF_BUILD_ROOT) \
+		PLAN9PORT_DIR=$(abspath $(PLAN9PORT_DIR))
+
 $(BUILD_DIR):
 	mkdir -p $@
 
-$(BIN): $(SRCS) $(KRYON_LIB) $(KAPSULE_HOST_LIB) | $(BUILD_DIR)
+$(BIN): $(SRCS) $(KRYON_LIB) $(KAPSULE_HOST_LIB) $(SHELF_HOST_LIB) | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(SRCS) $(LDFLAGS) $(LDLIBS)
 
 $(TEST_BIN): $(TEST_SRCS) | $(BUILD_DIR)

@@ -96,6 +96,8 @@ kind_for_launcher(const RillLauncher *launcher)
         return RILL_APP_TERMINAL;
     if(strcmp(command, "internal:files") == 0)
         return RILL_APP_FILES;
+    if(strcmp(command, "host:shelf") == 0)
+        return RILL_APP_FILES;
     if(strcmp(command, "internal:settings") == 0)
         return RILL_APP_SETTINGS;
     return RILL_APP_ABOUT;
