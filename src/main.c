@@ -68,9 +68,16 @@ mix_color(Color a, Color b, float t)
 }
 
 static Color
+opaque_color(Color color)
+{
+    color.a = 255;
+    return color;
+}
+
+static Color
 panel_color(void)
 {
-    return mix_color(GetThemeSurface(), GetThemeBackground(), 0.10f);
+    return opaque_color(mix_color(GetThemeSurface(), GetThemeBackground(), 0.10f));
 }
 
 static void
@@ -298,7 +305,8 @@ draw_wallpaper(const RillVisualState *visuals)
                        WHITE);
     } else {
         DrawRectangle(0, PANEL_H, GetScreenWidth(),
-                      GetScreenHeight() - PANEL_H, GetThemeBackground());
+                      GetScreenHeight() - PANEL_H,
+                      opaque_color(GetThemeBackground()));
     }
     DrawRectangle(0, PANEL_H, GetScreenWidth(), GetScreenHeight() - PANEL_H,
                   Fade(BLACK, 0.05f));
@@ -893,10 +901,11 @@ draw_app_window(RillShellState *shell, RillAppWindow *app,
     content = (Rectangle){app->x + 1, app->y + 31, app->w - 2, app->h - 32};
     frame_color = app->focused ? GetThemeLink() : Fade(GetThemeText(), 0.32f);
 
-    DrawRectangleRec(frame, GetThemeSurface());
-    DrawRectangleRounded(frame, 0.025f, 8, GetThemeSurface());
+    DrawRectangleRec(frame, opaque_color(GetThemeSurface()));
+    DrawRectangleRounded(frame, 0.025f, 8, opaque_color(GetThemeSurface()));
     DrawRectangleRoundedLinesEx(frame, 0.025f, 8, 2.0f, frame_color);
-    DrawRectangleRec(title, mix_color(GetThemeSurface(), frame_color, 0.18f));
+    DrawRectangleRec(title, opaque_color(mix_color(GetThemeSurface(),
+                                                  frame_color, 0.18f)));
     BeginScissorMode((int)title.x + 6, (int)title.y,
                      (int)title.width - 42, (int)title.height);
     Text(app->title, app->x + 10, app->y + 8, Text14, GetThemeText());
@@ -911,7 +920,7 @@ draw_app_window(RillShellState *shell, RillAppWindow *app,
 
     BeginScissorMode((int)content.x, (int)content.y, (int)content.width,
                      (int)content.height);
-    DrawRectangleRec(content, GetThemeBackground());
+    DrawRectangleRec(content, opaque_color(GetThemeBackground()));
     if(app->kind == RILL_APP_TERMINAL || app->kind == RILL_APP_FILES)
         draw_host_app(app, content, visuals);
     else if(app->kind == RILL_APP_SETTINGS)

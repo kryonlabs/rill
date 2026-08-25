@@ -54,7 +54,6 @@ RillShellRefresh(RillShellState *shell, const RillPlatformServices *platform)
     if(platform->list_launchers != NULL)
         launcher_count = platform->list_launchers(shell->launchers,
                                                   RILL_MAX_LAUNCHERS);
-    (void)task_count;
 
     if(launcher_count < 0)
         launcher_count = 0;
@@ -70,6 +69,17 @@ RillShellRefresh(RillShellState *shell, const RillPlatformServices *platform)
         shell->tasks[i].focused = shell->apps[i].focused;
         shell->tasks[i].urgent = 0;
         shell->task_count++;
+    }
+    if(platform->list_tasks != NULL &&
+       shell->task_count < RILL_MAX_TASKS) {
+        task_count = platform->list_tasks(
+            &shell->tasks[shell->task_count],
+            RILL_MAX_TASKS - shell->task_count);
+        if(task_count < 0)
+            task_count = 0;
+        if(task_count > RILL_MAX_TASKS - shell->task_count)
+            task_count = RILL_MAX_TASKS - shell->task_count;
+        shell->task_count += task_count;
     }
     for(int i = 0;
         i < shell->external_task_count && shell->task_count < RILL_MAX_TASKS;
@@ -234,32 +244,6 @@ focus_external_task_index(RillShellState *shell, int index)
     shell->focused_app = -1;
 }
 
-static void
-add_external_task(RillShellState *shell, const RillLauncher *launcher)
-{
-    RillTask *task;
-    char title[sizeof(shell->external_tasks[0].title)];
-    int i;
-
-    if(shell == NULL || launcher == NULL)
-        return;
-    snprintf(title, sizeof(title), "%s", launcher->name);
-    for(i = 0; i < shell->external_task_count; i++) {
-        if(strcmp(shell->external_tasks[i].title, title) == 0) {
-            focus_external_task_index(shell, i);
-            return;
-        }
-    }
-    if(shell->external_task_count >= RILL_MAX_EXTERNAL_TASKS)
-        return;
-    task = &shell->external_tasks[shell->external_task_count++];
-    memset(task, 0, sizeof(*task));
-    task->id = shell->next_task_id++;
-    snprintf(task->title, sizeof(task->title), "%s", title);
-    task->focused = 1;
-    focus_external_task_index(shell, shell->external_task_count - 1);
-}
-
 int
 RillShellLaunchSelected(RillShellState *shell,
                         const RillPlatformServices *platform)
@@ -278,7 +262,6 @@ RillShellLaunchSelected(RillShellState *shell,
         return RillShellOpenLauncher(shell, launcher);
 
     if(platform->launch(launcher)) {
-        add_external_task(shell, launcher);
         snprintf(shell->status, sizeof(shell->status), "Launched %s",
                  launcher->name);
         return 1;

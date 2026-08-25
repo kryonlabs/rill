@@ -85,14 +85,19 @@ main(void)
           &failures);
     RillShellRefresh(&shell, &services);
     check("launcher count", shell.launcher_count == 2, &failures);
-    check("initial task count", shell.task_count == 0, &failures);
+    check("initial task count", shell.task_count == 1, &failures);
+    check("select platform task", RillShellSelectTask(&shell, 0), &failures);
+    check("focus platform task", RillShellFocusSelectedTask(&shell, &services),
+          &failures);
+    check("platform focus used", focused_task == 42, &failures);
+    focused_task = 0;
     check("select launcher", RillShellSelectLauncher(&shell, 1), &failures);
     check("launch selected internal", RillShellLaunchSelected(&shell, &services),
           &failures);
     check("internal app count", shell.app_count == 1, &failures);
     check("external launch call count", launches == 0, &failures);
     RillShellRefresh(&shell, &services);
-    check("task count after app launch", shell.task_count == 1, &failures);
+    check("task count after app launch", shell.task_count == 2, &failures);
     check("select task", RillShellSelectTask(&shell, 0), &failures);
     check("focus task", RillShellFocusSelectedTask(&shell, &services),
           &failures);
