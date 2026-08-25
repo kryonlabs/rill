@@ -44,6 +44,7 @@ typedef struct RillHostModule {
     void *library;
     AppHost *host;
     DestroyAppHostCallback destroy;
+    int missing_reported;
 } RillHostModule;
 
 typedef struct RillVisualState {
@@ -375,7 +376,10 @@ load_host_module(RillVisualState *visuals, const char *id)
     if(try_host_dir(slot, dir))
         return slot;
 
-    fprintf(stderr, "rill: no host module found for %s\n", id);
+    if(!slot->missing_reported) {
+        fprintf(stderr, "rill: no host module found for %s\n", id);
+        slot->missing_reported = 1;
+    }
     return slot;
 }
 
@@ -595,14 +599,18 @@ draw_desktop_icon(RillShellState *shell, const RillPlatformServices *platform,
     Rectangle box;
     Rectangle icon;
     const RillLauncher *launcher;
+    const char *display_label;
 
     box = (Rectangle){x, y, 84, 82};
     icon = (Rectangle){x + 22, y + 5, 40, 40};
     launcher = launcher_by_id(shell, launcher_id);
+    display_label = launcher != NULL && launcher->name[0] != '\0' ?
+                    launcher->name : label;
     if(icon_hit_button(box, 7000 + x + y))
         open_launcher_id(shell, platform, launcher_id);
     draw_launcher_icon(visuals, launcher, icon, accent);
-    draw_text_fit_centered(label, x + 4, y + 52, 76, Text12, GetThemeText());
+    draw_text_fit_centered(display_label, x + 4, y + 52, 76, Text12,
+                           GetThemeText());
 }
 
 static void
@@ -1163,7 +1171,7 @@ draw_settings_app(Rectangle content, const RillVisualState *visuals)
                                              "Desktop background unavailable",
                   (int)content.x + 16, (int)content.y + 100,
                   (int)content.width - 32, Text12, GetThemeIcon());
-    Text("XFCE settings", (int)content.x + 16, (int)content.y + 132,
+    Text("Rill settings", (int)content.x + 16, (int)content.y + 132,
          Text14, GetThemeText());
 }
 
@@ -1355,7 +1363,12 @@ main(void)
         CloseWindow();
         return 1;
     }
+    EnableEventWaiting();
+#ifdef KRYON_NATIVE_PLAN9
+    SetTargetFPS(24);
+#else
     SetTargetFPS(60);
+#endif
     SetUIDefaultFontAutoLoad(1);
     configure_system_look(&visuals, &test);
 

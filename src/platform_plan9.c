@@ -27,47 +27,31 @@ plan9_list_launchers(RillLauncher *out, int cap)
 
     count = 0;
     if(count < cap)
-        launcher(&out[count++], "terminal", "Terminal", "rc");
+        launcher(&out[count++], "terminal", "kterm", "kterm");
     if(count < cap)
-        launcher(&out[count++], "files", "Files", "explorer /usr/glenda");
+        launcher(&out[count++], "files", "Shelf", "shelf");
     if(count < cap)
-        launcher(&out[count++], "display", "Display", "q9display");
+        launcher(&out[count++], "settings", "Settings", "internal:settings");
     if(count < cap)
-        launcher(&out[count++], "themes", "Themes", "q9themes");
-    if(count < cap)
-        launcher(&out[count++], "inbe", "Inner Breeze", "inbe");
-    if(count < cap)
-        launcher(&out[count++], "acme", "Acme", "acme");
+        launcher(&out[count++], "about", "About Rill", "internal:about");
     return count;
 }
 
 static int
 plan9_list_tasks(RillTask *out, int cap)
 {
-    if(out == NULL || cap <= 0)
-        return 0;
-
-    out[0].id = 1;
-    snprintf(out[0].title, sizeof(out[0].title), "%s", "Rill desktop");
-    out[0].focused = 1;
-    out[0].urgent = 0;
-    return 1;
+    (void)out;
+    (void)cap;
+    return 0;
 }
 
 static int
 plan9_launch(const RillLauncher *launcher)
 {
 #ifdef KRYON_NATIVE_PLAN9
-    int fd;
-
-    if(launcher == NULL || launcher->command[0] == '\0')
+    if(launcher == NULL || launcher->command[0] == '\0' ||
+       strncmp(launcher->command, "internal:", 9) == 0)
         return 0;
-    fd = open("/dev/wctl", OWRITE);
-    if(fd >= 0) {
-        fprint(fd, "new %s", launcher->command);
-        close(fd);
-        return 1;
-    }
     switch(rfork(RFPROC|RFFDG|RFENVG|RFNOTEG)) {
     case -1:
         return 0;
@@ -86,7 +70,8 @@ plan9_launch(const RillLauncher *launcher)
 static int
 plan9_focus_task(int task_id)
 {
-    return task_id == 1;
+    (void)task_id;
+    return 0;
 }
 
 static int
