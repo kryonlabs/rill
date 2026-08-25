@@ -48,6 +48,9 @@ typedef struct RillShellState {
     int focused_app;
     int next_app_id;
     int next_task_id;
+    int dragging_app;
+    int drag_offset_x;
+    int drag_offset_y;
     int menu_open;
     int settings_open;
     char status[160];

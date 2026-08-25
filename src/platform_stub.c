@@ -23,7 +23,11 @@ stub_list_launchers(RillLauncher *out, int cap)
         launcher(&out[1], "files", "Files", "host:shelf");
     if(cap > 2)
         launcher(&out[2], "settings", "Settings", "internal:settings");
-    return cap < 3 ? cap : 3;
+    if(cap > 3)
+        launcher(&out[3], "workbook", "Workbook", "external:workbook");
+    if(cap > 4)
+        launcher(&out[4], "inbe", "Inner Breeze", "external:inbe");
+    return cap < 5 ? cap : 5;
 }
 
 static int

@@ -87,6 +87,14 @@ linux_list_launchers(RillLauncher *out, int cap)
         launcher(&out[count++], "settings", "Settings", "internal:settings",
                  "preferences-system");
     if(count < cap)
+        launcher(&out[count++], "workbook", "Workbook",
+                 "/mnt/storage/Projects/workbook/workbook",
+                 "x-office-spreadsheet");
+    if(count < cap)
+        launcher(&out[count++], "inbe", "Inner Breeze",
+                 "/mnt/storage/Projects/inbe/build/bin/linux/inbe-linux-x86_64",
+                 "applications-wellness");
+    if(count < cap)
         launcher(&out[count++], "about", "About Rill", "internal:about",
                  "help-about");
     return count;

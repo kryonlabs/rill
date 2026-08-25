@@ -586,6 +586,86 @@ draw_system_menu(RillShellState *shell, const RillPlatformServices *platform)
     }
 }
 
+static int
+find_app_index_by_id(RillShellState *shell, int app_id)
+{
+    if(shell == NULL)
+        return -1;
+    for(int i = 0; i < shell->app_count; i++)
+        if(shell->apps[i].id == app_id)
+            return i;
+    return -1;
+}
+
+static void
+clamp_window_to_screen(RillAppWindow *app)
+{
+    int max_x;
+    int max_y;
+
+    if(app == NULL)
+        return;
+    max_x = GetScreenWidth() - 48;
+    max_y = GetScreenHeight() - 48;
+    if(app->x < 0)
+        app->x = 0;
+    if(app->y < PANEL_H)
+        app->y = PANEL_H;
+    if(app->x > max_x)
+        app->x = max_x;
+    if(app->y > max_y)
+        app->y = max_y;
+}
+
+static void
+process_window_mouse(RillShellState *shell)
+{
+    Vector2 mouse;
+
+    if(shell == NULL)
+        return;
+    mouse = GetMousePosition();
+    if(IsMouseButtonReleased(MOUSE_BUTTON_LEFT))
+        shell->dragging_app = 0;
+    if(shell->dragging_app != 0 && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        int index = find_app_index_by_id(shell, shell->dragging_app);
+        if(index >= 0) {
+            RillAppWindow *app = &shell->apps[index];
+            app->x = (int)mouse.x - shell->drag_offset_x;
+            app->y = (int)mouse.y - shell->drag_offset_y;
+            clamp_window_to_screen(app);
+        }
+        return;
+    }
+    if(!IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+        return;
+
+    for(int i = shell->app_count - 1; i >= 0; i--) {
+        RillAppWindow *app = &shell->apps[i];
+        Rectangle frame = {app->x, app->y, app->w, app->h};
+        Rectangle title = {app->x, app->y, app->w, 30};
+        Rectangle close = {app->x + app->w - 30, app->y + 4, 22, 22};
+
+        if(!CheckCollisionPointRec(mouse, frame))
+            continue;
+        shell->menu_open = 0;
+        if(!app->focused) {
+            int app_id = app->id;
+            RillShellFocusApp(shell, app_id);
+            i = find_app_index_by_id(shell, app_id);
+            if(i >= 0)
+                app = &shell->apps[i];
+        }
+        if(CheckCollisionPointRec(mouse, title) &&
+           !CheckCollisionPointRec(mouse, close)) {
+            shell->dragging_app = app->id;
+            shell->drag_offset_x = (int)mouse.x - app->x;
+            shell->drag_offset_y = (int)mouse.y - app->y;
+        }
+        return;
+    }
+}
+
 static void
 draw_terminal_app(RillAppWindow *app, Rectangle content,
                   RillVisualState *visuals)
@@ -600,10 +680,12 @@ draw_terminal_app(RillAppWindow *app, Rectangle content,
 
     mouse = GetMousePosition();
     delta = GetMouseDelta();
+    input = (KryonInputOverride){0};
     input.enabled = 1;
     input.mouse_inside = app != NULL && app->focused &&
                          CheckCollisionPointRec(mouse, content);
     input.pass_buttons = app != NULL && app->focused;
+    input.pass_keyboard = app != NULL && app->focused;
     input.mouse_position = mouse;
     input.mouse_delta = delta;
 
@@ -627,10 +709,12 @@ draw_files_app(RillAppWindow *app, Rectangle content, RillVisualState *visuals)
 
     mouse = GetMousePosition();
     delta = GetMouseDelta();
+    input = (KryonInputOverride){0};
     input.enabled = 1;
     input.mouse_inside = app != NULL && app->focused &&
                          CheckCollisionPointRec(mouse, content);
     input.pass_buttons = app != NULL && app->focused;
+    input.pass_keyboard = app != NULL && app->focused;
     input.mouse_position = mouse;
     input.mouse_delta = delta;
 
@@ -684,7 +768,8 @@ draw_app_window(RillShellState *shell, RillAppWindow *app,
     content = (Rectangle){app->x + 1, app->y + 31, app->w - 2, app->h - 32};
     frame_color = app->focused ? GetThemeLink() : Fade(GetThemeText(), 0.32f);
 
-    DrawRectangleRounded(frame, 0.025f, 8, Fade(GetThemeSurface(), 0.97f));
+    DrawRectangleRec(frame, GetThemeSurface());
+    DrawRectangleRounded(frame, 0.025f, 8, GetThemeSurface());
     DrawRectangleRoundedLinesEx(frame, 0.025f, 8, 2.0f, frame_color);
     DrawRectangleRec(title, mix_color(GetThemeSurface(), frame_color, 0.18f));
     BeginScissorMode((int)title.x + 6, (int)title.y,
@@ -701,6 +786,7 @@ draw_app_window(RillShellState *shell, RillAppWindow *app,
 
     BeginScissorMode((int)content.x, (int)content.y, (int)content.width,
                      (int)content.height);
+    DrawRectangleRec(content, GetThemeBackground());
     if(app->kind == RILL_APP_TERMINAL)
         draw_terminal_app(app, content, visuals);
     else if(app->kind == RILL_APP_FILES)
@@ -765,6 +851,7 @@ main(void)
             load_launcher_icons(&visuals, &shell);
             next_refresh = GetTime() + 1.0;
         }
+        process_window_mouse(&shell);
 
         BeginDrawing();
         ClearBackground(GetThemeBackground());

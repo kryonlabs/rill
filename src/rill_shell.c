@@ -106,13 +106,21 @@ kind_for_launcher(const RillLauncher *launcher)
 static void
 focus_app_index(RillShellState *shell, int index)
 {
+    RillAppWindow app;
     int i;
 
     if(shell == NULL || index < 0 || index >= shell->app_count)
         return;
+    app = shell->apps[index];
+    if(index < shell->app_count - 1) {
+        memmove(&shell->apps[index], &shell->apps[index + 1],
+                (size_t)(shell->app_count - index - 1) *
+                    sizeof(shell->apps[0]));
+        shell->apps[shell->app_count - 1] = app;
+    }
     for(i = 0; i < shell->app_count; i++)
-        shell->apps[i].focused = i == index;
-    shell->focused_app = shell->apps[index].id;
+        shell->apps[i].focused = i == shell->app_count - 1;
+    shell->focused_app = shell->apps[shell->app_count - 1].id;
 }
 
 int
