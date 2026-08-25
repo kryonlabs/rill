@@ -21,7 +21,15 @@ enum {
     RILL_HEIGHT = 720,
     PANEL_H = 32,
     RILL_HOST_CACHE_MAX = 8,
-    RILL_ICON_CACHE_MAX = 32
+    RILL_ICON_CACHE_MAX = 32,
+    RILL_TEST_LOWER_TEXT_X = 274,
+    RILL_TEST_LOWER_TEXT_Y = 224,
+    RILL_TEST_UPPER_X = 250,
+    RILL_TEST_UPPER_Y = 180,
+    RILL_TEST_UPPER_W = 420,
+    RILL_TEST_UPPER_H = 260,
+    RILL_TEST_SAMPLE_X = 310,
+    RILL_TEST_SAMPLE_Y = 242
 };
 
 typedef struct RillIconCacheEntry {
@@ -50,6 +58,15 @@ typedef struct RillVisualState {
     char system_font_name[128];
     char system_font_path[512];
 } RillVisualState;
+
+typedef struct RillTestState {
+    const char *scene;
+    const char *ready_file;
+    int exit_after_frames;
+    int disable_wallpaper;
+    int frames;
+    int ready_written;
+} RillTestState;
 
 static Color
 mix_color(Color a, Color b, float t)
@@ -80,8 +97,66 @@ panel_color(void)
     return opaque_color(mix_color(GetThemeSurface(), GetThemeBackground(), 0.10f));
 }
 
+static int
+env_truthy(const char *name)
+{
+    const char *value = getenv(name);
+
+    return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0 &&
+           strcmp(value, "false") != 0 && strcmp(value, "no") != 0;
+}
+
+static int
+env_int(const char *name, int fallback)
+{
+    const char *value = getenv(name);
+    char *end = NULL;
+    long parsed;
+
+    if(value == NULL || value[0] == '\0')
+        return fallback;
+    parsed = strtol(value, &end, 10);
+    if(end == value || parsed < 0 || parsed > 1000000)
+        return fallback;
+    return (int)parsed;
+}
+
 static void
-configure_system_look(RillVisualState *visuals)
+init_test_state(RillTestState *test)
+{
+    if(test == NULL)
+        return;
+    memset(test, 0, sizeof(*test));
+    test->scene = getenv("RILL_TEST_SCENE");
+    test->ready_file = getenv("RILL_TEST_READY_FILE");
+    test->exit_after_frames = env_int("RILL_TEST_EXIT_AFTER_FRAMES", 0);
+    test->disable_wallpaper = env_truthy("RILL_TEST_DISABLE_WALLPAPER");
+}
+
+static int
+test_scene_active(const RillTestState *test)
+{
+    return test != NULL && test->scene != NULL && test->scene[0] != '\0';
+}
+
+static void
+write_test_ready_file(RillTestState *test)
+{
+    FILE *file;
+
+    if(test == NULL || test->ready_written || test->ready_file == NULL ||
+       test->ready_file[0] == '\0')
+        return;
+    file = fopen(test->ready_file, "w");
+    if(file == NULL)
+        return;
+    fprintf(file, "ready\n");
+    fclose(file);
+    test->ready_written = 1;
+}
+
+static void
+configure_system_look(RillVisualState *visuals, const RillTestState *test)
 {
     char font_path[512];
     char font_name[128];
@@ -113,6 +188,9 @@ configure_system_look(RillVisualState *visuals)
             UseUIFont("system");
     }
     EnsureUIDefaultFont();
+
+    if(test != NULL && test->disable_wallpaper)
+        return;
 
     if(GetSystemDesktopBackground(wallpaper, sizeof(wallpaper))) {
         visuals->wallpaper = LoadTexture(wallpaper);
@@ -943,14 +1021,79 @@ draw_apps(RillShellState *shell, RillVisualState *visuals)
             draw_app_window(shell, &shell->apps[i], visuals);
 }
 
+static void
+draw_test_window(Rectangle frame, const char *title, Color title_color,
+                 Color content_color, int focused)
+{
+    Rectangle title_rect = {frame.x, frame.y, frame.width, 30};
+    Rectangle content = {frame.x + 1, frame.y + 31, frame.width - 2,
+                         frame.height - 32};
+    Color border = focused ? WHITE : Fade(WHITE, 0.44f);
+
+    DrawRectangleRec(frame, opaque_color(GetThemeSurface()));
+    DrawRectangleRounded(frame, 0.025f, 8, opaque_color(GetThemeSurface()));
+    DrawRectangleRoundedLinesEx(frame, 0.025f, 8, 2.0f, border);
+    DrawRectangleRec(title_rect, opaque_color(title_color));
+    BeginScissorMode((int)title_rect.x + 8, (int)title_rect.y,
+                     (int)title_rect.width - 16, (int)title_rect.height);
+    Text(title, (int)title_rect.x + 10, (int)title_rect.y + 8, Text14, WHITE);
+    EndScissorMode();
+    DrawRectangleRec(content, opaque_color(content_color));
+}
+
+static void
+draw_compositor_stack_test_scene(void)
+{
+    Rectangle lower = {140, 100, 460, 300};
+    Rectangle lower_content = {lower.x + 1, lower.y + 31, lower.width - 2,
+                               lower.height - 32};
+    Rectangle upper = {RILL_TEST_UPPER_X, RILL_TEST_UPPER_Y, RILL_TEST_UPPER_W,
+                       RILL_TEST_UPPER_H};
+    const Color red = {240, 16, 32, 255};
+    const Color lower_bg = {18, 18, 22, 255};
+    const Color lower_title = {94, 28, 36, 255};
+    const Color upper_bg = {24, 172, 128, 255};
+    const Color upper_title = {20, 92, 72, 255};
+
+    ClearBackground((Color){8, 9, 12, 255});
+    DrawRectangle(0, 0, GetScreenWidth(), PANEL_H, (Color){20, 22, 30, 255});
+    Text("Rill visual test", 10, 8, Text12, WHITE);
+
+    draw_test_window(lower, "Lower text producer", lower_title, lower_bg, 0);
+    BeginScissorMode((int)lower_content.x, (int)lower_content.y,
+                     (int)lower_content.width, (int)lower_content.height);
+    for(int i = 0; i < 8; i++) {
+        Text("TEXT-HIERARCHY-LEAK TEXT-HIERARCHY-LEAK",
+             RILL_TEST_LOWER_TEXT_X, RILL_TEST_LOWER_TEXT_Y + i * 26, Text24,
+             red);
+    }
+    EndScissorMode();
+
+    draw_test_window(upper, "Upper opaque cover", upper_title, upper_bg, 1);
+}
+
+static int
+draw_test_scene(const RillTestState *test)
+{
+    if(test == NULL || test->scene == NULL)
+        return 0;
+    if(strcmp(test->scene, "compositor-stack") == 0) {
+        draw_compositor_stack_test_scene();
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void)
 {
     RillShellState shell;
     RillVisualState visuals;
+    RillTestState test;
     const RillPlatformServices *platform;
     double next_refresh;
 
+    init_test_state(&test);
     platform = RillPlatformCurrent();
     RillShellInit(&shell);
     RillShellRefresh(&shell, platform);
@@ -970,33 +1113,47 @@ main(void)
     }
     SetTargetFPS(60);
     SetUIDefaultFontAutoLoad(1);
-    configure_system_look(&visuals);
+    configure_system_look(&visuals, &test);
 
     next_refresh = 0.0;
     while(!WindowShouldClose()) {
-        if(GetTime() >= next_refresh) {
+        if(!test_scene_active(&test) && GetTime() >= next_refresh) {
             RillShellRefresh(&shell, platform);
             load_launcher_icons(&visuals, &shell);
             next_refresh = GetTime() + 1.0;
         }
-        process_window_mouse(&shell);
+        if(!test_scene_active(&test))
+            process_window_mouse(&shell);
 
         BeginDrawing();
-        ClearBackground(GetThemeBackground());
-        draw_wallpaper(&visuals);
+        ClearBackground(opaque_color(GetThemeBackground()));
         BeginUIFrame(GetScreenWidth(), GetScreenHeight(), 1.0f);
         BeginUI(0x52494c4c);
 
-        draw_desktop(&shell, platform, &visuals);
-        draw_apps(&shell, &visuals);
-        draw_top_panel(&shell, platform, &visuals);
-        draw_applications_menu(&shell, platform, &visuals);
-        draw_places_menu(&shell, platform);
-        draw_system_menu(&shell, platform);
+        if(test_scene_active(&test)) {
+            if(!draw_test_scene(&test))
+                RillShellSetStatus(&shell, "Unknown visual test scene");
+        } else {
+            draw_wallpaper(&visuals);
+            draw_desktop(&shell, platform, &visuals);
+            draw_apps(&shell, &visuals);
+            draw_top_panel(&shell, platform, &visuals);
+            draw_applications_menu(&shell, platform, &visuals);
+            draw_places_menu(&shell, platform);
+            draw_system_menu(&shell, platform);
+        }
 
         EndUI();
         EndUIFrame();
         EndDrawing();
+
+        if(test_scene_active(&test)) {
+            test.frames++;
+            write_test_ready_file(&test);
+            if(test.exit_after_frames > 0 &&
+               test.frames >= test.exit_after_frames)
+                break;
+        }
     }
 
     for(int i = 0; i < visuals.host_count; i++) {

@@ -60,15 +60,15 @@ TEST_BIN := $(BUILD_DIR)/rill_shell_test
 SRCS := src/main.c src/rill_shell.c $(PLATFORM_SRC)
 TEST_SRCS := tests/rill_shell_test.c src/rill_shell.c src/platform_stub.c
 
-.PHONY: all clean run test kryon
+.PHONY: all clean run test visual-test kryon FORCE
 
 all: $(BIN)
 
-kryon:
+kryon: $(KRYON_LIB)
+
+$(KRYON_LIB): FORCE
 	$(MAKE) -C $(KRYON_DIR) KRYON_BACKEND=$(KRYON_BACKEND) \
 		BUILD_ROOT=$(KRYON_BUILD_ROOT) $(KRYON_LIB)
-
-$(KRYON_LIB): kryon
 
 $(BUILD_DIR):
 	mkdir -p $@
@@ -81,6 +81,10 @@ $(TEST_BIN): $(TEST_SRCS) | $(BUILD_DIR)
 
 test: $(TEST_BIN)
 	$(TEST_BIN)
+
+visual-test: $(BIN)
+	PLAN9PORT_DIR="$(PLAN9PORT_DIR)" RILL_BIN="$(abspath $(BIN))" \
+		sh tests/rill_visual_test.sh
 
 run: $(BIN)
 	env PLAN9="$(PLAN9PORT_DIR)" PATH="$(PLAN9PORT_DIR)/bin:$(PATH)" \
