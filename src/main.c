@@ -508,6 +508,13 @@ draw_symbol_icon(Rectangle r, const char *id, Color color)
                      (int)(cx + cosf(a) * r.width * 0.39f),
                      (int)(cy + sinf(a) * r.width * 0.39f), color);
         }
+    } else if(id != NULL && strcmp(id, "power") == 0) {
+        DrawCircleLines((int)cx, (int)cy, r.width * 0.30f, color);
+        DrawLine((int)cx, (int)r.y + 4, (int)cx, (int)cy, color);
+    } else if(id != NULL && strcmp(id, "about") == 0) {
+        DrawCircleLines((int)cx, (int)cy, r.width * 0.32f, color);
+        DrawCircle((int)cx, (int)r.y + 8, 1.6f, color);
+        DrawLine((int)cx, (int)cy - 1, (int)cx, (int)cy + 7, color);
     } else {
         DrawCircleLines((int)cx, (int)cy, r.width * 0.32f, color);
         DrawCircle((int)cx, (int)cy, r.width * 0.07f, color);
@@ -786,9 +793,46 @@ draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
 static void
 draw_menu_panel(Rectangle menu)
 {
-    DrawRectangleRounded(menu, 0.02f, 6, Fade(GetThemeSurface(), 0.98f));
+    DrawRectangleRounded(menu, 0.02f, 6, opaque_color(GetThemeSurface()));
     DrawRectangleRoundedLinesEx(menu, 0.02f, 6, 1.0f,
                                 Fade(GetThemeText(), 0.30f));
+}
+
+static int
+draw_menu_row(Rectangle row, const char *label, const char *icon_id)
+{
+    int hover;
+
+    hover = CheckCollisionPointRec(GetMousePosition(), row);
+    DrawRectangleRec(row, hover ? panel_item_hover_color() :
+                     panel_item_color());
+    DrawRectangle((int)row.x, (int)(row.y + row.height - 1), (int)row.width,
+                  1, Fade(BLACK, 0.28f));
+    if(icon_id != NULL)
+        draw_symbol_icon((Rectangle){row.x + 6, row.y + 6, 16, 16}, icon_id,
+                         GetThemeLink());
+    draw_text_fit(label, (int)row.x + 30, (int)row.y + 8,
+                  (int)row.width - 38, Text12, GetThemeText());
+    return hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+}
+
+static int
+draw_window_close_button(Rectangle close)
+{
+    int hover;
+    Color stroke;
+
+    hover = CheckCollisionPointRec(GetMousePosition(), close);
+    DrawRectangleRec(close, hover ? panel_active_color() : panel_item_color());
+    DrawRectangleLinesEx(close, 1.0f, Fade(GetThemeText(), 0.36f));
+    stroke = hover ? WHITE : GetThemeText();
+    DrawLine((int)close.x + 7, (int)close.y + 7,
+             (int)close.x + (int)close.width - 7,
+             (int)close.y + (int)close.height - 7, stroke);
+    DrawLine((int)close.x + (int)close.width - 7, (int)close.y + 7,
+             (int)close.x + 7,
+             (int)close.y + (int)close.height - 7, stroke);
+    return hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
 }
 
 static void
@@ -811,8 +855,10 @@ draw_applications_menu(RillShellState *shell,
         Rectangle row = {10, y, 226, 28};
         int hover = CheckCollisionPointRec(GetMousePosition(), row);
 
-        DrawRectangleRounded(row, 0.04f, 5,
-                             Fade(GetThemeButton(), hover ? 0.72f : 0.34f));
+        DrawRectangleRec(row, hover ? panel_item_hover_color() :
+                         panel_item_color());
+        DrawRectangle((int)row.x, (int)(row.y + row.height - 1),
+                      (int)row.width, 1, Fade(BLACK, 0.28f));
         draw_launcher_icon(visuals, &shell->launchers[i],
                            (Rectangle){row.x + 6, row.y + 5, 18, 18},
                            GetThemeText());
@@ -863,8 +909,7 @@ draw_places_menu(RillShellState *shell, const RillPlatformServices *platform)
     draw_menu_panel(menu);
     y = PANEL_H + 8;
     for(int i = 0; i < 3; i++) {
-        if(Button((ButtonProps){(Rectangle){122, y, 178, 28}, items[i],
-                                ButtonStyleSecondary, Text12, 1400 + i, 0})) {
+        if(draw_menu_row((Rectangle){122, y, 178, 28}, items[i], "files")) {
             open_launcher_id(shell, platform, "files");
             shell->menu_open = 0;
         }
@@ -881,21 +926,18 @@ draw_system_menu(RillShellState *shell, const RillPlatformServices *platform)
         return;
     menu = (Rectangle){182, PANEL_H + 2, 190, 104};
     draw_menu_panel(menu);
-    if(Button((ButtonProps){(Rectangle){188, PANEL_H + 8, 178, 28},
-                            "Settings", ButtonStyleSecondary, Text12, 1500,
-                            0})) {
+    if(draw_menu_row((Rectangle){188, PANEL_H + 8, 178, 28}, "Settings",
+                     "settings")) {
         open_launcher_id(shell, platform, "settings");
         shell->menu_open = 0;
     }
-    if(Button((ButtonProps){(Rectangle){188, PANEL_H + 40, 178, 28},
-                            "About Rill", ButtonStyleSecondary, Text12, 1501,
-                            0})) {
+    if(draw_menu_row((Rectangle){188, PANEL_H + 40, 178, 28}, "About Rill",
+                     "about")) {
         open_launcher_id(shell, platform, "about");
         shell->menu_open = 0;
     }
-    if(Button((ButtonProps){(Rectangle){188, PANEL_H + 72, 178, 28},
-                            "Log Out", ButtonStyleSecondary, Text12, 1502,
-                            0})) {
+    if(draw_menu_row((Rectangle){188, PANEL_H + 72, 178, 28}, "Log Out",
+                     "power")) {
         RillShellSetStatus(shell, "Log out");
         shell->menu_open = 0;
     }
@@ -1073,10 +1115,8 @@ draw_app_window(RillShellState *shell, RillAppWindow *app,
                      (int)title.width - 42, (int)title.height);
     Text(app->title, app->x + 10, app->y + 8, Text14, GetThemeText());
     EndScissorMode();
-    if(Button((ButtonProps){(Rectangle){app->x + app->w - 30, app->y + 4,
-                                        22, 22},
-                            "x", ButtonStyleSecondary, Text12,
-                            5000 + app->id, 0})) {
+    if(draw_window_close_button((Rectangle){app->x + app->w - 30,
+                                            app->y + 4, 22, 22})) {
         RillShellCloseApp(shell, app->id);
         return;
     }
@@ -1157,6 +1197,37 @@ draw_compositor_stack_test_scene(void)
     draw_test_window(upper, "Upper opaque cover", upper_title, upper_bg, 1);
 }
 
+static void
+draw_menu_stack_test_scene(void)
+{
+    Rectangle lower = {118, 72, 460, 300};
+    Rectangle lower_content = {lower.x + 1, lower.y + 31, lower.width - 2,
+                               lower.height - 32};
+    Rectangle menu = {176, 118, 238, 112};
+    const Color red = {240, 16, 32, 255};
+
+    ClearBackground((Color){8, 9, 12, 255});
+    DrawRectangle(0, 0, GetScreenWidth(), PANEL_H, panel_color());
+    Text("Rill visual test", 10, 8, Text12, WHITE);
+
+    draw_test_window(lower, "Lower text producer", (Color){92, 28, 96, 255},
+                     (Color){18, 18, 22, 255}, 1);
+    BeginScissorMode((int)lower_content.x, (int)lower_content.y,
+                     (int)lower_content.width, (int)lower_content.height);
+    for(int i = 0; i < 5; i++) {
+        Text("TEXT-HIERARCHY-LEAK TEXT-HIERARCHY-LEAK", 190, 138 + i * 24,
+             Text24, red);
+    }
+    EndScissorMode();
+
+    draw_window_close_button((Rectangle){lower.x + lower.width - 30,
+                                         lower.y + 4, 22, 22});
+    draw_menu_panel(menu);
+    draw_menu_row((Rectangle){182, 124, 226, 28}, "Terminal", "terminal");
+    draw_menu_row((Rectangle){182, 156, 226, 28}, "Files", "files");
+    draw_menu_row((Rectangle){182, 188, 226, 28}, "Settings", "settings");
+}
+
 static int
 draw_test_scene(const RillTestState *test)
 {
@@ -1164,6 +1235,10 @@ draw_test_scene(const RillTestState *test)
         return 0;
     if(strcmp(test->scene, "compositor-stack") == 0) {
         draw_compositor_stack_test_scene();
+        return 1;
+    }
+    if(strcmp(test->scene, "menu-stack") == 0) {
+        draw_menu_stack_test_scene();
         return 1;
     }
     return 0;
