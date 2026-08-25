@@ -7,227 +7,6 @@
 #include <unistd.h>
 
 #include <gtk/gtk.h>
-#include <X11/Xatom.h>
-#include <X11/Xlib.h>
-
-enum {
-    RILL_X11_TASK_BASE = 200000,
-    RILL_X11_TASK_MAP_MAX = 128
-};
-
-typedef struct LinuxX11TaskMap {
-    Window window;
-    int id;
-} LinuxX11TaskMap;
-
-static Display *x11_display;
-static LinuxX11TaskMap x11_tasks[RILL_X11_TASK_MAP_MAX];
-static int x11_task_count;
-static int x11_next_task_id = RILL_X11_TASK_BASE;
-
-static int
-x11_ignore_error(Display *display, XErrorEvent *event)
-{
-    (void)display;
-    (void)event;
-    return 0;
-}
-
-static Display *
-linux_x11_display(void)
-{
-    if(x11_display == NULL) {
-        x11_display = XOpenDisplay(NULL);
-        if(x11_display != NULL)
-            XSetErrorHandler(x11_ignore_error);
-    }
-    return x11_display;
-}
-
-static Atom
-x11_atom(Display *display, const char *name)
-{
-    if(display == NULL || name == NULL)
-        return None;
-    return XInternAtom(display, name, False);
-}
-
-static int
-x11_task_id_for_window(Window window)
-{
-    int slot = -1;
-
-    if(window == None)
-        return 0;
-    for(int i = 0; i < x11_task_count; i++)
-        if(x11_tasks[i].window == window)
-            return x11_tasks[i].id;
-    if(x11_task_count < RILL_X11_TASK_MAP_MAX)
-        slot = x11_task_count++;
-    else
-        slot = window % RILL_X11_TASK_MAP_MAX;
-    x11_tasks[slot].window = window;
-    x11_tasks[slot].id = x11_next_task_id++;
-    return x11_tasks[slot].id;
-}
-
-static Window
-x11_window_for_task_id(int task_id)
-{
-    for(int i = 0; i < x11_task_count; i++)
-        if(x11_tasks[i].id == task_id)
-            return x11_tasks[i].window;
-    return None;
-}
-
-static int
-x11_window_title(Display *display, Window window, char *out, int out_size)
-{
-    Atom utf8;
-    Atom net_name;
-    Atom actual_type = None;
-    int actual_format = 0;
-    unsigned long nitems = 0;
-    unsigned long after = 0;
-    unsigned char *data = NULL;
-    char *name = NULL;
-
-    if(out == NULL || out_size <= 0)
-        return 0;
-    out[0] = '\0';
-    if(display == NULL || window == None)
-        return 0;
-
-    utf8 = x11_atom(display, "UTF8_STRING");
-    net_name = x11_atom(display, "_NET_WM_NAME");
-    if(net_name != None &&
-       XGetWindowProperty(display, window, net_name, 0, 1024, False, utf8,
-                          &actual_type, &actual_format, &nitems, &after,
-                          &data) == Success &&
-       data != NULL) {
-        if(actual_format == 8 && nitems > 0) {
-            int len = nitems < (unsigned long)(out_size - 1) ?
-                      (int)nitems : out_size - 1;
-            memcpy(out, data, (size_t)len);
-            out[len] = '\0';
-        }
-        XFree(data);
-        if(out[0] != '\0')
-            return 1;
-    }
-
-    if(XFetchName(display, window, &name) != 0 && name != NULL) {
-        snprintf(out, (size_t)out_size, "%s", name);
-        XFree(name);
-        return out[0] != '\0';
-    }
-    return 0;
-}
-
-static int
-x11_window_has_type(Display *display, Window window, Atom wanted)
-{
-    Atom net_type;
-    Atom actual_type = None;
-    int actual_format = 0;
-    unsigned long nitems = 0;
-    unsigned long after = 0;
-    unsigned char *data = NULL;
-    int found = 0;
-
-    if(display == NULL || window == None || wanted == None)
-        return 0;
-    net_type = x11_atom(display, "_NET_WM_WINDOW_TYPE");
-    if(net_type == None)
-        return 0;
-    if(XGetWindowProperty(display, window, net_type, 0, 32, False, XA_ATOM,
-                          &actual_type, &actual_format, &nitems, &after,
-                          &data) != Success ||
-       data == NULL)
-        return 0;
-    if(actual_type == XA_ATOM && actual_format == 32) {
-        Atom *types = (Atom *)data;
-
-        for(unsigned long i = 0; i < nitems; i++) {
-            if(types[i] == wanted) {
-                found = 1;
-                break;
-            }
-        }
-    }
-    XFree(data);
-    return found;
-}
-
-static int
-x11_is_task_window(Display *display, Window window, char *title, int title_size)
-{
-    XWindowAttributes attrs;
-    Atom dock;
-    Atom desktop;
-
-    if(display == NULL || window == None)
-        return 0;
-    if(!XGetWindowAttributes(display, window, &attrs))
-        return 0;
-    if(attrs.override_redirect || attrs.map_state != IsViewable)
-        return 0;
-    dock = x11_atom(display, "_NET_WM_WINDOW_TYPE_DOCK");
-    desktop = x11_atom(display, "_NET_WM_WINDOW_TYPE_DESKTOP");
-    if(x11_window_has_type(display, window, dock) ||
-       x11_window_has_type(display, window, desktop))
-        return 0;
-    if(!x11_window_title(display, window, title, title_size))
-        return 0;
-    if(strcmp(title, "Rill") == 0)
-        return 0;
-    return 1;
-}
-
-static Window
-x11_active_window(Display *display)
-{
-    Atom active_atom;
-    Atom actual_type = None;
-    int actual_format = 0;
-    unsigned long nitems = 0;
-    unsigned long after = 0;
-    unsigned char *data = NULL;
-    Window active = None;
-
-    if(display == NULL)
-        return None;
-    active_atom = x11_atom(display, "_NET_ACTIVE_WINDOW");
-    if(active_atom == None)
-        return None;
-    if(XGetWindowProperty(display, DefaultRootWindow(display), active_atom, 0, 1,
-                          False, XA_WINDOW, &actual_type, &actual_format,
-                          &nitems, &after, &data) == Success &&
-       data != NULL) {
-        if(actual_type == XA_WINDOW && actual_format == 32 && nitems >= 1)
-            active = ((Window *)data)[0];
-        XFree(data);
-    }
-    return active;
-}
-
-static int
-x11_add_task(Display *display, Window window, Window active,
-             RillTask *out, int cap, int *count)
-{
-    char title[128];
-
-    if(out == NULL || count == NULL || *count >= cap)
-        return 0;
-    if(!x11_is_task_window(display, window, title, sizeof(title)))
-        return 0;
-    out[*count].id = x11_task_id_for_window(window);
-    snprintf(out[*count].title, sizeof(out[*count].title), "%s", title);
-    out[*count].focused = window == active;
-    out[*count].urgent = 0;
-    (*count)++;
-    return 1;
-}
 
 static void
 lookup_icon_path(const char *name, char *out, int out_size)
@@ -320,58 +99,9 @@ linux_list_launchers(RillLauncher *out, int cap)
 static int
 linux_list_tasks(RillTask *out, int cap)
 {
-    Display *display;
-    Window root;
-    Window active;
-    Atom client_list;
-    Atom actual_type = None;
-    int actual_format = 0;
-    unsigned long nitems = 0;
-    unsigned long after = 0;
-    unsigned char *data = NULL;
-    int count = 0;
-
-    if(out == NULL || cap <= 0)
-        return 0;
-
-    display = linux_x11_display();
-    if(display == NULL)
-        return 0;
-    root = DefaultRootWindow(display);
-    active = x11_active_window(display);
-    client_list = x11_atom(display, "_NET_CLIENT_LIST");
-    if(client_list != None &&
-       XGetWindowProperty(display, root, client_list, 0, 1024, False, XA_WINDOW,
-                          &actual_type, &actual_format, &nitems, &after,
-                          &data) == Success &&
-       data != NULL) {
-        if(actual_type == XA_WINDOW && actual_format == 32) {
-            Window *windows = (Window *)data;
-
-            for(unsigned long i = 0; i < nitems && count < cap; i++)
-                x11_add_task(display, windows[i], active, out, cap, &count);
-        }
-        XFree(data);
-        XFlush(display);
-        return count;
-    }
-
-    {
-        Window root_return = None;
-        Window parent_return = None;
-        Window *children = NULL;
-        unsigned int child_count = 0;
-
-        if(XQueryTree(display, root, &root_return, &parent_return, &children,
-                      &child_count) != 0) {
-            for(unsigned int i = 0; i < child_count && count < cap; i++)
-                x11_add_task(display, children[i], active, out, cap, &count);
-        }
-        if(children != NULL)
-            XFree(children);
-    }
-    XFlush(display);
-    return count;
+    (void)out;
+    (void)cap;
+    return 0;
 }
 
 static int
@@ -381,7 +111,8 @@ linux_launch(const RillLauncher *launcher)
 
     if(launcher == NULL || launcher->command[0] == '\0')
         return 0;
-    if(strncmp(launcher->command, "internal:", 9) == 0)
+    if(strncmp(launcher->command, "internal:", 9) == 0 ||
+       strncmp(launcher->command, "host:", 5) == 0)
         return 0;
 
     pid = fork();
@@ -398,71 +129,15 @@ linux_launch(const RillLauncher *launcher)
 static int
 linux_focus_task(int task_id)
 {
-    Display *display = linux_x11_display();
-    Window window = x11_window_for_task_id(task_id);
-    XEvent event;
-    Atom active;
-
-    if(display == NULL || window == None)
-        return 0;
-    active = x11_atom(display, "_NET_ACTIVE_WINDOW");
-    memset(&event, 0, sizeof(event));
-    event.xclient.type = ClientMessage;
-    event.xclient.window = window;
-    event.xclient.message_type = active;
-    event.xclient.format = 32;
-    event.xclient.data.l[0] = 2;
-    event.xclient.data.l[1] = CurrentTime;
-    XSendEvent(display, DefaultRootWindow(display), False,
-               SubstructureRedirectMask | SubstructureNotifyMask, &event);
-    XMapRaised(display, window);
-    XSetInputFocus(display, window, RevertToPointerRoot, CurrentTime);
-    XFlush(display);
-    return 1;
+    (void)task_id;
+    return 0;
 }
 
 static int
 linux_close_task(int task_id)
 {
-    Display *display = linux_x11_display();
-    Window window = x11_window_for_task_id(task_id);
-    Atom protocols;
-    Atom delete_window;
-    Atom *supported = NULL;
-    int supported_count = 0;
-    int can_delete = 0;
-
-    if(display == NULL || window == None)
-        return 0;
-    protocols = x11_atom(display, "WM_PROTOCOLS");
-    delete_window = x11_atom(display, "WM_DELETE_WINDOW");
-    if(protocols != None && delete_window != None &&
-       XGetWMProtocols(display, window, &supported, &supported_count) != 0) {
-        for(int i = 0; i < supported_count; i++) {
-            if(supported[i] == delete_window) {
-                can_delete = 1;
-                break;
-            }
-        }
-    }
-    if(supported != NULL)
-        XFree(supported);
-    if(can_delete) {
-        XEvent event;
-
-        memset(&event, 0, sizeof(event));
-        event.xclient.type = ClientMessage;
-        event.xclient.window = window;
-        event.xclient.message_type = protocols;
-        event.xclient.format = 32;
-        event.xclient.data.l[0] = delete_window;
-        event.xclient.data.l[1] = CurrentTime;
-        XSendEvent(display, window, False, NoEventMask, &event);
-    } else {
-        XKillClient(display, window);
-    }
-    XFlush(display);
-    return 1;
+    (void)task_id;
+    return 0;
 }
 
 static const char *

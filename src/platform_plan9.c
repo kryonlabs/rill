@@ -3,6 +3,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef KRYON_NATIVE_PLAN9
+#include "kryon_plan9.h"
+#endif
+
 static void
 launcher(RillLauncher *out, const char *id, const char *name,
          const char *command)
@@ -23,13 +27,17 @@ plan9_list_launchers(RillLauncher *out, int cap)
 
     count = 0;
     if(count < cap)
-        launcher(&out[count++], "terminal", "Terminal", "host:kapsule");
+        launcher(&out[count++], "terminal", "Terminal", "rc");
     if(count < cap)
-        launcher(&out[count++], "rc", "rc", "external:rc");
+        launcher(&out[count++], "files", "Files", "explorer /usr/glenda");
     if(count < cap)
-        launcher(&out[count++], "Files", "Files", "host:shelf");
+        launcher(&out[count++], "display", "Display", "q9display");
     if(count < cap)
-        launcher(&out[count++], "settings", "Rill Settings", "internal:settings");
+        launcher(&out[count++], "themes", "Themes", "q9themes");
+    if(count < cap)
+        launcher(&out[count++], "inbe", "Inner Breeze", "inbe");
+    if(count < cap)
+        launcher(&out[count++], "acme", "Acme", "acme");
     return count;
 }
 
@@ -49,8 +57,30 @@ plan9_list_tasks(RillTask *out, int cap)
 static int
 plan9_launch(const RillLauncher *launcher)
 {
+#ifdef KRYON_NATIVE_PLAN9
+    int fd;
+
+    if(launcher == NULL || launcher->command[0] == '\0')
+        return 0;
+    fd = open("/dev/wctl", OWRITE);
+    if(fd >= 0) {
+        fprint(fd, "new %s", launcher->command);
+        close(fd);
+        return 1;
+    }
+    switch(rfork(RFPROC|RFFDG|RFENVG|RFNOTEG)) {
+    case -1:
+        return 0;
+    case 0:
+        execl("/bin/rc", "rc", "-c", launcher->command, nil);
+        exits("exec");
+    default:
+        return 1;
+    }
+#else
     (void)launcher;
     return 0;
+#endif
 }
 
 static int

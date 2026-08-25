@@ -19,7 +19,7 @@
 enum {
     RILL_WIDTH = 1120,
     RILL_HEIGHT = 720,
-    PANEL_H = 32,
+    PANEL_H = 26,
     RILL_HOST_CACHE_MAX = 8,
     RILL_ICON_CACHE_MAX = 32,
     RILL_TEST_LOWER_TEXT_X = 274,
@@ -94,7 +94,26 @@ opaque_color(Color color)
 static Color
 panel_color(void)
 {
-    return opaque_color(mix_color(GetThemeSurface(), GetThemeBackground(), 0.10f));
+    return (Color){30, 33, 46, 255};
+}
+
+static Color
+panel_item_color(void)
+{
+    return (Color){38, 42, 58, 255};
+}
+
+static Color
+panel_item_hover_color(void)
+{
+    return (Color){48, 54, 74, 255};
+}
+
+static Color
+panel_active_color(void)
+{
+    return opaque_color(mix_color(GetThemeButtonHover(),
+                                  (Color){194, 0, 194, 255}, 0.42f));
 }
 
 static int
@@ -567,20 +586,42 @@ draw_desktop(RillShellState *shell, const RillPlatformServices *platform,
 static void
 draw_panel_separator(int x)
 {
-    DrawRectangle(x, 6, 1, PANEL_H - 12, Fade(GetThemeText(), 0.26f));
-    DrawRectangle(x + 1, 6, 1, PANEL_H - 12, Fade(WHITE, 0.16f));
+    DrawRectangle(x, 4, 1, PANEL_H - 8, Fade(BLACK, 0.45f));
+    DrawRectangle(x + 1, 4, 1, PANEL_H - 8, Fade(WHITE, 0.13f));
+}
+
+static void
+draw_applications_mark(int x, int y)
+{
+    Color blue = {55, 186, 236, 255};
+    Color white = {238, 246, 255, 255};
+
+    DrawCircle(x + 7, y + 7, 7, blue);
+    DrawCircle(x + 5, y + 5, 2, white);
+    DrawLine(x + 5, y + 9, x + 11, y + 4, white);
+    DrawLine(x + 7, y + 11, x + 12, y + 8, white);
 }
 
 static int
 panel_menu_button(RillShellState *shell, int menu_id, int x, int w,
                   const char *label, int id)
 {
-    ButtonStyle style;
+    Rectangle bounds = {x, 2, w, PANEL_H - 4};
+    int hover;
 
-    style = shell->menu_open == menu_id ? ButtonStylePrimary :
-                                          ButtonStyleSecondary;
-    if(Button((ButtonProps){(Rectangle){x, 3, w, 26}, label, style, Text12, id,
-                            0})) {
+    (void)id;
+    hover = CheckCollisionPointRec(GetMousePosition(), bounds);
+    if(shell->menu_open == menu_id || hover)
+        DrawRectangleRec(bounds, shell->menu_open == menu_id ?
+                         panel_active_color() : panel_item_hover_color());
+    if(menu_id == 1)
+        draw_applications_mark(x + 3, 6);
+    else
+        draw_launcher_icon(NULL, NULL, (Rectangle){x + 5, 6, 14, 14},
+                           menu_id == 2 ? GetThemeLink() : GetThemeIcon());
+    draw_text_fit(label, x + (menu_id == 1 ? 22 : 24), 7,
+                  w - (menu_id == 1 ? 26 : 28), Text12, GetThemeText());
+    if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
         shell->menu_open = shell->menu_open == menu_id ? 0 : menu_id;
         return 1;
     }
@@ -592,11 +633,15 @@ draw_quick_launcher(RillShellState *shell, const RillPlatformServices *platform,
                     RillVisualState *visuals, int x, const char *launcher_id,
                     int id)
 {
-    Rectangle bounds = {x, 4, 24, 24};
-    Rectangle icon = {x + 3, 7, 18, 18};
+    Rectangle bounds = {x, 2, 22, PANEL_H - 4};
+    Rectangle icon = {x + 3, 5, 16, 16};
     const RillLauncher *launcher = launcher_by_id(shell, launcher_id);
+    int hover = CheckCollisionPointRec(GetMousePosition(), bounds);
 
-    if(icon_hit_button(bounds, id))
+    (void)id;
+    if(hover)
+        DrawRectangleRec(bounds, panel_item_hover_color());
+    if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
         open_launcher_id(shell, platform, launcher_id);
     draw_launcher_icon(visuals, launcher, icon, GetThemeText());
 }
@@ -604,23 +649,37 @@ draw_quick_launcher(RillShellState *shell, const RillPlatformServices *platform,
 static void
 draw_tray_indicator(int x, int kind, Color color)
 {
-    Rectangle r = {x, 7, 22, 18};
-
-    DrawRectangleRounded(r, 0.08f, 6, Fade(GetThemeButton(), 0.42f));
     if(kind == 0) {
-        DrawLine(x + 5, 16, x + 10, 11, color);
-        DrawLine(x + 10, 11, x + 17, 11, color);
-        DrawLine(x + 6, 17, x + 11, 13, color);
-        DrawLine(x + 11, 13, x + 16, 13, color);
+        DrawLine(x + 3, 15, x + 8, 10, color);
+        DrawLine(x + 8, 10, x + 15, 10, color);
+        DrawLine(x + 4, 16, x + 9, 12, color);
+        DrawLine(x + 9, 12, x + 14, 12, color);
     } else if(kind == 1) {
-        DrawRectangle(x + 5, 13, 4, 5, color);
-        DrawTriangle((Vector2){x + 9, 13}, (Vector2){x + 15, 9},
-                     (Vector2){x + 15, 21}, color);
-        DrawCircleLines(x + 17, 15, 4, color);
+        DrawRectangle(x + 3, 12, 4, 5, color);
+        DrawTriangle((Vector2){x + 7, 12}, (Vector2){x + 13, 8},
+                     (Vector2){x + 13, 20}, color);
+        DrawCircleLines(x + 15, 14, 4, color);
     } else {
-        DrawCircle(x + 11, 16, 5, color);
-        DrawLine(x + 11, 9, x + 11, 6, color);
+        DrawCircle(x + 10, 14, 5, color);
+        DrawLine(x + 10, 7, x + 10, 4, color);
     }
+}
+
+static void
+draw_workspace_switcher(int x)
+{
+    DrawRectangle(x, 4, 16, 16, panel_active_color());
+    DrawRectangleLines(x, 4, 16, 16, Fade(WHITE, 0.65f));
+    DrawRectangle(x + 18, 4, 16, 16, (Color){22, 25, 34, 255});
+    DrawRectangleLines(x + 18, 4, 16, 16, Fade(WHITE, 0.55f));
+}
+
+static void
+draw_panel_resource(int x, const char *label, Color color)
+{
+    DrawText(label, x, 7, 11, Fade(GetThemeText(), 0.88f));
+    DrawRectangle(x + 26, 18, 28, 3, Fade(BLACK, 0.45f));
+    DrawRectangle(x + 26, 18, 16, 3, color);
 }
 
 static void
@@ -636,52 +695,57 @@ draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
     struct tm *local;
     int x;
     int right;
+    int tray_x;
+    int screen_w;
     int i;
 
-    DrawRectangle(0, 0, GetScreenWidth(), PANEL_H, panel_color());
-    DrawRectangle(0, PANEL_H - 1, GetScreenWidth(), 1,
-                  Fade(GetThemeText(), 0.24f));
+    screen_w = GetScreenWidth();
+    DrawRectangle(0, 0, screen_w, PANEL_H, panel_color());
+    DrawRectangle(0, PANEL_H - 1, screen_w, 1, Fade(BLACK, 0.72f));
+    DrawRectangle(0, 0, screen_w, 1, Fade(WHITE, 0.10f));
 
-    x = 4;
-    panel_menu_button(shell, 1, x, 108, "Applications", 100);
-    x += 112;
-    panel_menu_button(shell, 2, x, 62, "Places", 101);
-    x += 66;
-    panel_menu_button(shell, 3, x, 66, "System", 102);
-    x += 72;
+    x = 0;
+    panel_menu_button(shell, 1, x, 104, "Applications", 100);
+    x += 106;
     draw_panel_separator(x);
-    x += 8;
+    x += 6;
     draw_quick_launcher(shell, platform, visuals, x, "terminal", 130);
-    x += 28;
+    x += 24;
     draw_quick_launcher(shell, platform, visuals, x, "files", 131);
-    x += 32;
+    x += 24;
+    if(screen_w >= 620) {
+        panel_menu_button(shell, 2, x, 58, "Places", 101);
+        x += 60;
+        panel_menu_button(shell, 3, x, 58, "System", 102);
+        x += 60;
+    }
     draw_panel_separator(x);
-    x += 8;
+    x += 6;
 
-    right = GetScreenWidth() - 176;
-    for(i = 0; i < shell->task_count && x < right - 112; i++) {
+    right = screen_w - (screen_w >= 760 ? 288 : 72);
+    for(i = 0; i < shell->task_count && x < right - 120; i++) {
         Rectangle task_rect;
         int hover;
         int width;
 
-        width = 148;
-        task_rect = (Rectangle){x, 3, width, 26};
+        width = shell->tasks[i].focused ? 190 : 154;
+        task_rect = (Rectangle){x, 1, width, PANEL_H - 2};
         hover = CheckCollisionPointRec(GetMousePosition(), task_rect);
-        DrawRectangleRounded(task_rect, 0.06f, 6,
-                             shell->tasks[i].focused ?
-                                 GetThemeButtonHover() :
-                                 Fade(GetThemeButton(), hover ? 0.72f : 0.46f));
-        DrawRectangleRoundedLinesEx(task_rect, 0.06f, 6, 1.0f,
-                                    Fade(GetThemeText(), 0.22f));
+        DrawRectangleRec(task_rect, shell->tasks[i].focused ?
+                         panel_active_color() :
+                         (hover ? panel_item_hover_color() :
+                          panel_item_color()));
+        DrawRectangleLinesEx(task_rect, 1.0f, shell->tasks[i].focused ?
+                             Fade(WHITE, 0.55f) : Fade(BLACK, 0.40f));
         draw_task_icon(visuals, shell, &shell->tasks[i],
-                       (Rectangle){x + 5, 7, 18, 18});
-        draw_text_fit(shell->tasks[i].title, x + 28, 9, width - 34, Text12,
+                       (Rectangle){x + 5, 5, 16, 16});
+        draw_text_fit(shell->tasks[i].title, x + 27, 7, width - 32, Text12,
                       GetThemeText());
         if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             RillShellSelectTask(shell, i);
             RillShellFocusSelectedTask(shell, platform);
         }
-        x += width + 6;
+        x += width + 4;
     }
 
     now = time(NULL);
@@ -691,11 +755,32 @@ draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
     else
         snprintf(clock_text, sizeof(clock_text), "--:--");
 
-    draw_panel_separator(right - 8);
-    draw_tray_indicator(right, 0, GetThemeLink());
-    draw_tray_indicator(right + 28, 1, GetThemeIcon());
-    draw_tray_indicator(right + 56, 2, GetThemeButtonHover());
-    draw_text_fit(clock_text, right + 88, 8, 70, Text12, GetThemeText());
+    if(screen_w < 760) {
+        if(screen_w > 70)
+            draw_text_fit(clock_text, screen_w - 58, 7, 54, Text12,
+                          GetThemeText());
+        return;
+    }
+
+    tray_x = screen_w - 286;
+    draw_panel_separator(tray_x - 6);
+    draw_workspace_switcher(tray_x);
+    tray_x += 42;
+    draw_panel_separator(tray_x);
+    tray_x += 8;
+    draw_tray_indicator(tray_x, 0, GetThemeLink());
+    tray_x += 24;
+    Text("EN", tray_x, 7, Text12, (Color){92, 185, 255, 255});
+    tray_x += 30;
+    draw_tray_indicator(tray_x, 1, GetThemeIcon());
+    tray_x += 24;
+    draw_tray_indicator(tray_x, 2, GetThemeButtonHover());
+    tray_x += 22;
+    draw_text_fit(clock_text, tray_x, 7, 54, Text12, GetThemeText());
+    tray_x += 58;
+    draw_panel_resource(tray_x, "cpu", (Color){104, 190, 255, 255});
+    tray_x += 60;
+    draw_panel_resource(tray_x, "mem", (Color){86, 218, 154, 255});
 }
 
 static void

@@ -10,8 +10,6 @@ LDFLAGS := -rdynamic
 LDLIBS =
 GTK_PKG_CFLAGS := $(shell pkg-config --cflags gtk+-3.0 2>/dev/null)
 GTK_PKG_LIBS := $(shell pkg-config --libs gtk+-3.0 2>/dev/null)
-X11_PKG_CFLAGS := $(shell pkg-config --cflags x11 2>/dev/null)
-X11_PKG_LIBS := $(shell pkg-config --libs x11 2>/dev/null)
 
 UNAME_S := $(shell uname -s 2>/dev/null)
 UNAME_M := $(shell uname -m 2>/dev/null)
@@ -45,14 +43,14 @@ CURL_CODEC_LDLIBS := $(strip \
 LDLIBS += -Wl,--whole-archive $(KRYON_LIB) -Wl,--no-whole-archive \
 	$(BOX2D_A) $(LIBOQS_A) $(CURL_A) -lssl -lcrypto \
 	$(CMARK_EXT_A) $(CMARK_A) $(CURL_CODEC_LDLIBS) -lz
-CPPFLAGS += $(GTK_PKG_CFLAGS) $(X11_PKG_CFLAGS)
+CPPFLAGS += $(GTK_PKG_CFLAGS)
 
 ifeq ($(KRYON_BACKEND),libdraw)
   CPPFLAGS += -DKRYON_BACKEND_LIBDRAW -I$(PLAN9PORT_DIR)/include
   LDLIBS += -L$(PLAN9PORT_DIR)/lib -ldraw -lmemdraw -lmux -lthread -l9
 endif
 
-LDLIBS += $(GTK_PKG_LIBS) $(X11_PKG_LIBS) $(PLATFORM_LDLIBS) -lpthread -lm
+LDLIBS += $(GTK_PKG_LIBS) $(PLATFORM_LDLIBS) -lpthread -lm
 
 BUILD_DIR := build/$(PLATFORM)-$(ARCH)
 BIN := $(BUILD_DIR)/$(APP_NAME)

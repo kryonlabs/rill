@@ -11,8 +11,9 @@ adapters.
 
 - Shared shell state model.
 - Platform service interface for launcher/task/session operations.
-- Linux adapter using plan9port/libdraw for the UI and process launching.
-- Stub Plan 9 adapter shape for the native port.
+- Linux adapter using plan9port/libdraw for the UI and process launching,
+  without direct X11 task-management calls.
+- Plan 9 adapter using native launcher commands and `/dev/wctl`.
 - XFCE-style top panel with Applications, Places, System, quick launchers,
   task buttons, tray indicators, and clock.
 - Desktop icons for Home, Terminal, and Settings.
@@ -47,6 +48,6 @@ Run Rill under plan9port/devdraw:
 make run
 ```
 
-Native Plan 9 is intended to use Kryon's native `mkfile` plus Rill's Plan 9
-adapter. The source boundary is present; the full native Plan 9 app build is a
-follow-up once the shared shell behavior is stable.
+Native Plan 9 uses Kryon's native `mkfile` plus Rill's Plan 9 adapter. In
+Taiji, `/sys/src/cmd/rill` installs the system desktop command and keeps the
+rio-compatible `/dev` and `/mnt/wsys` contract for native graphical clients.
