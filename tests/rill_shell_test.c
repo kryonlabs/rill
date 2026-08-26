@@ -12,13 +12,21 @@ test_launchers(RillLauncher *out, int cap)
     if(cap < 2)
         return 0;
     snprintf(out[0].id, sizeof(out[0].id), "%s", "terminal");
-    snprintf(out[0].name, sizeof(out[0].name), "%s", "ktrem");
+    snprintf(out[0].name, sizeof(out[0].name), "%s", "Terminal Emulator");
+    snprintf(out[0].description, sizeof(out[0].description), "%s",
+             "Use the command line");
+    snprintf(out[0].category, sizeof(out[0].category), "%s", "Accessories");
     snprintf(out[0].command, sizeof(out[0].command), "%s",
              "host:ktrem");
+    out[0].favorite = 1;
     snprintf(out[1].id, sizeof(out[1].id), "%s", "settings");
     snprintf(out[1].name, sizeof(out[1].name), "%s", "Settings");
+    snprintf(out[1].description, sizeof(out[1].description), "%s",
+             "Configure the desktop");
+    snprintf(out[1].category, sizeof(out[1].category), "%s", "Settings");
     snprintf(out[1].command, sizeof(out[1].command), "%s",
              "internal:settings");
+    out[1].favorite = 1;
     return 2;
 }
 
@@ -96,6 +104,8 @@ main(void)
           &failures);
     check("internal app count", shell.app_count == 1, &failures);
     check("external launch call count", launches == 0, &failures);
+    check("recent internal launch recorded", shell.recent_launcher_count == 1 &&
+          strcmp(shell.recent_launcher_ids[0], "settings") == 0, &failures);
     RillShellRefresh(&shell, &services);
     check("task count after app launch", shell.task_count == 2, &failures);
     check("select task", RillShellSelectTask(&shell, 0), &failures);
@@ -111,6 +121,8 @@ main(void)
           &failures);
     check("ktrem opened in shell", shell.app_count == 2, &failures);
     check("external launch call count unchanged", launches == 0, &failures);
+    check("recent host launch moved first", shell.recent_launcher_count == 2 &&
+          strcmp(shell.recent_launcher_ids[0], "terminal") == 0, &failures);
 
     return failures == 0 ? 0 : 1;
 }

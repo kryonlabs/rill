@@ -31,6 +31,8 @@ typedef struct RillAppWindow {
 
 #define RILL_MAX_APPS 16
 #define RILL_MAX_EXTERNAL_TASKS 16
+#define RILL_MAX_RECENT_LAUNCHERS 8
+#define RILL_APP_MENU_SEARCH_MAX 80
 
 typedef struct RillShellState {
     RillLauncher launchers[RILL_MAX_LAUNCHERS];
@@ -53,6 +55,11 @@ typedef struct RillShellState {
     int drag_offset_x;
     int drag_offset_y;
     int menu_open;
+    int app_menu_category;
+    int app_menu_search_active;
+    char app_menu_search[RILL_APP_MENU_SEARCH_MAX];
+    char recent_launcher_ids[RILL_MAX_RECENT_LAUNCHERS][64];
+    int recent_launcher_count;
     int settings_open;
     char status[160];
 } RillShellState;
@@ -66,6 +73,8 @@ int RillShellLaunchSelected(RillShellState *shell,
 int RillShellLaunchSelectedInternal(RillShellState *shell);
 int RillShellOpenLauncher(RillShellState *shell,
                           const RillLauncher *launcher);
+void RillShellRecordRecent(RillShellState *shell,
+                           const RillLauncher *launcher);
 int RillShellFocusApp(RillShellState *shell, int app_id);
 int RillShellCloseApp(RillShellState *shell, int app_id);
 int RillShellSelectTask(RillShellState *shell, int index);

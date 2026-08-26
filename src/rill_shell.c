@@ -172,14 +172,51 @@ RillShellOpenLauncher(RillShellState *shell, const RillLauncher *launcher)
     return 1;
 }
 
+void
+RillShellRecordRecent(RillShellState *shell, const RillLauncher *launcher)
+{
+    int existing;
+
+    if(shell == NULL || launcher == NULL || launcher->id[0] == '\0')
+        return;
+    existing = -1;
+    for(int i = 0; i < shell->recent_launcher_count; i++) {
+        if(strcmp(shell->recent_launcher_ids[i], launcher->id) == 0) {
+            existing = i;
+            break;
+        }
+    }
+    if(existing > 0)
+        memmove(&shell->recent_launcher_ids[1],
+                &shell->recent_launcher_ids[0],
+                (size_t)existing * sizeof(shell->recent_launcher_ids[0]));
+    else if(existing < 0) {
+        if(shell->recent_launcher_count < RILL_MAX_RECENT_LAUNCHERS)
+            shell->recent_launcher_count++;
+        if(shell->recent_launcher_count > 1)
+            memmove(&shell->recent_launcher_ids[1],
+                    &shell->recent_launcher_ids[0],
+                    (size_t)(shell->recent_launcher_count - 1) *
+                        sizeof(shell->recent_launcher_ids[0]));
+    }
+    snprintf(shell->recent_launcher_ids[0],
+             sizeof(shell->recent_launcher_ids[0]), "%s", launcher->id);
+}
+
 int
 RillShellLaunchSelectedInternal(RillShellState *shell)
 {
+    RillLauncher *launcher;
+    int opened;
+
     if(shell == NULL || shell->selected_launcher < 0 ||
        shell->selected_launcher >= shell->launcher_count)
         return 0;
-    return RillShellOpenLauncher(shell,
-                                 &shell->launchers[shell->selected_launcher]);
+    launcher = &shell->launchers[shell->selected_launcher];
+    opened = RillShellOpenLauncher(shell, launcher);
+    if(opened)
+        RillShellRecordRecent(shell, launcher);
+    return opened;
 }
 
 int
@@ -259,12 +296,17 @@ RillShellLaunchSelected(RillShellState *shell,
 
     launcher = &shell->launchers[shell->selected_launcher];
     if(strncmp(launcher->command, "internal:", 9) == 0 ||
-       strncmp(launcher->command, "host:", 5) == 0)
-        return RillShellOpenLauncher(shell, launcher);
+       strncmp(launcher->command, "host:", 5) == 0) {
+        int opened = RillShellOpenLauncher(shell, launcher);
+        if(opened)
+            RillShellRecordRecent(shell, launcher);
+        return opened;
+    }
 
     if(platform->launch(launcher)) {
         snprintf(shell->status, sizeof(shell->status), "Launched %s",
                  launcher->name);
+        RillShellRecordRecent(shell, launcher);
         return 1;
     }
 

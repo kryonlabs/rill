@@ -181,12 +181,17 @@ lookup_icon_path(const char *name, char *out, int out_size)
 
 static void
 launcher(RillLauncher *out, const char *id, const char *name,
-         const char *command, const char *icon)
+         const char *description, const char *category, const char *command,
+         const char *icon, int favorite)
 {
+    memset(out, 0, sizeof(*out));
     snprintf(out->id, sizeof(out->id), "%s", id);
     snprintf(out->name, sizeof(out->name), "%s", name);
+    snprintf(out->description, sizeof(out->description), "%s", description);
+    snprintf(out->category, sizeof(out->category), "%s", category);
     snprintf(out->command, sizeof(out->command), "%s", command);
     lookup_icon_path(icon, out->icon_path, (int)sizeof(out->icon_path));
+    out->favorite = favorite;
 }
 
 static int
@@ -199,25 +204,31 @@ linux_list_launchers(RillLauncher *out, int cap)
 
     count = 0;
     if(count < cap)
-        launcher(&out[count++], "terminal", "ktrem", "host:ktrem",
-                 "utilities-terminal");
+        launcher(&out[count++], "terminal", "Terminal Emulator",
+                 "Use the command line", "Accessories", "host:ktrem",
+                 "utilities-terminal", 1);
     if(count < cap)
-        launcher(&out[count++], "files", "Files", "host:shelf",
-                 "system-file-manager");
+        launcher(&out[count++], "files", "File Manager",
+                 "Browse the file system", "Accessories", "host:shelf",
+                 "system-file-manager", 1);
     if(count < cap)
-        launcher(&out[count++], "settings", "Settings", "internal:settings",
-                 "preferences-system");
+        launcher(&out[count++], "settings", "Settings",
+                 "Configure the desktop", "Settings", "internal:settings",
+                 "preferences-system", 1);
     if(count < cap)
         launcher(&out[count++], "workbook", "Workbook",
+                 "Edit spreadsheets", "Office",
                  "/mnt/storage/Projects/workbook/workbook",
-                 "x-office-spreadsheet");
+                 "x-office-spreadsheet", 0);
     if(count < cap)
         launcher(&out[count++], "inbe", "Inner Breeze",
+                 "Breathe and focus", "Other",
                  "/mnt/storage/Projects/inbe/build/bin/linux/inbe-linux-x86_64",
-                 "applications-wellness");
+                 "applications-wellness", 0);
     if(count < cap)
-        launcher(&out[count++], "about", "About Rill", "internal:about",
-                 "help-about");
+        launcher(&out[count++], "about", "About Rill",
+                 "Desktop information", "System", "internal:about",
+                 "help-about", 0);
     return count;
 }
 

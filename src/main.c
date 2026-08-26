@@ -104,6 +104,26 @@ typedef struct RillPanelPlugin {
     int variant;
 } RillPanelPlugin;
 
+typedef struct RillMenuCategory {
+    const char *name;
+    const char *icon_id;
+} RillMenuCategory;
+
+static const RillMenuCategory rill_menu_categories[] = {
+    {"Favorites", "favorite"},
+    {"Recently Used", "recent"},
+    {"All Applications", "all"},
+    {"Accessories", "accessories"},
+    {"Development", "development"},
+    {"Education", "education"},
+    {"Games", "games"},
+    {"Graphics", "graphics"},
+    {"Internet", "internet"},
+    {"Multimedia", "multimedia"},
+    {"Office", "office"},
+    {"Other", "other"}
+};
+
 static Color
 mix_color(Color a, Color b, float t)
 {
@@ -590,6 +610,57 @@ draw_symbol_icon(Rectangle r, const char *id, Color color)
         DrawCircleLines((int)cx, (int)cy, r.width * 0.32f, color);
         DrawCircle((int)cx, (int)r.y + 8, 1.6f, color);
         DrawLine((int)cx, (int)cy - 1, (int)cx, (int)cy + 7, color);
+    } else if(id != NULL && strcmp(id, "favorite") == 0) {
+        Vector2 p[10];
+        for(int i = 0; i < 10; i++) {
+            float radius = (i % 2) == 0 ? r.width * 0.36f : r.width * 0.16f;
+            float angle = -1.570796f + (float)i * 0.628319f;
+            p[i] = (Vector2){cx + cosf(angle) * radius,
+                              cy + sinf(angle) * radius};
+        }
+        for(int i = 0; i < 10; i++)
+            DrawLine((int)p[i].x, (int)p[i].y, (int)p[(i + 1) % 10].x,
+                     (int)p[(i + 1) % 10].y, color);
+    } else if(id != NULL && strcmp(id, "recent") == 0) {
+        DrawCircleLines((int)cx, (int)cy, r.width * 0.32f, color);
+        DrawLine((int)cx, (int)cy, (int)cx, (int)cy - 7, color);
+        DrawLine((int)cx, (int)cy, (int)cx + 6, (int)cy + 4, color);
+    } else if(id != NULL && strcmp(id, "all") == 0) {
+        DrawRectangleLines((int)r.x + 4, (int)r.y + 4, 6, 6, color);
+        DrawRectangleLines((int)r.x + 14, (int)r.y + 4, 6, 6, color);
+        DrawRectangleLines((int)r.x + 4, (int)r.y + 14, 6, 6, color);
+        DrawRectangleLines((int)r.x + 14, (int)r.y + 14, 6, 6, color);
+    } else if(id != NULL && strcmp(id, "internet") == 0) {
+        DrawCircleLines((int)cx, (int)cy, r.width * 0.34f, color);
+        DrawLine((int)(cx - r.width * 0.28f), (int)cy,
+                 (int)(cx + r.width * 0.28f), (int)cy, color);
+        DrawLine((int)cx, (int)(cy - r.width * 0.32f),
+                 (int)cx, (int)(cy + r.width * 0.32f), color);
+    } else if(id != NULL && strcmp(id, "office") == 0) {
+        DrawRectangleLines((int)r.x + 5, (int)r.y + 3,
+                           (int)r.width - 10, (int)r.height - 6, color);
+        DrawLine((int)r.x + 9, (int)r.y + 9, (int)r.x + r.width - 8,
+                 (int)r.y + 9, color);
+        DrawLine((int)r.x + 9, (int)r.y + 15, (int)r.x + r.width - 8,
+                 (int)r.y + 15, color);
+    } else if(id != NULL && strcmp(id, "graphics") == 0) {
+        DrawCircle((int)cx - 4, (int)cy - 4, 3, color);
+        DrawCircle((int)cx + 4, (int)cy - 3, 3, color);
+        DrawCircle((int)cx, (int)cy + 4, 3, color);
+    } else if(id != NULL && strcmp(id, "multimedia") == 0) {
+        DrawRectangleLines((int)r.x + 5, (int)r.y + 5,
+                           (int)r.width - 10, (int)r.height - 10, color);
+        DrawTriangle((Vector2){cx - 3, cy - 6}, (Vector2){cx - 3, cy + 6},
+                     (Vector2){cx + 7, cy}, color);
+    } else if(id != NULL && strcmp(id, "development") == 0) {
+        DrawLine((int)r.x + 5, (int)cy, (int)r.x + 10, (int)cy - 5, color);
+        DrawLine((int)r.x + 5, (int)cy, (int)r.x + 10, (int)cy + 5, color);
+        DrawLine((int)r.x + r.width - 5, (int)cy,
+                 (int)r.x + r.width - 10, (int)cy - 5, color);
+        DrawLine((int)r.x + r.width - 5, (int)cy,
+                 (int)r.x + r.width - 10, (int)cy + 5, color);
+        DrawLine((int)cx + 2, (int)r.y + 5, (int)cx - 2,
+                 (int)r.y + r.height - 5, color);
     } else {
         DrawCircleLines((int)cx, (int)cy, r.width * 0.32f, color);
         DrawCircle((int)cx, (int)cy, r.width * 0.07f, color);
@@ -1028,6 +1099,221 @@ draw_menu_row(Rectangle row, const char *label, const char *icon_id)
 }
 
 static int
+ascii_fold(int c)
+{
+    if(c >= 'A' && c <= 'Z')
+        return c - 'A' + 'a';
+    return c;
+}
+
+static int
+ascii_contains_fold(const char *haystack, const char *needle)
+{
+    int h;
+    int n;
+
+    if(needle == NULL || needle[0] == '\0')
+        return 1;
+    if(haystack == NULL)
+        return 0;
+    for(h = 0; haystack[h] != '\0'; h++) {
+        for(n = 0; needle[n] != '\0'; n++) {
+            if(haystack[h + n] == '\0' ||
+               ascii_fold((unsigned char)haystack[h + n]) !=
+               ascii_fold((unsigned char)needle[n]))
+                break;
+        }
+        if(needle[n] == '\0')
+            return 1;
+    }
+    return 0;
+}
+
+static int
+launcher_is_recent(const RillShellState *shell, const RillLauncher *launcher)
+{
+    if(shell == NULL || launcher == NULL)
+        return 0;
+    for(int i = 0; i < shell->recent_launcher_count; i++)
+        if(strcmp(shell->recent_launcher_ids[i], launcher->id) == 0)
+            return 1;
+    return 0;
+}
+
+static int
+launcher_in_app_menu_category(const RillShellState *shell,
+                              const RillLauncher *launcher, int category)
+{
+    if(launcher == NULL)
+        return 0;
+    if(category <= 0)
+        return launcher->favorite != 0;
+    if(category == 1)
+        return launcher_is_recent(shell, launcher);
+    if(category == 2)
+        return 1;
+    if(category >= 0 &&
+       category < (int)(sizeof(rill_menu_categories) /
+                        sizeof(rill_menu_categories[0])))
+        return strcmp(launcher->category,
+                      rill_menu_categories[category].name) == 0;
+    return 0;
+}
+
+static int
+launcher_matches_app_menu(const RillShellState *shell,
+                          const RillLauncher *launcher)
+{
+    if(shell == NULL || launcher == NULL)
+        return 0;
+    if(shell->app_menu_search[0] != '\0')
+        return ascii_contains_fold(launcher->name, shell->app_menu_search) ||
+               ascii_contains_fold(launcher->description,
+                                   shell->app_menu_search) ||
+               ascii_contains_fold(launcher->category, shell->app_menu_search);
+    return launcher_in_app_menu_category(shell, launcher,
+                                         shell->app_menu_category);
+}
+
+static const char *
+rill_user_name(void)
+{
+    const char *user;
+
+    user = getenv("USER");
+    if(user != NULL && user[0] != '\0')
+        return user;
+    user = getenv("user");
+    if(user != NULL && user[0] != '\0')
+        return user;
+    return "glenda";
+}
+
+static void
+update_app_menu_search_input(RillShellState *shell)
+{
+    int c;
+    int len;
+
+    if(shell == NULL || shell->menu_open != 1 || !shell->app_menu_search_active)
+        return;
+    while((c = GetCharPressed()) > 0) {
+        len = (int)strlen(shell->app_menu_search);
+        if(c >= 32 && c < 127 && len < RILL_APP_MENU_SEARCH_MAX - 1) {
+            shell->app_menu_search[len] = (char)c;
+            shell->app_menu_search[len + 1] = '\0';
+        }
+    }
+    if(IsKeyPressed(KEY_BACKSPACE)) {
+        len = (int)strlen(shell->app_menu_search);
+        if(len > 0)
+            shell->app_menu_search[len - 1] = '\0';
+    }
+    if(IsKeyPressed(KEY_ESCAPE)) {
+        shell->app_menu_search[0] = '\0';
+        shell->app_menu_search_active = 0;
+    }
+}
+
+static void
+draw_search_mark(Rectangle r, Color color)
+{
+    float cx = r.x + r.width * 0.42f;
+    float cy = r.y + r.height * 0.42f;
+
+    DrawCircleLines((int)cx, (int)cy, r.width * 0.22f, color);
+    DrawLine((int)(cx + r.width * 0.16f), (int)(cy + r.height * 0.16f),
+             (int)(r.x + r.width - 4), (int)(r.y + r.height - 4), color);
+}
+
+static void
+draw_whisker_header(Rectangle menu, RillShellState *shell)
+{
+    Rectangle user_icon = {menu.x + 12, menu.y + 11, 30, 30};
+    Rectangle search = {menu.x + 10, menu.y + 50, menu.width - 20, 30};
+    int hover;
+
+    DrawCircle((int)(user_icon.x + 15), (int)(user_icon.y + 15), 15,
+               GetThemeButtonHover());
+    DrawCircle((int)(user_icon.x + 15), (int)(user_icon.y + 11), 5,
+               Fade(WHITE, 0.88f));
+    DrawCircle((int)(user_icon.x + 15), (int)(user_icon.y + 26), 10,
+               Fade(WHITE, 0.35f));
+    draw_text_fit(rill_user_name(), (int)menu.x + 50, (int)menu.y + 18,
+                  (int)menu.width - 150, Text16, GetThemeText());
+
+    draw_symbol_icon((Rectangle){menu.x + menu.width - 86, menu.y + 14,
+                                 22, 22}, "settings", GetThemeButtonHover());
+    draw_symbol_icon((Rectangle){menu.x + menu.width - 54, menu.y + 14,
+                                 22, 22}, "power", GetThemeLink());
+    draw_symbol_icon((Rectangle){menu.x + menu.width - 25, menu.y + 14,
+                                 20, 20}, "about", GetThemeIcon());
+
+    hover = CheckCollisionPointRec(GetMousePosition(), search);
+    DrawRectangleRounded(search, 0.04f, 5, Fade(BLACK, 0.20f));
+    DrawRectangleRoundedLinesEx(search, 0.04f, 5, 1.0f,
+                                shell->app_menu_search_active ?
+                                GetThemeButtonHover() :
+                                (hover ? GetThemeLink() :
+                                 Fade(GetThemeText(), 0.38f)));
+    draw_search_mark((Rectangle){search.x + 8, search.y + 7, 16, 16},
+                     GetThemeIcon());
+    if(shell->app_menu_search[0] != '\0')
+        draw_text_fit(shell->app_menu_search, (int)search.x + 30,
+                      (int)search.y + 8, (int)search.width - 38, Text12,
+                      GetThemeText());
+    if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+        shell->app_menu_search_active = 1;
+}
+
+static int
+draw_whisker_category_row(Rectangle row, const RillMenuCategory *category,
+                          int active)
+{
+    int hover = CheckCollisionPointRec(GetMousePosition(), row);
+    Color text = active ? WHITE : Fade(GetThemeText(), 0.82f);
+    Color icon = active ? WHITE : GetThemeButtonHover();
+    int icon_size = (int)row.height - 6;
+    int text_y = (int)(row.y + (row.height - 12) * 0.5f);
+
+    if(icon_size > 20)
+        icon_size = 20;
+    if(icon_size < 12)
+        icon_size = 12;
+
+    if(active)
+        DrawRectangleRounded(row, 0.02f, 4, panel_active_color());
+    else if(hover)
+        DrawRectangleRec(row, panel_item_hover_color());
+    draw_symbol_icon((Rectangle){row.x + 6, row.y + (row.height - icon_size) * 0.5f,
+                                 icon_size, icon_size},
+                     category->icon_id, icon);
+    draw_text_fit(category->name, (int)row.x + 32, text_y,
+                  (int)row.width - 38, Text12, text);
+    return hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+}
+
+static int
+draw_whisker_launcher_row(RillVisualState *visuals,
+                          const RillLauncher *launcher, Rectangle row)
+{
+    int hover = CheckCollisionPointRec(GetMousePosition(), row);
+
+    if(hover)
+        DrawRectangleRounded(row, 0.02f, 4, panel_item_hover_color());
+    draw_launcher_icon(visuals, launcher,
+                       (Rectangle){row.x + 8, row.y + 6, 30, 30},
+                       GetThemeLink());
+    draw_text_fit(launcher->name, (int)row.x + 48, (int)row.y + 7,
+                  (int)row.width - 56, Text14, GetThemeText());
+    draw_text_fit(launcher->description[0] != '\0' ?
+                  launcher->description : launcher->category,
+                  (int)row.x + 48, (int)row.y + 25,
+                  (int)row.width - 56, Text12, GetThemeIcon());
+    return hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+}
+
+static int
 draw_window_close_button(Rectangle close)
 {
     int hover;
@@ -1052,36 +1338,110 @@ draw_applications_menu(RillShellState *shell,
                        RillVisualState *visuals)
 {
     Rectangle menu;
+    Rectangle app_area;
+    Rectangle category_area;
     int i;
     int y;
+    int matches;
+    int category_count;
+    int screen_w;
+    int screen_h;
+    int menu_w;
+    int menu_h;
+    int category_w;
+    int category_step;
 
     if(shell->menu_open != 1)
         return;
 
-    menu = (Rectangle){4, PANEL_H + 2, 238, 10 + shell->launcher_count * 32};
+    update_app_menu_search_input(shell);
+    category_count = (int)(sizeof(rill_menu_categories) /
+                           sizeof(rill_menu_categories[0]));
+    if(shell->app_menu_category < 0 ||
+       shell->app_menu_category >= category_count)
+        shell->app_menu_category = 0;
+
+    screen_w = GetScreenWidth();
+    screen_h = GetScreenHeight();
+    menu_w = screen_w < 456 ? screen_w - 8 : 440;
+    if(menu_w < 320)
+        menu_w = screen_w - 8;
+    menu_h = screen_h - PANEL_H - 10;
+    if(menu_h > 430)
+        menu_h = 430;
+    if(menu_h < 300)
+        menu_h = screen_h - PANEL_H - 4;
+    category_w = menu_w >= 400 ? 128 : 112;
+    menu = (Rectangle){4, PANEL_H + 2, menu_w, menu_h};
     draw_menu_panel(menu);
 
-    y = PANEL_H + 8;
-    for(i = 0; i < shell->launcher_count; i++) {
-        Rectangle row = {10, y, 226, 28};
-        int hover = CheckCollisionPointRec(GetMousePosition(), row);
+    draw_whisker_header(menu, shell);
 
-        DrawRectangleRec(row, hover ? panel_item_hover_color() :
-                         panel_item_color());
-        DrawRectangle((int)row.x, (int)(row.y + row.height - 1),
-                      (int)row.width, 1, Fade(BLACK, 0.28f));
-        draw_launcher_icon(visuals, &shell->launchers[i],
-                           (Rectangle){row.x + 6, row.y + 5, 18, 18},
-                           GetThemeText());
-        draw_text_fit(shell->launchers[i].name, (int)row.x + 30,
-                      (int)row.y + 8, (int)row.width - 38, Text12,
-                      GetThemeText());
-        if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+    category_area = (Rectangle){menu.x + menu.width - category_w - 6,
+                                menu.y + 88, category_w,
+                                menu.height - 96};
+    app_area = (Rectangle){menu.x + 8, menu.y + 88,
+                           menu.width - category_w - 18,
+                           category_area.height};
+    category_step = (int)(category_area.height / category_count);
+    if(category_step > 30)
+        category_step = 30;
+    if(category_step < 18)
+        category_step = 18;
+
+    DrawRectangle((int)(category_area.x - 7), (int)app_area.y, 1,
+                  (int)app_area.height, Fade(BLACK, 0.45f));
+    DrawRectangle((int)(category_area.x - 6), (int)app_area.y, 1,
+                  (int)app_area.height, Fade(WHITE, 0.12f));
+
+    BeginScissorMode((int)app_area.x, (int)app_area.y,
+                     (int)app_area.width, (int)app_area.height);
+    y = (int)app_area.y;
+    matches = 0;
+    for(i = 0; i < shell->launcher_count; i++) {
+        Rectangle row;
+
+        if(!launcher_matches_app_menu(shell, &shell->launchers[i]))
+            continue;
+        row = (Rectangle){app_area.x, y, app_area.width, 44};
+        matches++;
+        if(draw_whisker_launcher_row(visuals, &shell->launchers[i], row)) {
             RillShellSelectLauncher(shell, i);
             RillShellLaunchSelected(shell, platform);
             shell->menu_open = 0;
+            shell->app_menu_search_active = 0;
         }
-        y += 34;
+        y += 48;
+    }
+    if(matches == 0) {
+        const char *message = shell->app_menu_search[0] != '\0' ?
+                              "No matching applications" :
+                              "No applications in this category";
+        draw_text_fit(message, (int)app_area.x + 8, (int)app_area.y + 10,
+                      (int)app_area.width - 16, Text12, GetThemeIcon());
+    }
+    EndScissorMode();
+
+    BeginScissorMode((int)category_area.x, (int)category_area.y,
+                     (int)category_area.width, (int)category_area.height);
+    y = (int)category_area.y;
+    for(i = 0; i < category_count; i++) {
+        Rectangle row = {category_area.x, y, category_area.width,
+                         category_step - 2};
+        if(draw_whisker_category_row(row, &rill_menu_categories[i],
+                                     i == shell->app_menu_category)) {
+            shell->app_menu_category = i;
+            shell->app_menu_search[0] = '\0';
+        }
+        y += category_step;
+    }
+    EndScissorMode();
+
+    if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+       !CheckCollisionPointRec(GetMousePosition(), menu) &&
+       GetMousePosition().y > PANEL_H) {
+        shell->menu_open = 0;
+        shell->app_menu_search_active = 0;
     }
 }
 

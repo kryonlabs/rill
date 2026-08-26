@@ -9,12 +9,16 @@
 
 static void
 launcher(RillLauncher *out, const char *id, const char *name,
-         const char *command)
+         const char *description, const char *category, const char *command,
+         int favorite)
 {
+    memset(out, 0, sizeof(*out));
     snprintf(out->id, sizeof(out->id), "%s", id);
     snprintf(out->name, sizeof(out->name), "%s", name);
+    snprintf(out->description, sizeof(out->description), "%s", description);
+    snprintf(out->category, sizeof(out->category), "%s", category);
     snprintf(out->command, sizeof(out->command), "%s", command);
-    out->icon_path[0] = '\0';
+    out->favorite = favorite;
 }
 
 static int
@@ -27,13 +31,17 @@ plan9_list_launchers(RillLauncher *out, int cap)
 
     count = 0;
     if(count < cap)
-        launcher(&out[count++], "terminal", "ktrem", "host:ktrem");
+        launcher(&out[count++], "terminal", "Terminal Emulator",
+                 "Use the command line", "Accessories", "host:ktrem", 1);
     if(count < cap)
-        launcher(&out[count++], "files", "Shelf", "host:shelf");
+        launcher(&out[count++], "files", "File Manager",
+                 "Browse the file system", "Accessories", "host:shelf", 1);
     if(count < cap)
-        launcher(&out[count++], "settings", "Settings", "internal:settings");
+        launcher(&out[count++], "settings", "Settings",
+                 "Configure the desktop", "Settings", "internal:settings", 1);
     if(count < cap)
-        launcher(&out[count++], "about", "About Rill", "internal:about");
+        launcher(&out[count++], "about", "About Rill",
+                 "Desktop information", "System", "internal:about", 0);
     return count;
 }
 
