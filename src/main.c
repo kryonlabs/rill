@@ -667,32 +667,14 @@ rill_control_close(RillControlState *control)
 }
 
 static void
-rill_control_process_line(RillShellState *shell,
-                          const RillPlatformServices *platform, char *line)
-{
-    int len;
-
-    if(shell == NULL || platform == NULL || line == NULL)
-        return;
-    len = (int)strlen(line);
-    while(len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r' ||
-                      line[len - 1] == ' ' || line[len - 1] == '\t'))
-        line[--len] = '\0';
-    while(*line == ' ' || *line == '\t')
-        line++;
-    if(strcmp(line, "open ktrem") == 0 || strcmp(line, "open kterm") == 0 ||
-       strcmp(line, "open terminal") == 0 || strcmp(line, "ktrem") == 0 ||
-       strcmp(line, "kterm") == 0 || strcmp(line, "terminal") == 0)
-        open_launcher_id(shell, platform, "terminal");
-}
-
-static void
 rill_control_poll(RillControlState *control, RillShellState *shell,
                   const RillPlatformServices *platform)
 {
 #ifdef KRYON_NATIVE_PLAN9
     FILE *file;
     char line[160];
+    char *trimmed;
+    int len;
 
     if(control == NULL || control->path[0] == '\0')
         return;
@@ -701,8 +683,24 @@ rill_control_poll(RillControlState *control, RillShellState *shell,
         return;
     if(control->offset > 0)
         fseek(file, control->offset, SEEK_SET);
-    while(fgets(line, sizeof(line), file) != NULL)
-        rill_control_process_line(shell, platform, line);
+    while(fgets(line, sizeof(line), file) != NULL) {
+        if(shell == NULL || platform == NULL)
+            continue;
+        len = (int)strlen(line);
+        while(len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r' ||
+                          line[len - 1] == ' ' || line[len - 1] == '\t'))
+            line[--len] = '\0';
+        trimmed = line;
+        while(*trimmed == ' ' || *trimmed == '\t')
+            trimmed++;
+        if(strcmp(trimmed, "open ktrem") == 0 ||
+           strcmp(trimmed, "open kterm") == 0 ||
+           strcmp(trimmed, "open terminal") == 0 ||
+           strcmp(trimmed, "ktrem") == 0 ||
+           strcmp(trimmed, "kterm") == 0 ||
+           strcmp(trimmed, "terminal") == 0)
+            open_launcher_id(shell, platform, "terminal");
+    }
     control->offset = ftell(file);
     fclose(file);
 #else

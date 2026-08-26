@@ -11,8 +11,8 @@ adapters.
 
 - Shared shell state model.
 - Platform service interface for launcher/task/session operations.
-- Linux adapter using plan9port/libdraw for the UI and process launching,
-  without direct X11 task-management calls.
+- Linux adapter targeting XLibre-compatible X11 desktops through EWMH task
+  discovery, focus, and close requests, with plan9port/libdraw for the UI.
 - Plan 9 adapter using native Rill launcher commands.
 - Rill top panel with Applications, Places, System, quick launchers,
   task buttons, tray indicators, and clock.

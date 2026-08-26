@@ -10,6 +10,8 @@ LDFLAGS := -rdynamic
 LDLIBS =
 GTK_PKG_CFLAGS := $(shell pkg-config --cflags gtk+-3.0 2>/dev/null)
 GTK_PKG_LIBS := $(shell pkg-config --libs gtk+-3.0 2>/dev/null)
+X11_PKG_CFLAGS := $(shell pkg-config --cflags x11 2>/dev/null)
+X11_PKG_LIBS := $(shell pkg-config --libs x11 2>/dev/null || printf '%s' '-lX11')
 
 UNAME_S := $(shell uname -s 2>/dev/null)
 UNAME_M := $(shell uname -m 2>/dev/null)
@@ -21,7 +23,7 @@ endif
 ifeq ($(UNAME_S),Linux)
   PLATFORM := linux
   PLATFORM_SRC := src/platform_linux.c
-  PLATFORM_LDLIBS := -ldl -lrt
+  PLATFORM_LDLIBS := $(X11_PKG_LIBS) -ldl -lrt
 else
   PLATFORM := unknown
   PLATFORM_SRC := src/platform_stub.c
@@ -44,6 +46,7 @@ LDLIBS += -Wl,--whole-archive $(KRYON_LIB) -Wl,--no-whole-archive \
 	$(BOX2D_A) $(LIBOQS_A) $(CURL_A) -lssl -lcrypto \
 	$(CMARK_EXT_A) $(CMARK_A) $(CURL_CODEC_LDLIBS) -lz
 CPPFLAGS += $(GTK_PKG_CFLAGS)
+CPPFLAGS += $(X11_PKG_CFLAGS)
 
 ifeq ($(KRYON_BACKEND),libdraw)
   CPPFLAGS += -DKRYON_BACKEND_LIBDRAW -I$(PLAN9PORT_DIR)/include
