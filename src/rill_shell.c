@@ -103,8 +103,7 @@ kind_for_launcher(const RillLauncher *launcher)
     command = launcher->command;
     if(strcmp(command, "internal:terminal") == 0 ||
        strcmp(command, "host:ktrem") == 0 ||
-       strcmp(command, "host:kterm") == 0 ||
-       strcmp(command, "host:kapsule") == 0)
+       strcmp(command, "host:kterm") == 0)
         return RILL_APP_TERMINAL;
     if(strcmp(command, "internal:files") == 0)
         return RILL_APP_FILES;

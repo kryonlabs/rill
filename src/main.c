@@ -331,8 +331,7 @@ load_static_host(RillHostModule *slot, const char *id)
 
     if(slot == NULL || id == NULL)
         return 0;
-    if(strcmp(id, "ktrem") == 0 || strcmp(id, "kterm") == 0 ||
-       strcmp(id, "kapsule") == 0) {
+    if(strcmp(id, "ktrem") == 0 || strcmp(id, "kterm") == 0) {
         create = KtermCreateAppHost;
         destroy = KtermDestroyAppHost;
     } else if(strcmp(id, "shelf") == 0) {
