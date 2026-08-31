@@ -17,6 +17,7 @@ OFILES=\
 	src/main.$O\
 	src/rill_shell.$O\
 	src/platform_plan9.$O\
+	$KTREM/src/app_chrome.$O\
 	$KTREM/src/app_clipboard.$O\
 	$KTREM/src/app_commands.$O\
 	$KTREM/src/app_context_menu.$O\
@@ -80,7 +81,7 @@ $KTREM/src/%.$O: $KTREM/src/%.c
 	cd $KTREM/src && cpp -+ $CPPFLAGS $KTERMFLAGS $stem.c > $stem.i && $CC $CFLAGS -c $stem.i && mv $stem.i.$O $stem.$O && rm -f $stem.i
 
 $SHELF/src/shelf_host.$O: $SHELF/src/shelf_host.c
-	cd $SHELF/src && cpp -+ $CPPFLAGS '-DCreateAppHost=RillShelfCreateAppHost' '-DDestroyAppHost=RillShelfDestroyAppHost' shelf_host.c > shelf_host.i && $CC $CFLAGS -c shelf_host.i && mv shelf_host.i.$O shelf_host.$O && rm -f shelf_host.i
+	cd $SHELF/src && cpp -+ $CPPFLAGS '-DCreateAppHost=ShelfCreateAppHost' '-DDestroyAppHost=ShelfDestroyAppHost' shelf_host.c > shelf_host.i && $CC $CFLAGS -c shelf_host.i && mv shelf_host.i.$O shelf_host.$O && rm -f shelf_host.i
 
 $SHELF/src/%.$O: $SHELF/src/%.c
 	cd $SHELF/src && cpp -+ $CPPFLAGS $stem.c > $stem.i && $CC $CFLAGS -c $stem.i && mv $stem.i.$O $stem.$O && rm -f $stem.i
