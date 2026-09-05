@@ -6,6 +6,10 @@
 
 #ifdef KRYON_NATIVE_PLAN9
 #include "kryon_plan9.h"
+#else
+#include <dirent.h>
+#include <fcntl.h>
+#include <unistd.h>
 #endif
 
 #define PLAN9_SYSTEM_APPLICATIONS "/lib/rill/applications"
@@ -46,7 +50,11 @@ trim_line(char *line)
 static void
 take_field(char *dst, int dst_size, const char *value)
 {
-    snprintf(dst, dst_size, "%s", value);
+    int len = strlen(value);
+    if(dst_size <= 0) return;
+    if(len >= dst_size) len = dst_size - 1;
+    memcpy(dst, value, len);
+    dst[len] = '\0';
 }
 
 static void
@@ -229,12 +237,103 @@ plan9_list_launchers(RillLauncher *out, int cap)
     return cap < 4 ? cap : 4;
 }
 
+/* rio exports the same window tree to every client in its namespace. */
+static const char *
+wsys_root(void)
+{
+    const char *root = getenv("RILL_WSYS_DIR");
+    return root != NULL && root[0] != '\0' ? root : "/dev/wsys";
+}
+
+static int
+read_window_file(int id, const char *name, char *out, int cap)
+{
+    char path[1024];
+    int fd, n;
+    snprintf(path, sizeof(path), "%s/%d/%s", wsys_root(), id, name);
+    fd = open(path, 0);
+    if(fd < 0) return 0;
+    /* A second read of wctl blocks; read only its initial state. */
+    n = read(fd, out, cap - 1);
+    close(fd);
+    if(n <= 0) return 0;
+    out[n] = '\0';
+    return 1;
+}
+
+static int
+add_rio_task(const char *name, RillTask *task)
+{
+    char *end;
+    unsigned long id;
+    char state[128], own[32];
+    int fd, n, own_id = -1;
+    id = strtoul(name, &end, 10);
+    if(*name == '\0' || *end != '\0' || id == 0 || id > 2147483647UL)
+        return 0;
+    fd = open("/dev/winid", 0);
+    if(fd >= 0) {
+        n = read(fd, own, sizeof(own) - 1);
+        close(fd);
+        if(n > 0) { own[n] = '\0'; own_id = atoi(own); }
+    }
+    if(own_id > 0 && id == (unsigned long)own_id) return 0;
+    memset(task, 0, sizeof(*task));
+    task->id = id;
+    if(!read_window_file(id, "label", task->title, sizeof(task->title)))
+        return 0;
+    trim_line(task->title);
+    if(read_window_file(id, "wctl", state, sizeof(state)))
+        task->focused = strstr(state, "current") != NULL &&
+                        strstr(state, "notcurrent") == NULL;
+    return 1;
+}
+
 static int
 plan9_list_tasks(RillTask *out, int cap)
 {
-    (void)out;
-    (void)cap;
-    return 0;
+    int count = 0;
+#ifdef KRYON_NATIVE_PLAN9
+    Dir *entries;
+    int fd, n, i;
+    if(out == NULL || cap <= 0) return 0;
+    fd = open(wsys_root(), OREAD);
+    if(fd < 0) return 0;
+    n = dirreadall(fd, &entries);
+    close(fd);
+    for(i = 0; i < n && count < cap; i++)
+        if(add_rio_task(entries[i].name, &out[count])) count++;
+    if(n >= 0) free(entries);
+#else
+    DIR *dir;
+    struct dirent *entry;
+    if(out == NULL || cap <= 0) return 0;
+    dir = opendir(wsys_root());
+    if(dir == NULL) return 0;
+    while(count < cap && (entry = readdir(dir)) != NULL)
+        if(add_rio_task(entry->d_name, &out[count])) count++;
+    closedir(dir);
+#endif
+    return count;
+}
+
+static int
+write_window_control(int id, const char *command)
+{
+    char path[1024];
+    int fd, len, written;
+    if(id <= 0) return 0;
+    snprintf(path, sizeof(path), "%s/%d/wctl", wsys_root(), id);
+#ifdef KRYON_NATIVE_PLAN9
+    fd = open(path, OWRITE);
+#else
+    fd = open(path, O_WRONLY);
+#endif
+    if(fd < 0) return 0;
+    len = strlen(command);
+    written = write(fd, command, len);
+    close(fd);
+    return written == len;
 }
 
 static int
@@ -262,21 +361,27 @@ plan9_launch(const RillLauncher *launcher)
 static int
 plan9_focus_task(int task_id)
 {
-    (void)task_id;
-    return 0;
+    /* unhide also focuses, but top is needed for an already visible window. */
+    if(!write_window_control(task_id, "unhide")) return 0;
+    if(!write_window_control(task_id, "top")) return 0;
+    return write_window_control(task_id, "current");
 }
 
 static int
 plan9_close_task(int task_id)
 {
-    (void)task_id;
-    return 0;
+    return write_window_control(task_id, "delete");
 }
 
 static const char *
 plan9_settings_root(void)
 {
-    return "/usr/$user/lib/rill";
+    static char path[512];
+    const char *home = getenv("home");
+    if(home == NULL) home = getenv("HOME");
+    if(home == NULL || home[0] != '/') return NULL;
+    snprintf(path, sizeof(path), "%s/lib/rill", home);
+    return path;
 }
 
 static const RillPlatformServices services = {
@@ -286,7 +391,8 @@ static const RillPlatformServices services = {
     plan9_launch,
     plan9_focus_task,
     plan9_close_task,
-    plan9_settings_root
+    plan9_settings_root,
+    NULL, NULL, NULL
 };
 
 const RillPlatformServices *

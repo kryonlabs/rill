@@ -1,8 +1,19 @@
 #include "rill_shell.h"
 
 #include "kryon.h"
+#include "rill_panel.h"
+
+#if defined(__linux__) && !defined(KRYON_NATIVE_PLAN9)
+#define RILL_HAS_X11 1
+#include "rill_x11.h"
+#include "rill_wayland.h"
+#include "session.h"
+#else
+#define RILL_HAS_X11 0
+#endif
 
 #include <math.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +40,7 @@ enum {
     PANEL_H = 26,
     RILL_HOST_CACHE_MAX = 8,
     RILL_ICON_CACHE_MAX = 32,
+    RILL_PANEL_PLUGIN_MAX = 32,
     RILL_TEST_LOWER_TEXT_X = 274,
     RILL_TEST_LOWER_TEXT_Y = 224,
     RILL_TEST_UPPER_X = 250,
@@ -65,6 +77,17 @@ typedef struct RillVisualState {
     char wallpaper_path[512];
     char system_font_name[128];
     char system_font_path[512];
+    RillPanelPlugin left_panel[RILL_PANEL_PLUGIN_MAX];
+    int left_panel_count;
+    RillPanelPlugin right_panel[RILL_PANEL_PLUGIN_MAX];
+    int right_panel_count;
+    char panel_config_path[1024];
+    int panel_dirty;
+    int panel_context_open;
+    int panel_context_side;
+    int panel_context_index;
+    int panel_context_x;
+    int panel_context_y;
 } RillVisualState;
 
 typedef struct RillTestState {
@@ -81,28 +104,19 @@ typedef struct RillControlState {
     long offset;
 } RillControlState;
 
-typedef enum RillPanelPluginKind {
-    RILL_PANEL_SEPARATOR,
-    RILL_PANEL_MENU,
-    RILL_PANEL_LAUNCHER,
-    RILL_PANEL_TASK_LIST,
-    RILL_PANEL_WORKSPACES,
-    RILL_PANEL_TRAY,
-    RILL_PANEL_LANGUAGE,
-    RILL_PANEL_CLOCK,
-    RILL_PANEL_RESOURCE
-} RillPanelPluginKind;
+typedef enum RillRunMode {
+    RILL_MODE_SHELL,
+    RILL_MODE_DESKTOP,
+    RILL_MODE_WM,
+    RILL_MODE_WINDOWED
+} RillRunMode;
 
-typedef struct RillPanelPlugin {
-    RillPanelPluginKind kind;
-    const char *id;
-    const char *label;
-    const char *launcher_id;
-    int menu_id;
-    int width;
-    int advance;
-    int variant;
-} RillPanelPlugin;
+typedef struct RillRuntimeOptions {
+    RillRunMode mode;
+    int xfce_panel;
+    int external_panel;
+    char launch_command[512];
+} RillRuntimeOptions;
 
 typedef struct RillMenuCategory {
     const char *name;
@@ -123,6 +137,15 @@ static const RillMenuCategory rill_menu_categories[] = {
     {"Office", "office"},
     {"Other", "other"}
 };
+
+static volatile sig_atomic_t rill_stop_requested;
+
+static void
+rill_signal_stop(int signal_number)
+{
+    (void)signal_number;
+    rill_stop_requested = 1;
+}
 
 static Color
 mix_color(Color a, Color b, float t)
@@ -208,6 +231,73 @@ init_test_state(RillTestState *test)
     test->disable_wallpaper = env_truthy("RILL_TEST_DISABLE_WALLPAPER");
 }
 
+static void
+runtime_append_arg(RillRuntimeOptions *options, const char *arg)
+{
+    size_t len;
+    size_t arg_len;
+
+    if(options == NULL || arg == NULL || arg[0] == '\0')
+        return;
+    len = strlen(options->launch_command);
+    arg_len = strlen(arg);
+    if(len > 0) {
+        if(len + 1 >= sizeof(options->launch_command))
+            return;
+        options->launch_command[len++] = ' ';
+        options->launch_command[len] = '\0';
+    }
+    if(len + arg_len >= sizeof(options->launch_command))
+        arg_len = sizeof(options->launch_command) - len - 1;
+    memcpy(options->launch_command + len, arg, arg_len);
+    options->launch_command[len + arg_len] = '\0';
+}
+
+static void
+parse_runtime_options(int argc, char **argv, RillRuntimeOptions *options)
+{
+    int collect_command = 0;
+
+    if(options == NULL)
+        return;
+    memset(options, 0, sizeof(*options));
+    options->mode = RILL_MODE_SHELL;
+    for(int i = 1; i < argc; i++) {
+        if(collect_command) {
+            runtime_append_arg(options, argv[i]);
+            continue;
+        }
+        if(strcmp(argv[i], "--desktop") == 0) {
+            options->mode = RILL_MODE_DESKTOP;
+            continue;
+        }
+        if(strcmp(argv[i], "--xfce-panel") == 0) {
+            options->xfce_panel = 1;
+            continue;
+        }
+        if(strcmp(argv[i], "--external-panel") == 0) {
+            options->xfce_panel = options->external_panel = 1;
+            continue;
+        }
+        if(strcmp(argv[i], "--sm-client-id") == 0 && i + 1 < argc) { i++; continue; }
+        if(strcmp(argv[i], "--wm") == 0) {
+            options->mode = RILL_MODE_WM;
+            continue;
+        }
+        if(strcmp(argv[i], "--windowed") == 0) {
+            options->mode = RILL_MODE_WINDOWED;
+            continue;
+        }
+        if(strcmp(argv[i], "--") == 0) {
+            collect_command = 1;
+            continue;
+        }
+        if(options->mode == RILL_MODE_WM ||
+           options->mode == RILL_MODE_WINDOWED)
+            runtime_append_arg(options, argv[i]);
+    }
+}
+
 static int
 test_scene_active(const RillTestState *test)
 {
@@ -275,6 +365,32 @@ configure_system_look(RillVisualState *visuals, const RillTestState *test)
                      "%s", wallpaper);
         }
     }
+}
+
+static void
+init_panel_plugins(RillVisualState *visuals)
+{
+    const RillPanelPlugin *plugins;
+    int count;
+
+    if(visuals == NULL)
+        return;
+    plugins = RillPanelDefaultLeft(&count);
+    if(count > RILL_PANEL_PLUGIN_MAX)
+        count = RILL_PANEL_PLUGIN_MAX;
+    memcpy(visuals->left_panel, plugins,
+           (size_t)count * sizeof(visuals->left_panel[0]));
+    visuals->left_panel_count = count;
+
+    plugins = RillPanelDefaultRight(&count);
+    if(count > RILL_PANEL_PLUGIN_MAX)
+        count = RILL_PANEL_PLUGIN_MAX;
+    memcpy(visuals->right_panel, plugins,
+           (size_t)count * sizeof(visuals->right_panel[0]));
+    visuals->right_panel_count = count;
+    visuals->panel_context_open = 0;
+    visuals->panel_context_side = 0;
+    visuals->panel_context_index = -1;
 }
 
 static int
@@ -784,22 +900,19 @@ rill_control_poll(RillControlState *control, RillShellState *shell,
 static void
 draw_desktop_icon(RillShellState *shell, const RillPlatformServices *platform,
                   RillVisualState *visuals, int x, int y,
-                  const char *label, const char *launcher_id, Color accent)
+                  const RillLauncher *launcher, Color accent)
 {
     Rectangle box;
     Rectangle icon;
-    const RillLauncher *launcher;
-    const char *display_label;
 
+    if(launcher == NULL)
+        return;
     box = (Rectangle){x, y, 84, 82};
     icon = (Rectangle){x + 22, y + 5, 40, 40};
-    launcher = launcher_by_id(shell, launcher_id);
-    display_label = launcher != NULL && launcher->name[0] != '\0' ?
-                    launcher->name : label;
     if(icon_hit_button(box, 7000 + x + y))
-        open_launcher_id(shell, platform, launcher_id);
+        open_launcher_id(shell, platform, launcher->id);
     draw_launcher_icon(visuals, launcher, icon, accent);
-    draw_text_fit_centered(display_label, x + 4, y + 52, 76, Text12,
+    draw_text_fit_centered(launcher->name, x + 4, y + 52, 76, Text12,
                            GetThemeText());
 }
 
@@ -807,12 +920,27 @@ static void
 draw_desktop(RillShellState *shell, const RillPlatformServices *platform,
              RillVisualState *visuals)
 {
-    draw_desktop_icon(shell, platform, visuals, 28, PANEL_H + 28, "Home",
-                      "files", GetThemeLink());
-    draw_desktop_icon(shell, platform, visuals, 28, PANEL_H + 122, "ktrem",
-                      "terminal", GetThemeButtonHover());
-    draw_desktop_icon(shell, platform, visuals, 28, PANEL_H + 216, "Settings",
-                      "settings", GetThemeIcon());
+    int shown = 0;
+
+    if(shell == NULL)
+        return;
+    for(int i = 0; i < shell->launcher_count; i++) {
+        int col;
+        int row;
+
+        if(!shell->launchers[i].favorite)
+            continue;
+        col = shown / 6;
+        row = shown % 6;
+        draw_desktop_icon(shell, platform, visuals, 28 + col * 94,
+                          PANEL_H + 28 + row * 94, &shell->launchers[i],
+                          shown == 0 ? GetThemeLink() :
+                          (shown == 1 ? GetThemeButtonHover() :
+                           GetThemeIcon()));
+        shown++;
+        if(PANEL_H + 28 + shown * 94 > GetScreenHeight() + 94)
+            break;
+    }
 }
 
 static void
@@ -898,12 +1026,37 @@ draw_tray_indicator(int x, int kind, Color color)
 }
 
 static void
-draw_workspace_switcher(int x)
+draw_workspace_switcher(int x, int width, RillShellState *shell,
+                         const RillPlatformServices *platform)
 {
-    DrawRectangle(x, 4, 16, 16, panel_active_color());
-    DrawRectangleLines(x, 4, 16, 16, Fade(WHITE, 0.65f));
-    DrawRectangle(x + 18, 4, 16, 16, (Color){22, 25, 34, 255});
-    DrawRectangleLines(x + 18, 4, 16, 16, Fade(WHITE, 0.55f));
+    int count, current;
+    if(platform->workspace_count == NULL || platform->current_workspace == NULL ||
+       platform->switch_workspace == NULL) return;
+    count = platform->workspace_count();
+    current = platform->current_workspace();
+    if(count <= 0 || current < 0 || width < 20) return;
+    /* Scroll cycles every workspace even when the panel item is narrow. */
+    Rectangle bounds = {x, 2, width, PANEL_H - 4};
+    if(CheckCollisionPointRec(GetMousePosition(), bounds)) {
+        float wheel = GetMouseWheelMove();
+        int next = (current + (wheel > 0 ? -1 : 1) + count) % count;
+        if(wheel != 0 && !platform->switch_workspace(next))
+            RillShellSetStatus(shell, "Could not switch workspace");
+    }
+    int visible = width / 20;
+    if(visible > count) visible = count;
+    int first = current / visible * visible;
+    for(int i = 0; i < visible && first + i < count; i++) {
+        char label[16];
+        int index = first + i;
+        Rectangle button = {x + i * 20, 4, 18, 18};
+        DrawRectangleRec(button, index == current ? panel_active_color() : panel_item_color());
+        snprintf(label, sizeof(label), "%d", index + 1);
+        Text(label, (int)button.x + 4, 7, Text12, GetThemeText());
+        if(CheckCollisionPointRec(GetMousePosition(), button) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+            if(!platform->switch_workspace(index))
+                RillShellSetStatus(shell, "Could not switch workspace");
+    }
 }
 
 static void
@@ -917,29 +1070,215 @@ draw_panel_resource(int x, const char *label, Color color)
 static void
 draw_task_icon(RillVisualState *visuals, RillShellState *shell,
                const RillTask *task, Rectangle icon);
+static void
+draw_menu_panel(Rectangle menu);
 
-static const RillPanelPlugin rill_panel_left_plugins[] = {
-    {RILL_PANEL_MENU, "applications", "Applications", NULL, 1, 104, 106, 0},
-    {RILL_PANEL_SEPARATOR, "sep-launchers", NULL, NULL, 0, 0, 6, 0},
-    {RILL_PANEL_LAUNCHER, "terminal", NULL, "terminal", 0, 22, 24, 0},
-    {RILL_PANEL_LAUNCHER, "files", NULL, "files", 0, 22, 24, 0},
-    {RILL_PANEL_MENU, "places", "Places", NULL, 2, 58, 60, 0},
-    {RILL_PANEL_MENU, "system", "System", NULL, 3, 58, 60, 0},
-    {RILL_PANEL_SEPARATOR, "sep-tasks", NULL, NULL, 0, 0, 6, 0},
-    {RILL_PANEL_TASK_LIST, "task-list", NULL, NULL, 0, 0, 0, 0}
-};
+static void
+open_panel_context(RillVisualState *visuals, int side, int index)
+{
+    Vector2 mouse;
 
-static const RillPanelPlugin rill_panel_right_plugins[] = {
-    {RILL_PANEL_WORKSPACES, "workspaces", NULL, NULL, 0, 42, 42, 0},
-    {RILL_PANEL_SEPARATOR, "sep-status", NULL, NULL, 0, 0, 8, 0},
-    {RILL_PANEL_TRAY, "activity", NULL, NULL, 0, 22, 24, 0},
-    {RILL_PANEL_LANGUAGE, "keyboard-layout", "EN", NULL, 0, 30, 30, 0},
-    {RILL_PANEL_TRAY, "audio", NULL, NULL, 0, 22, 24, 1},
-    {RILL_PANEL_TRAY, "power", NULL, NULL, 0, 20, 22, 2},
-    {RILL_PANEL_CLOCK, "clock", NULL, NULL, 0, 54, 58, 0},
-    {RILL_PANEL_RESOURCE, "cpu", "cpu", NULL, 0, 54, 60, 0},
-    {RILL_PANEL_RESOURCE, "mem", "mem", NULL, 0, 54, 60, 1}
-};
+    if(visuals == NULL)
+        return;
+    mouse = GetMousePosition();
+    visuals->panel_context_open = 1;
+    visuals->panel_context_side = side;
+    visuals->panel_context_index = index;
+    visuals->panel_context_x = (int)mouse.x;
+    visuals->panel_context_y = (int)mouse.y;
+}
+
+static RillPanelPlugin *
+panel_plugins_for_side(RillVisualState *visuals, int side, int *count)
+{
+    if(visuals == NULL)
+        return NULL;
+    if(side == 0) {
+        if(count != NULL)
+            *count = visuals->left_panel_count;
+        return visuals->left_panel;
+    }
+    if(count != NULL)
+        *count = visuals->right_panel_count;
+    return visuals->right_panel;
+}
+
+static void
+set_panel_count_for_side(RillVisualState *visuals, int side, int count)
+{
+    if(visuals == NULL)
+        return;
+    if(count < 0)
+        count = 0;
+    if(count > RILL_PANEL_PLUGIN_MAX)
+        count = RILL_PANEL_PLUGIN_MAX;
+    if(side == 0)
+        visuals->left_panel_count = count;
+    else
+        visuals->right_panel_count = count;
+}
+
+static int
+panel_context_row(Rectangle row, const char *label)
+{
+    int hover = CheckCollisionPointRec(GetMousePosition(), row);
+
+    DrawRectangleRec(row, hover ? panel_item_hover_color() :
+                     panel_item_color());
+    DrawRectangle((int)row.x, (int)(row.y + row.height - 1), (int)row.width,
+                  1, Fade(BLACK, 0.28f));
+    draw_text_fit(label, (int)row.x + 10, (int)row.y + 7,
+                  (int)row.width - 20, Text12, GetThemeText());
+    return hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+}
+
+static void
+panel_swap_item(RillVisualState *visuals, int side, int index, int delta)
+{
+    RillPanelPlugin *plugins;
+    RillPanelPlugin tmp;
+    int count;
+    int other;
+
+    plugins = panel_plugins_for_side(visuals, side, &count);
+    other = index + delta;
+    if(plugins == NULL || index < 0 || index >= count || other < 0 ||
+       other >= count)
+        return;
+    tmp = plugins[index];
+    plugins[index] = plugins[other];
+    plugins[other] = tmp;
+    visuals->panel_context_index = other;
+    visuals->panel_dirty = 1;
+}
+
+static void
+panel_remove_item(RillVisualState *visuals, int side, int index)
+{
+    RillPanelPlugin *plugins;
+    int count;
+
+    plugins = panel_plugins_for_side(visuals, side, &count);
+    if(plugins == NULL || index < 0 || index >= count)
+        return;
+    memmove(&plugins[index], &plugins[index + 1],
+            (size_t)(count - index - 1) * sizeof(plugins[0]));
+    set_panel_count_for_side(visuals, side, count - 1);
+    visuals->panel_dirty = 1;
+    visuals->panel_context_open = 0;
+}
+
+static void
+panel_append_item(RillVisualState *visuals, int side, RillPanelPlugin plugin)
+{
+    RillPanelPlugin *plugins;
+    int count;
+
+    plugins = panel_plugins_for_side(visuals, side, &count);
+    if(plugins == NULL || count >= RILL_PANEL_PLUGIN_MAX)
+        return;
+    plugins[count] = plugin;
+    set_panel_count_for_side(visuals, side, count + 1);
+    visuals->panel_dirty = 1;
+    visuals->panel_context_index = count;
+}
+
+static void
+draw_panel_context_menu(RillShellState *shell, RillVisualState *visuals,
+                         const RillPlatformServices *platform)
+{
+    RillPanelPlugin *plugins;
+    RillPanelPlugin plugin;
+    Rectangle menu;
+    int count;
+    int index;
+    int side;
+    int x;
+    int y;
+
+    if(visuals == NULL || !visuals->panel_context_open)
+        return;
+    side = visuals->panel_context_side;
+    index = visuals->panel_context_index;
+    plugins = panel_plugins_for_side(visuals, side, &count);
+    if(plugins == NULL || index < -1 || index >= count) {
+        visuals->panel_context_open = 0;
+        return;
+    }
+
+    x = visuals->panel_context_x;
+    y = visuals->panel_context_y;
+    if(x + 210 > GetScreenWidth())
+        x = GetScreenWidth() - 210;
+    if(y + 188 > GetScreenHeight())
+        y = GetScreenHeight() - 188;
+    if(x < 2)
+        x = 2;
+    if(y < PANEL_H + 2)
+        y = PANEL_H + 2;
+    menu = (Rectangle){x, y, 208, index >= 0 ? 188 : 116};
+    draw_menu_panel(menu);
+
+    if(index >= 0) {
+        char title[96];
+
+        snprintf(title, sizeof(title), "%s",
+                 plugins[index].id[0] != '\0' ? plugins[index].id :
+                 RillPanelPluginKindName(plugins[index].kind));
+        draw_text_fit(title, x + 10, y + 8, 188, Text12, GetThemeIcon());
+        if(panel_context_row((Rectangle){x + 6, y + 30, 196, 26},
+                             "Move Left"))
+            panel_swap_item(visuals, side, index, -1);
+        if(panel_context_row((Rectangle){x + 6, y + 58, 196, 26},
+                             "Move Right"))
+            panel_swap_item(visuals, side, visuals->panel_context_index, 1);
+        if(panel_context_row((Rectangle){x + 6, y + 86, 196, 26},
+                             "Remove"))
+            panel_remove_item(visuals, side, visuals->panel_context_index);
+        if(panel_context_row((Rectangle){x + 6, y + 114, 196, 26},
+                             "Properties")) {
+            snprintf(shell->status, sizeof(shell->status), "%s properties",
+                     title);
+            visuals->panel_context_open = 0;
+        }
+        y += 140;
+    } else {
+        y += 6;
+    }
+
+    plugin = (RillPanelPlugin){RILL_PANEL_SEPARATOR, "separator", "", "",
+                               0, 0, 8, 0};
+    if(panel_context_row((Rectangle){x + 6, y, 196, 26}, "Add Separator"))
+        panel_append_item(visuals, side, plugin);
+    plugin = (RillPanelPlugin){RILL_PANEL_TASK_LIST, "task-list", "", "",
+                               0, 0, 0, 0};
+    if(panel_context_row((Rectangle){x + 6, y + 28, 196, 26}, "Add Task List"))
+        panel_append_item(visuals, side, plugin);
+    plugin = (RillPanelPlugin){RILL_PANEL_WORKSPACES, "workspaces", "", "",
+                               0, 42, 42, 0};
+    if(panel_context_row((Rectangle){x + 6, y + 56, 196, 26},
+                         "Add Workspaces"))
+        panel_append_item(visuals, side, plugin);
+    if(panel_context_row((Rectangle){x + 6, y + 84, 196, 26},
+                         "Add XFCE Plugin...")) {
+#if RILL_HAS_X11
+        RillLauncher launcher;
+        memset(&launcher, 0, sizeof(launcher));
+        snprintf(launcher.name, sizeof(launcher.name), "Xfce panel items");
+        snprintf(launcher.command, sizeof(launcher.command), "xfce4-panel --add-items");
+        if(!platform->launch(&launcher))
+            RillShellSetStatus(shell, "Could not open Xfce panel; install xfce4-panel");
+#else
+        (void)platform;
+        RillShellSetStatus(shell, "Xfce plugins require a Linux panel host");
+#endif
+        visuals->panel_context_open = 0;
+    }
+
+    if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+       !CheckCollisionPointRec(GetMousePosition(), menu))
+        visuals->panel_context_open = 0;
+}
 
 static int
 draw_panel_task_list(RillShellState *shell, const RillPlatformServices *platform,
@@ -977,11 +1316,25 @@ draw_panel_task_list(RillShellState *shell, const RillPlatformServices *platform
 static int
 draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
                   const RillPlatformServices *platform,
-                  RillVisualState *visuals, int x, int task_right,
+                  RillVisualState *visuals, int x, int task_right, int side,
+                  int index,
                   const char *clock_text)
 {
+    Rectangle context_bounds;
+
     if(plugin == NULL)
         return x;
+    context_bounds = (Rectangle){x, 0,
+                                 plugin->kind == RILL_PANEL_TASK_LIST ?
+                                 task_right - x :
+                                 (plugin->advance > 0 ? plugin->advance :
+                                  plugin->width),
+                                 PANEL_H};
+    if(context_bounds.width < 12)
+        context_bounds.width = 12;
+    if(CheckCollisionPointRec(GetMousePosition(), context_bounds) &&
+       IsMouseButtonPressed(MOUSE_BUTTON_RIGHT))
+        open_panel_context(visuals, side, index);
     switch(plugin->kind) {
     case RILL_PANEL_SEPARATOR:
         draw_panel_separator(x);
@@ -999,7 +1352,7 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
     case RILL_PANEL_TASK_LIST:
         return draw_panel_task_list(shell, platform, visuals, x, task_right);
     case RILL_PANEL_WORKSPACES:
-        draw_workspace_switcher(x);
+        draw_workspace_switcher(x, plugin->width, shell, platform);
         return x + plugin->advance;
     case RILL_PANEL_TRAY:
         draw_tray_indicator(x, plugin->variant,
@@ -1008,7 +1361,7 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
                              GetThemeButtonHover()));
         return x + plugin->advance;
     case RILL_PANEL_LANGUAGE:
-        Text(plugin->label != NULL ? plugin->label : "", x, 7, Text12,
+        Text(plugin->label, x, 7, Text12,
              (Color){92, 185, 255, 255});
         return x + plugin->advance;
     case RILL_PANEL_CLOCK:
@@ -1037,6 +1390,10 @@ draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
     int right;
     int screen_w;
     int i;
+    int left_count;
+    int right_count;
+    const RillPanelPlugin *left_plugins;
+    const RillPanelPlugin *right_plugins;
 
     screen_w = GetScreenWidth();
     DrawRectangle(0, 0, screen_w, PANEL_H, panel_color());
@@ -1052,24 +1409,35 @@ draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
 
     right = screen_w - (screen_w >= 760 ? 288 : 72);
     x = 0;
-    for(i = 0; i < (int)(sizeof(rill_panel_left_plugins) /
-                         sizeof(rill_panel_left_plugins[0])); i++)
-        x = draw_panel_plugin(&rill_panel_left_plugins[i], shell, platform,
-                              visuals, x, right, clock_text);
+    left_plugins = visuals->left_panel;
+    left_count = visuals->left_panel_count;
+    for(i = 0; i < left_count; i++)
+        x = draw_panel_plugin(&left_plugins[i], shell, platform,
+                              visuals, x, right, 0, i, clock_text);
 
     if(screen_w < 760) {
         if(screen_w > 70)
             draw_text_fit(clock_text, screen_w - 58, 7, 54, Text12,
                           GetThemeText());
+        if(CheckCollisionPointRec(GetMousePosition(),
+                                  (Rectangle){0, 0, screen_w, PANEL_H}) &&
+           IsMouseButtonPressed(MOUSE_BUTTON_RIGHT))
+            open_panel_context(visuals, 1, -1);
         return;
     }
 
     x = screen_w - 286;
     draw_panel_separator(x - 6);
-    for(i = 0; i < (int)(sizeof(rill_panel_right_plugins) /
-                         sizeof(rill_panel_right_plugins[0])); i++)
-        x = draw_panel_plugin(&rill_panel_right_plugins[i], shell, platform,
-                              visuals, x, right, clock_text);
+    right_plugins = visuals->right_panel;
+    right_count = visuals->right_panel_count;
+    for(i = 0; i < right_count; i++)
+        x = draw_panel_plugin(&right_plugins[i], shell, platform,
+                              visuals, x, right, 1, i, clock_text);
+    if(CheckCollisionPointRec(GetMousePosition(),
+                              (Rectangle){0, 0, screen_w, PANEL_H}) &&
+       IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) &&
+       !visuals->panel_context_open)
+        open_panel_context(visuals, 1, -1);
 }
 
 static void
@@ -1452,8 +1820,16 @@ draw_task_icon(RillVisualState *visuals, RillShellState *shell,
     const RillLauncher *launcher = NULL;
 
     if(task != NULL) {
+        if(task->icon_path[0] != '\0') {
+            Texture2D *texture = visual_icon_texture(visuals, task->icon_path);
+
+            if(texture != NULL) {
+                draw_texture_icon(texture, icon);
+                return;
+            }
+        }
         for(int i = 0; i < shell->app_count; i++) {
-            if(shell->apps[i].id == task->id) {
+            if(!task->platform_owned && shell->apps[i].id == task->id) {
                 if(shell->apps[i].kind == RILL_APP_TERMINAL)
                     launcher = launcher_by_id(shell, "terminal");
                 else if(shell->apps[i].kind == RILL_APP_FILES)
@@ -1816,31 +2192,79 @@ draw_test_scene(const RillTestState *test)
 }
 
 int
-main(void)
+main(int argc, char **argv)
 {
     RillShellState shell;
     RillVisualState visuals;
     RillTestState test;
     RillControlState control;
+    RillRuntimeOptions options;
     const RillPlatformServices *platform;
+    char startup_status[160];
+    char window_title[80] = "Rill";
     double next_refresh;
+#if RILL_HAS_X11
+    RillX11Manager x11;
+#endif
+
+    signal(SIGINT, rill_signal_stop);
+    signal(SIGTERM, rill_signal_stop);
 
     init_test_state(&test);
+    parse_runtime_options(argc, argv, &options);
+    snprintf(startup_status, sizeof(startup_status), "%s", "Ready");
+
+#if RILL_HAS_X11
+    if(options.mode == RILL_MODE_DESKTOP) {
+        if(RillWaylandSession()) {
+            fprintf(stderr, "rill: --desktop currently requires an X11 session; Wayland desktop surfaces are not implemented\n");
+            return 1;
+        }
+        snprintf(window_title, sizeof(window_title), "Rill desktop %ld", (long)getpid());
+    }
+    if(options.xfce_panel && options.mode != RILL_MODE_DESKTOP) {
+        fprintf(stderr, "rill: --xfce-panel requires --desktop and an existing X11 window manager\n");
+        return 1;
+    }
+    RillX11Init(&x11);
+    if(options.mode == RILL_MODE_WINDOWED) {
+        if(RillX11StartWindowed(&x11, RILL_WIDTH, RILL_HEIGHT))
+            snprintf(startup_status, sizeof(startup_status),
+                     "Windowed X11 display %s", RillX11DisplayName(&x11));
+        else {
+            fprintf(stderr, "rill: windowed X11 display unavailable\n");
+            return 1;
+        }
+    }
+#else
+    if(options.mode == RILL_MODE_WM || options.mode == RILL_MODE_WINDOWED)
+        snprintf(startup_status, sizeof(startup_status),
+                 "%s", "X11 window management unavailable on this platform");
+#endif
+
     platform = RillPlatformCurrent();
     RillShellInit(&shell);
     RillShellRefresh(&shell, platform);
-    RillShellSetStatus(&shell, "Ready");
+    RillShellSetStatus(&shell, startup_status);
     rill_control_init(&control);
 
     SetSingleInstance(0);
-    InitWindow(RILL_WIDTH, RILL_HEIGHT, "Rill");
+    InitWindow(RILL_WIDTH, RILL_HEIGHT, window_title);
     if(!IsWindowReady()) {
         fprintf(stderr, "rill: failed to open Kryon window\n");
+#if RILL_HAS_X11
+        RillX11Shutdown(&x11);
+#endif
+        RillShellDispose(&shell);
         CloseWindow();
         return 1;
     }
     if(WindowShouldClose()) {
         fprintf(stderr, "rill: Kryon window closed during startup\n");
+#if RILL_HAS_X11
+        RillX11Shutdown(&x11);
+#endif
+        RillShellDispose(&shell);
         CloseWindow();
         return 1;
     }
@@ -1848,10 +2272,68 @@ main(void)
     SetTargetFPS(60);
     SetUIDefaultFontAutoLoad(1);
     configure_system_look(&visuals, &test);
+    init_panel_plugins(&visuals);
+    if(!test_scene_active(&test)) {
+        const char *root = platform->settings_root();
+        if(root != NULL && RillSettingsEnsureDirectory(root)) {
+            snprintf(visuals.panel_config_path, sizeof(visuals.panel_config_path),
+                     "%s/panel", root);
+            RillPanelLoad(visuals.panel_config_path, visuals.left_panel,
+                          &visuals.left_panel_count, visuals.right_panel,
+                          &visuals.right_panel_count, RILL_PANEL_PLUGIN_MAX);
+        }
+    }
+
+#if RILL_HAS_X11
+    if(options.mode == RILL_MODE_DESKTOP) {
+        if(!RillX11SetDesktop(window_title)) {
+            fprintf(stderr, "rill: could not assign the X11 desktop surface\n");
+            RillShellDispose(&shell);
+            CloseWindow();
+            return 1;
+        }
+        if(options.xfce_panel && !options.external_panel) {
+            RillLauncher launcher;
+            memset(&launcher, 0, sizeof(launcher));
+            snprintf(launcher.name, sizeof(launcher.name), "Xfce panel");
+            snprintf(launcher.command, sizeof(launcher.command), "xfce4-panel");
+            if(!platform->launch(&launcher)) {
+                fprintf(stderr, "rill: xfce4-panel is required for --xfce-panel\n");
+                RillShellDispose(&shell);
+                CloseWindow();
+                return 1;
+            }
+        }
+    }
+    if(options.mode == RILL_MODE_WM) {
+        if(RillX11StartRoot(&x11))
+            RillShellSetStatus(&shell, "Managing current X11 display");
+        else
+            RillShellSetStatus(&shell, "Could not claim X11 window manager");
+    }
+    if(options.launch_command[0] != '\0' && x11.active &&
+       RillX11Launch(&x11, options.launch_command))
+        RillShellSetStatus(&shell, "Launched contained X11 application");
+#endif
 
     next_refresh = 0.0;
-    while(!WindowShouldClose()) {
+#if RILL_HAS_X11
+    if(options.mode == RILL_MODE_DESKTOP) SessionConnect(argc, argv);
+#endif
+    while(!rill_stop_requested && !WindowShouldClose()) {
+#if RILL_HAS_X11
+        if(!SessionPoll()) break;
+#endif
+        if(!test_scene_active(&test)) {
+#if RILL_HAS_X11
+            RillX11Poll(&x11);
+            RillX11ProcessInput(&x11);
+#endif
+        }
         if(!test_scene_active(&test) && GetTime() >= next_refresh) {
+#if RILL_HAS_X11
+            if(options.mode == RILL_MODE_DESKTOP) RillX11SyncDesktop();
+#endif
             RillShellRefresh(&shell, platform);
             load_launcher_icons(&visuals, &shell);
             next_refresh = GetTime() + 1.0;
@@ -1864,7 +2346,8 @@ main(void)
         BeginDrawing();
         ClearBackground(opaque_color(GetThemeBackground()));
         BeginUIFrame(GetScreenWidth(), GetScreenHeight(), 1.0f);
-        BeginUI(0x52494c4c);
+        /* This compositor draws each window immediately, including its text.
+         * Deferring widgets to EndTree would paint them over later windows. */
 
         if(test_scene_active(&test)) {
             if(!draw_test_scene(&test))
@@ -1873,17 +2356,28 @@ main(void)
             draw_wallpaper(&visuals);
             draw_desktop(&shell, platform, &visuals);
             draw_apps(&shell, &visuals);
-            draw_top_panel(&shell, platform, &visuals);
+#if RILL_HAS_X11
+            RillX11Draw(&x11);
+#endif
+            if(!options.xfce_panel) draw_top_panel(&shell, platform, &visuals);
             draw_applications_menu(&shell, platform, &visuals);
             draw_places_menu(&shell, platform);
             draw_system_menu(&shell, platform);
+            draw_panel_context_menu(&shell, &visuals, platform);
         }
 
-        EndUI();
+        if(visuals.panel_dirty) {
+            if(!RillPanelSave(visuals.panel_config_path, visuals.left_panel,
+                              visuals.left_panel_count, visuals.right_panel,
+                              visuals.right_panel_count))
+                RillShellSetStatus(&shell, "Could not save panel settings");
+            visuals.panel_dirty = 0;
+        }
         EndUIFrame();
         EndDrawing();
 
-        if(test_scene_active(&test)) {
+        if(test_scene_active(&test) || test.ready_file != NULL ||
+           test.exit_after_frames > 0) {
             test.frames++;
             write_test_ready_file(&test);
             if(test.exit_after_frames > 0 &&
@@ -1906,6 +2400,12 @@ main(void)
     if(visuals.wallpaper_ready)
         UnloadTexture(visuals.wallpaper);
     rill_control_close(&control);
+#if RILL_HAS_X11
+    RillX11Shutdown(&x11);
+    RillWaylandShutdown();
+    SessionDisconnect();
+#endif
     CloseWindow();
+    RillShellDispose(&shell);
     return 0;
 }

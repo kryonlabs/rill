@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Rill (X11, Xfce services)
+Comment=Rill desktop with Xfce session services and panel plugins
+Exec=rill-session
+TryExec=rill-session
+Type=Application

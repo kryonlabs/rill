@@ -46,6 +46,7 @@ stub_list_tasks(RillTask *out, int cap)
         return 0;
     out[0].id = 1;
     snprintf(out[0].title, sizeof(out[0].title), "%s", "Rill desktop");
+    out[0].icon_path[0] = '\0';
     out[0].focused = 1;
     out[0].urgent = 0;
     return 1;
@@ -78,7 +79,8 @@ static const RillPlatformServices services = {
     stub_launch,
     stub_task_action,
     stub_task_action,
-    stub_settings_root
+    stub_settings_root,
+    NULL, NULL, NULL
 };
 
 const RillPlatformServices *

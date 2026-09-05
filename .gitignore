@@ -5,3 +5,6 @@ vendor/
 *.6
 *.5
 *.i
+
+__pycache__/
+*.pyc

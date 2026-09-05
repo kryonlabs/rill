@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""Run a complete Rill X11 session inside one Xephyr window."""
+import argparse
+import os
+from pathlib import Path
+import re
+import select
+import shutil
+import signal
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+
+
+def stop(process):
+    if process is None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--size', default='1280x800', help='initial desktop size (default: 1280x800)')
+    args = parser.parse_args()
+    match = re.fullmatch(r'(\d+)x(\d+)', args.size)
+    if not match or not all(320 <= int(n) <= 8192 for n in match.groups()):
+        parser.error('size must be WIDTHxHEIGHT, each between 320 and 8192')
+    if not os.environ.get('DISPLAY'):
+        parser.error('an outer X11 display is required')
+    server = os.environ.get('RILL_XEPHYR') or shutil.which('Xephyr')
+    if not server:
+        parser.error('Xephyr is required (Debian: install xserver-xephyr)')
+    session = Path(__file__).resolve().with_name('rill-session')
+    if not session.is_file():
+        parser.error('rill-session must be installed beside rill-window')
+    session_process = server_process = None
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda signum, frame: sys.exit(128 + signum))
+    with tempfile.TemporaryDirectory(prefix='rill-window-') as directory:
+        work = Path(directory)
+        authority = work / 'Xauthority'
+        # FamilyWild with an empty display number matches this private server.
+        fields = (b'', b'', b'MIT-MAGIC-COOKIE-1', os.urandom(16))
+        authority.write_bytes(struct.pack('!H', 65535) +
+                              b''.join(struct.pack('!H', len(v)) + v for v in fields))
+        authority.chmod(0o600)
+        read_fd, write_fd = os.pipe()
+        try:
+            server_process = subprocess.Popen([server, '-displayfd', str(write_fd),
+                '-auth', str(authority), '-nolisten', 'tcp', '-noreset', '-resizeable',
+                '-screen', args.size, '-title', 'Rill desktop'], pass_fds=(write_fd,),
+                start_new_session=True)
+            os.close(write_fd)
+            write_fd = -1
+            if not select.select([read_fd], [], [], 10)[0]:
+                raise RuntimeError('Xephyr did not become ready')
+            number = os.read(read_fd, 64).strip().decode('ascii')
+            if not number.isdigit() or server_process.poll() is not None:
+                raise RuntimeError('Xephyr failed to allocate a display')
+            env = dict(os.environ, DISPLAY=':' + number, XAUTHORITY=str(authority),
+                       GDK_BACKEND='x11', QT_QPA_PLATFORM='xcb', SDL_VIDEODRIVER='x11',
+                       CLUTTER_BACKEND='x11', MOZ_ENABLE_WAYLAND='0')
+            for key in ('SESSION_MANAGER', 'DBUS_SESSION_BUS_ADDRESS', 'WAYLAND_DISPLAY',
+                        'WAYLAND_SOCKET', 'DESKTOP_STARTUP_ID', 'RILL_CONTAINED_X11', 'RILL_CLIENT_DISPLAY'):
+                env.pop(key, None)
+            runtime = work / 'runtime'
+            runtime.mkdir(mode=0o700)
+            env['XDG_RUNTIME_DIR'] = str(runtime)
+            session_process = subprocess.Popen([str(session)], env=env, start_new_session=True)
+            print(f'Rill desktop is running on {env["DISPLAY"]} inside Xephyr.', flush=True)
+            while server_process.poll() is None and session_process.poll() is None:
+                time.sleep(.1)
+            if session_process.poll() not in (None, 0):
+                return session_process.returncode
+            return 0
+        finally:
+            os.close(read_fd)
+            if write_fd >= 0:
+                os.close(write_fd)
+            stop(session_process)
+            stop(server_process)
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except (OSError, RuntimeError) as error:
+        sys.exit(f'rill-window: {error}')

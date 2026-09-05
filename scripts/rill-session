@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""Start Rill with the installed Xfce session services on an X11 display."""
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import sys
+import xml.etree.ElementTree as ET
+
+
+def property_at(parent, name, kind, value=None):
+    item = next((p for p in parent.findall('property') if p.get('name') == name), None)
+    if item is None:
+        item = ET.SubElement(parent, 'property', name=name)
+    item.set('type', kind)
+    if value is not None:
+        item.set('value', str(value))
+    return item
+
+
+def default_panel(path):
+    """A single top panel; an imported personal layout always takes precedence."""
+    root = ET.Element('channel', name='xfce4-panel', version='1.0')
+    property_at(root, 'configver', 'int', 2)
+    panels = property_at(root, 'panels', 'array')
+    ET.SubElement(panels, 'value', type='int', value='1')
+    property_at(panels, 'dark-mode', 'bool', 'true')
+    panel = property_at(panels, 'panel-1', 'empty')
+    for name, kind, value in [('position', 'string', 'p=6;x=0;y=0'),
+                              ('length', 'uint', 100), ('position-locked', 'bool', 'true'),
+                              ('size', 'uint', 26), ('icon-size', 'uint', 16)]:
+        property_at(panel, name, kind, value)
+    ids = property_at(panel, 'plugin-ids', 'array')
+    plugins = property_at(root, 'plugins', 'empty')
+    for i, module in enumerate(('applicationsmenu', 'tasklist', 'separator', 'pager',
+                                'systray', 'clock', 'actions'), 1):
+        ET.SubElement(ids, 'value', type='int', value=str(i))
+        plugin = property_at(plugins, f'plugin-{i}', 'string', module)
+        if module == 'separator':
+            property_at(plugin, 'expand', 'bool', 'true')
+            property_at(plugin, 'style', 'uint', 0)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ET.ElementTree(root).write(path, encoding='utf-8', xml_declaration=True)
+
+
+def prepare(env, binary):
+    home = Path(env['HOME'])
+    original = Path(env.get('XDG_CONFIG_HOME', home / '.config'))
+    cache = Path(env.get('XDG_CACHE_HOME', home / '.cache'))
+    if not original.is_absolute() or not cache.is_absolute():
+        raise ValueError('XDG configuration and cache paths must be absolute')
+    profile = original / 'rill' / 'session'
+    profile.mkdir(parents=True, exist_ok=True, mode=0o700)
+    xfce = profile / 'xfce4'
+    if not xfce.exists():
+        source = original / 'xfce4'
+        if source.is_dir():
+            shutil.copytree(source, xfce)
+        else:
+            xfce.mkdir()
+    panel = xfce / 'xfconf/xfce-perchannel-xml/xfce4-panel.xml'
+    if not panel.exists():
+        default_panel(panel)
+    channel = xfce / 'xfconf' / 'xfce-perchannel-xml' / 'xfce4-session.xml'
+    channel.parent.mkdir(parents=True, exist_ok=True)
+    if channel.exists():
+        tree = ET.parse(channel)
+        root = tree.getroot()
+    else:
+        root = ET.Element('channel', name='xfce4-session', version='1.0')
+        tree = ET.ElementTree(root)
+    general = property_at(root, 'general', 'empty')
+    property_at(general, 'FailsafeSessionName', 'string', 'Rill')
+    property_at(general, 'SessionName', 'string', 'Rill')
+    # Inherit login agents; do not let a nested session replace the user's agent.
+    startup = property_at(root, 'startup', 'empty')
+    for agent in ('gpg-agent', 'ssh-agent'):
+        property_at(property_at(startup, agent, 'empty'), 'enabled', 'bool', 'false')
+    sessions = property_at(root, 'sessions', 'empty')
+    session = property_at(sessions, 'Rill', 'empty')
+    session.clear()
+    session.attrib.update(name='Rill', type='empty')
+    property_at(session, 'IsFailsafe', 'bool', 'true')
+    wm = env.get('RILL_WM', str(Path(binary).with_name('rill-wm')))
+    commands = [(wm,), ('xfsettingsd',), ('xfce4-panel',),
+                ('Thunar', '--daemon'), (binary, '--desktop', '--external-panel')]
+    property_at(session, 'Count', 'int', len(commands))
+    for i, command in enumerate(commands):
+        item = property_at(session, f'Client{i}_Command', 'array')
+        for arg in command:
+            ET.SubElement(item, 'value', type='string', value=arg)
+        property_at(session, f'Client{i}_Priority', 'int', 15 + i * 5)
+        property_at(session, f'Client{i}_PerScreen', 'bool', 'false')
+    temporary = channel.with_suffix('.tmp')
+    tree.write(temporary, encoding='utf-8', xml_declaration=True)
+    temporary.replace(channel)
+    result = dict(env)
+    result.update(XDG_CONFIG_HOME=str(profile), XDG_CACHE_HOME=str(cache / 'rill-session'),
+                  XDG_CONFIG_DIRS=str(original) + ':' + env.get('XDG_CONFIG_DIRS', '/etc/xdg'),
+                  XDG_CURRENT_DESKTOP='XFCE', XDG_SESSION_DESKTOP='rill',
+                  XDG_SESSION_TYPE='x11', DESKTOP_SESSION='rill', GDK_BACKEND='x11')
+    result.pop('SESSION_MANAGER', None)
+    result.pop('WAYLAND_DISPLAY', None)
+    result.pop('WAYLAND_SOCKET', None)
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--prepare', action='store_true', help='prepare the profile without starting a session')
+    args = parser.parse_args()
+    here = Path(__file__).resolve()
+    binary = os.environ.get('RILL_BIN') or shutil.which('rill')
+    if binary is None:
+        candidates = list((here.parent.parent / 'build').glob('linux-*/rill'))
+        binary = str(candidates[0]) if len(candidates) == 1 else None
+    if binary is None or not os.access(binary, os.X_OK):
+        parser.error('rill is not installed; build it or set RILL_BIN')
+    if not args.prepare:
+        if not os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'):
+            parser.error('start this session on an X11 display')
+        if os.environ.get('SESSION_MANAGER'):
+            parser.error('a session manager is already active; use the login-screen Rill session')
+        wm = os.environ.get('RILL_WM', str(Path(binary).resolve().with_name('rill-wm')))
+        for command in ('dbus-run-session', 'xfce4-session', wm, 'xfsettingsd', 'xfce4-panel', 'Thunar'):
+            if shutil.which(command) is None:
+                parser.error(f'missing required component: {command}')
+    env = prepare(os.environ, str(Path(binary).resolve()))
+    if 'PLAN9' not in env:
+        for candidate in (here.parent.parent.parent / 'plan9port',
+                          Path('/usr/local/plan9'), Path('/usr/lib/plan9')):
+            if (candidate / 'bin/devdraw').is_file():
+                env['PLAN9'] = str(candidate)
+                break
+    if 'DEVDRAW' not in env and 'PLAN9' in env:
+        env['DEVDRAW'] = str(Path(env['PLAN9']) / 'bin/devdraw')
+    if args.prepare:
+        print(json.dumps({key: env[key] for key in ('XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_CONFIG_DIRS')}))
+        return
+    os.execvpe('dbus-run-session', ['dbus-run-session', '--', 'xfce4-session'], env)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, ValueError, ET.ParseError) as error:
+        sys.exit(f'rill-session: {error}')

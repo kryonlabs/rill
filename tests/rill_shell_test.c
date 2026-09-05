@@ -5,6 +5,7 @@
 
 static int launches;
 static int focused_task;
+static int platform_task_id = 42;
 
 static int
 test_launchers(RillLauncher *out, int cap)
@@ -35,8 +36,9 @@ test_tasks(RillTask *out, int cap)
 {
     if(cap < 1)
         return 0;
-    out[0].id = 42;
+    out[0].id = platform_task_id;
     snprintf(out[0].title, sizeof(out[0].title), "%s", "Rio");
+    out[0].icon_path[0] = '\0';
     out[0].focused = 1;
     return 1;
 }
@@ -54,7 +56,7 @@ static int
 test_focus(int task_id)
 {
     focused_task = task_id;
-    return task_id == 42;
+    return task_id == platform_task_id;
 }
 
 static const char *
@@ -70,7 +72,8 @@ static const RillPlatformServices services = {
     test_launch,
     test_focus,
     test_focus,
-    test_settings
+    test_settings,
+    NULL, NULL, NULL
 };
 
 static void
@@ -80,6 +83,27 @@ check(const char *name, int ok, int *failures)
         fprintf(stderr, "rill shell test failed: %s\n", name);
         (*failures)++;
     }
+}
+
+static int
+many_launchers(RillLauncher *out, int cap)
+{
+    int count = cap < 100 ? cap : 100;
+    memset(out, 0, count * sizeof(*out));
+    for(int i = 0; i < count; i++) {
+        snprintf(out[i].id, sizeof(out[i].id), "application-%d", i);
+        snprintf(out[i].name, sizeof(out[i].name), "Application %d", i);
+    }
+    return count;
+}
+
+static int
+many_tasks(RillTask *out, int cap)
+{
+    int count = cap < 80 ? cap : 80;
+    memset(out, 0, count * sizeof(*out));
+    for(int i = 0; i < count; i++) out[i].id = i + 100;
+    return count;
 }
 
 int
@@ -124,5 +148,19 @@ main(void)
     check("recent host launch moved first", shell.recent_launcher_count == 2 &&
           strcmp(shell.recent_launcher_ids[0], "terminal") == 0, &failures);
 
+    platform_task_id = shell.apps[0].id;
+    focused_task = 0;
+    RillShellRefresh(&shell, &services);
+    RillShellSelectTask(&shell, shell.app_count);
+    check("focus colliding native ID", RillShellFocusSelectedTask(&shell, &services), &failures);
+    check("native ID stays native", focused_task == platform_task_id, &failures);
+    RillPlatformServices many = services;
+    many.list_launchers = many_launchers;
+    many.list_tasks = many_tasks;
+    RillShellRefresh(&shell, &many);
+    check("all launchers retained", shell.launcher_count == 100, &failures);
+    check("all tasks retained", shell.task_count == 82, &failures);
+    check("last launcher retained", strcmp(shell.launchers[99].id, "application-99") == 0, &failures);
+    RillShellDispose(&shell);
     return failures == 0 ? 0 : 1;
 }

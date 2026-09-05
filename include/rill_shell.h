@@ -35,11 +35,13 @@ typedef struct RillAppWindow {
 #define RILL_APP_MENU_SEARCH_MAX 80
 
 typedef struct RillShellState {
-    RillLauncher launchers[RILL_MAX_LAUNCHERS];
+    RillLauncher *launchers;
+    int launcher_capacity;
     int launcher_count;
     int selected_launcher;
 
-    RillTask tasks[RILL_MAX_TASKS];
+    RillTask *tasks;
+    int task_capacity;
     int task_count;
     int selected_task;
 
@@ -65,6 +67,7 @@ typedef struct RillShellState {
 } RillShellState;
 
 void RillShellInit(RillShellState *shell);
+void RillShellDispose(RillShellState *shell);
 void RillShellRefresh(RillShellState *shell,
                       const RillPlatformServices *platform);
 int RillShellSelectLauncher(RillShellState *shell, int index);

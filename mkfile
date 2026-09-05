@@ -16,6 +16,8 @@ CFLAGS=-FTVw
 OFILES=\
 	src/main.$O\
 	src/rill_shell.$O\
+	src/rill_panel.$O\
+	src/rill_settings.$O\
 	src/platform_plan9.$O\
 	$KTREM/src/app_chrome.$O\
 	$KTREM/src/app_clipboard.$O\
@@ -85,3 +87,10 @@ $SHELF/src/shelf_host.$O: $SHELF/src/shelf_host.c
 
 $SHELF/src/%.$O: $SHELF/src/%.c
 	cd $SHELF/src && cpp -+ $CPPFLAGS $stem.c > $stem.i && $CC $CFLAGS -c $stem.i && mv $stem.i.$O $stem.$O && rm -f $stem.i
+
+test:V: tests/rill_plan9_test.$O src/rill_panel.$O src/rill_settings.$O
+	$LD -o rill-test.$O.out $prereq /$objtype/lib/libstdio.a
+	./rill-test.$O.out
+
+tests/%.$O: tests/%.c
+	cd tests && cpp -+ $CPPFLAGS $stem.c > $stem.i && $CC $CFLAGS -c $stem.i && mv $stem.i.$O $stem.$O && rm -f $stem.i

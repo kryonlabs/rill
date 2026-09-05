@@ -1,7 +1,9 @@
 #include "rill_shell.h"
 
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <limits.h>
 
 static int
 clamp_index(int value, int count)
@@ -21,6 +23,10 @@ RillShellInit(RillShellState *shell)
     if(shell == NULL)
         return;
     memset(shell, 0, sizeof(*shell));
+    shell->launchers = calloc(RILL_MAX_LAUNCHERS, sizeof(*shell->launchers));
+    shell->launcher_capacity = shell->launchers != NULL ? RILL_MAX_LAUNCHERS : 0;
+    shell->tasks = calloc(RILL_MAX_TASKS, sizeof(*shell->tasks));
+    shell->task_capacity = shell->tasks != NULL ? RILL_MAX_TASKS : 0;
     shell->selected_launcher = -1;
     shell->selected_task = -1;
     shell->panel_side = RILL_PANEL_TOP;
@@ -28,6 +34,15 @@ RillShellInit(RillShellState *shell)
     shell->next_app_id = 1;
     shell->next_task_id = 1000;
     RillShellSetStatus(shell, "Rill is starting");
+}
+
+void
+RillShellDispose(RillShellState *shell)
+{
+    if(shell == NULL) return;
+    free(shell->launchers);
+    free(shell->tasks);
+    memset(shell, 0, sizeof(*shell));
 }
 
 void
@@ -51,38 +66,65 @@ RillShellRefresh(RillShellState *shell, const RillPlatformServices *platform)
 
     launcher_count = 0;
     task_count = 0;
-    if(platform->list_launchers != NULL)
-        launcher_count = platform->list_launchers(shell->launchers,
-                                                  RILL_MAX_LAUNCHERS);
-
-    if(launcher_count < 0)
-        launcher_count = 0;
-    if(launcher_count > RILL_MAX_LAUNCHERS)
-        launcher_count = RILL_MAX_LAUNCHERS;
+    if(platform->list_launchers != NULL && shell->launcher_capacity > 0) {
+        for(;;) {
+            launcher_count = platform->list_launchers(shell->launchers, shell->launcher_capacity);
+            if(launcher_count < shell->launcher_capacity) break;
+            launcher_count = shell->launcher_capacity;
+            if(shell->launcher_capacity > INT_MAX / 2) break;
+            int capacity = shell->launcher_capacity * 2;
+            if((size_t)capacity > (size_t)-1 / sizeof(*shell->launchers)) break;
+            RillLauncher *items = realloc(shell->launchers, (size_t)capacity * sizeof(*items));
+            if(items == NULL) {
+                RillShellSetStatus(shell, "Not enough memory to list every application");
+                break;
+            }
+            shell->launchers = items;
+            shell->launcher_capacity = capacity;
+        }
+    }
+    if(launcher_count < 0) launcher_count = 0;
     shell->launcher_count = launcher_count;
     shell->task_count = 0;
-    for(int i = 0; i < shell->app_count && shell->task_count < RILL_MAX_TASKS;
+    for(int i = 0; i < shell->app_count && shell->task_count < shell->task_capacity;
         i++) {
         shell->tasks[i].id = shell->apps[i].id;
         snprintf(shell->tasks[i].title, sizeof(shell->tasks[i].title), "%s",
                  shell->apps[i].title);
+        shell->tasks[i].icon_path[0] = '\0';
         shell->tasks[i].focused = shell->apps[i].focused;
         shell->tasks[i].urgent = 0;
+        shell->tasks[i].platform_owned = 0;
         shell->task_count++;
     }
     if(platform->list_tasks != NULL &&
-       shell->task_count < RILL_MAX_TASKS) {
-        task_count = platform->list_tasks(
-            &shell->tasks[shell->task_count],
-            RILL_MAX_TASKS - shell->task_count);
+       shell->task_count < shell->task_capacity) {
+        for(;;) {
+            int available = shell->task_capacity - shell->task_count;
+            task_count = platform->list_tasks(&shell->tasks[shell->task_count], available);
+            if(task_count < available) break;
+            task_count = available;
+            if(shell->task_capacity > INT_MAX / 2) break;
+            int capacity = shell->task_capacity * 2;
+            if((size_t)capacity > (size_t)-1 / sizeof(*shell->tasks)) break;
+            RillTask *items = realloc(shell->tasks, (size_t)capacity * sizeof(*items));
+            if(items == NULL) {
+                RillShellSetStatus(shell, "Not enough memory to list every window");
+                break;
+            }
+            shell->tasks = items;
+            shell->task_capacity = capacity;
+        }
         if(task_count < 0)
             task_count = 0;
-        if(task_count > RILL_MAX_TASKS - shell->task_count)
-            task_count = RILL_MAX_TASKS - shell->task_count;
+        if(task_count > shell->task_capacity - shell->task_count)
+            task_count = shell->task_capacity - shell->task_count;
+        for(int i = 0; i < task_count; i++)
+            shell->tasks[shell->task_count + i].platform_owned = 1;
         shell->task_count += task_count;
     }
     for(int i = 0;
-        i < shell->external_task_count && shell->task_count < RILL_MAX_TASKS;
+        i < shell->external_task_count && shell->task_count < shell->task_capacity;
         i++) {
         shell->tasks[shell->task_count] = shell->external_tasks[i];
         shell->task_count++;
@@ -296,7 +338,8 @@ RillShellLaunchSelected(RillShellState *shell,
 
     launcher = &shell->launchers[shell->selected_launcher];
     if(strncmp(launcher->command, "internal:", 9) == 0 ||
-       strncmp(launcher->command, "host:", 5) == 0) {
+       (strncmp(launcher->command, "host:", 5) == 0 &&
+        getenv("RILL_CONTAINED_X11") == NULL)) {
         int opened = RillShellOpenLauncher(shell, launcher);
         if(opened)
             RillShellRecordRecent(shell, launcher);
@@ -336,9 +379,9 @@ RillShellFocusSelectedTask(RillShellState *shell,
         return 0;
 
     task = &shell->tasks[shell->selected_task];
-    if(RillShellFocusApp(shell, task->id))
+    if(!task->platform_owned && RillShellFocusApp(shell, task->id))
         return 1;
-    for(int i = 0; i < shell->external_task_count; i++) {
+    for(int i = 0; !task->platform_owned && i < shell->external_task_count; i++) {
         if(shell->external_tasks[i].id == task->id) {
             focus_external_task_index(shell, i);
             snprintf(shell->status, sizeof(shell->status), "%s",
