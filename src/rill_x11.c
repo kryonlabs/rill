@@ -1000,7 +1000,7 @@ RillX11Draw(RillX11Manager *wm)
         DrawRectangleRec(title, mix(GetThemeSurface(), border, 0.18f));
         BeginScissorMode((int)title.x + 8, (int)title.y,
                          (int)title.width - 44, (int)title.height);
-        Text(client->title, (int)title.x + 10, (int)title.y + 8,
+        DrawText(client->title, (int)title.x + 10, (int)title.y + 8,
              Text14, GetThemeText());
         EndScissorMode();
         if(close_button(close)) {
@@ -1015,7 +1015,7 @@ RillX11Draw(RillX11Manager *wm)
                                        (float)client->texture.height},
                            content, (Vector2){0, 0}, 0.0f, WHITE);
         } else {
-            Text("Waiting for X11 surface", (int)content.x + 14,
+            DrawText("Waiting for X11 surface", (int)content.x + 14,
                  (int)content.y + 14, Text14, GetThemeIcon());
         }
         EndScissorMode();

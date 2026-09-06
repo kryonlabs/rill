@@ -571,7 +571,7 @@ draw_text_fit(const char *text, int x, int y, int max_width, int font_size,
         text = "";
     while(font_size > Text8 && TextWidth(text, font_size) > max_width)
         font_size -= 2;
-    Text(text, x, y, font_size, color);
+    DrawText(text, x, y, font_size, color);
 }
 
 static void
@@ -585,7 +585,7 @@ draw_text_fit_centered(const char *text, int x, int y, int max_width,
     while(font_size > Text8 && TextWidth(text, font_size) > max_width)
         font_size -= 2;
     width = TextWidth(text, font_size);
-    Text(text, x + (max_width - width) / 2, y, font_size, color);
+    DrawText(text, x + (max_width - width) / 2, y, font_size, color);
 }
 
 static void
@@ -1052,7 +1052,7 @@ draw_workspace_switcher(int x, int width, RillShellState *shell,
         Rectangle button = {x + i * 20, 4, 18, 18};
         DrawRectangleRec(button, index == current ? panel_active_color() : panel_item_color());
         snprintf(label, sizeof(label), "%d", index + 1);
-        Text(label, (int)button.x + 4, 7, Text12, GetThemeText());
+        DrawText(label, (int)button.x + 4, 7, Text12, GetThemeText());
         if(CheckCollisionPointRec(GetMousePosition(), button) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
             if(!platform->switch_workspace(index))
                 RillShellSetStatus(shell, "Could not switch workspace");
@@ -1361,7 +1361,7 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
                              GetThemeButtonHover()));
         return x + plugin->advance;
     case RILL_PANEL_LANGUAGE:
-        Text(plugin->label, x, 7, Text12,
+        DrawText(plugin->label, x, 7, Text12,
              (Color){92, 185, 255, 255});
         return x + plugin->advance;
     case RILL_PANEL_CLOCK:
@@ -2014,7 +2014,7 @@ draw_host_app(RillAppWindow *app, Rectangle content, RillVisualState *visuals)
 static void
 draw_settings_app(Rectangle content, const RillVisualState *visuals)
 {
-    Text("Appearance", (int)content.x + 16, (int)content.y + 14, Text18,
+    DrawText("Appearance", (int)content.x + 16, (int)content.y + 14, Text18,
          GetThemeText());
     draw_text_fit(visuals->system_theme_name, (int)content.x + 16,
                   (int)content.y + 48, (int)content.width - 32, Text14,
@@ -2026,16 +2026,16 @@ draw_settings_app(Rectangle content, const RillVisualState *visuals)
                                              "Desktop background unavailable",
                   (int)content.x + 16, (int)content.y + 100,
                   (int)content.width - 32, Text12, GetThemeIcon());
-    Text("Rill settings", (int)content.x + 16, (int)content.y + 132,
+    DrawText("Rill settings", (int)content.x + 16, (int)content.y + 132,
          Text14, GetThemeText());
 }
 
 static void
 draw_about_app(Rectangle content)
 {
-    Text("Rill", (int)content.x + 16, (int)content.y + 14, Text24,
+    DrawText("Rill", (int)content.x + 16, (int)content.y + 14, Text24,
          GetThemeText());
-    Text("A Kryon/libdraw desktop for Taiji and Plan 9.",
+    DrawText("A Kryon/libdraw desktop for Taiji and Plan 9.",
          (int)content.x + 16, (int)content.y + 54, Text14, GetThemeText());
 }
 
@@ -2060,7 +2060,7 @@ draw_app_window(RillShellState *shell, RillAppWindow *app,
                                                   frame_color, 0.18f)));
     BeginScissorMode((int)title.x + 6, (int)title.y,
                      (int)title.width - 42, (int)title.height);
-    Text(app->title, app->x + 10, app->y + 8, Text14, GetThemeText());
+    DrawText(app->title, app->x + 10, app->y + 8, Text14, GetThemeText());
     EndScissorMode();
     if(draw_window_close_button((Rectangle){app->x + app->w - 30,
                                             app->y + 4, 22, 22})) {
@@ -2108,7 +2108,7 @@ draw_test_window(Rectangle frame, const char *title, Color title_color,
     DrawRectangleRec(title_rect, opaque_color(title_color));
     BeginScissorMode((int)title_rect.x + 8, (int)title_rect.y,
                      (int)title_rect.width - 16, (int)title_rect.height);
-    Text(title, (int)title_rect.x + 10, (int)title_rect.y + 8, Text14, WHITE);
+    DrawText(title, (int)title_rect.x + 10, (int)title_rect.y + 8, Text14, WHITE);
     EndScissorMode();
     DrawRectangleRec(content, opaque_color(content_color));
 }
@@ -2129,13 +2129,13 @@ draw_compositor_stack_test_scene(void)
 
     ClearBackground((Color){8, 9, 12, 255});
     DrawRectangle(0, 0, GetScreenWidth(), PANEL_H, (Color){20, 22, 30, 255});
-    Text("Rill visual test", 10, 8, Text12, WHITE);
+    DrawText("Rill visual test", 10, 8, Text12, WHITE);
 
     draw_test_window(lower, "Lower text producer", lower_title, lower_bg, 0);
     BeginScissorMode((int)lower_content.x, (int)lower_content.y,
                      (int)lower_content.width, (int)lower_content.height);
     for(int i = 0; i < 8; i++) {
-        Text("TEXT-HIERARCHY-LEAK TEXT-HIERARCHY-LEAK",
+        DrawText("TEXT-HIERARCHY-LEAK TEXT-HIERARCHY-LEAK",
              RILL_TEST_LOWER_TEXT_X, RILL_TEST_LOWER_TEXT_Y + i * 26, Text24,
              red);
     }
@@ -2155,14 +2155,14 @@ draw_menu_stack_test_scene(void)
 
     ClearBackground((Color){8, 9, 12, 255});
     DrawRectangle(0, 0, GetScreenWidth(), PANEL_H, panel_color());
-    Text("Rill visual test", 10, 8, Text12, WHITE);
+    DrawText("Rill visual test", 10, 8, Text12, WHITE);
 
     draw_test_window(lower, "Lower text producer", (Color){92, 28, 96, 255},
                      (Color){18, 18, 22, 255}, 1);
     BeginScissorMode((int)lower_content.x, (int)lower_content.y,
                      (int)lower_content.width, (int)lower_content.height);
     for(int i = 0; i < 5; i++) {
-        Text("TEXT-HIERARCHY-LEAK TEXT-HIERARCHY-LEAK", 190, 138 + i * 24,
+        DrawText("TEXT-HIERARCHY-LEAK TEXT-HIERARCHY-LEAK", 190, 138 + i * 24,
              Text24, red);
     }
     EndScissorMode();
