@@ -138,6 +138,14 @@ def main():
     if args.prepare:
         print(json.dumps({key: env[key] for key in ('XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_CONFIG_DIRS')}))
         return
+    sessiond = str(Path(binary).resolve().with_name('rill-sessiond'))
+    if os.environ.get('RILL_SESSION', 'xfce') == 'rill' and os.access(sessiond, os.X_OK):
+        # Rill's own session manager: XDG autostart plus XSMP supervision,
+        # launching the desktop body directly instead of xfce4-session.
+        body = os.environ.get('RILL_SESSION_BODY') or (
+            f'{wm} & exec {binary} --desktop --external-panel')
+        os.execvpe('dbus-run-session',
+                   ['dbus-run-session', '--', sessiond, '--', 'sh', '-c', body], env)
     os.execvpe('dbus-run-session', ['dbus-run-session', '--', 'xfce4-session'], env)
 
 

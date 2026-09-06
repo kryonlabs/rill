@@ -59,6 +59,11 @@ adapters.
 - Linux X11 window-manager mode with `--wm`.
 - Contained windowed mode with `--windowed`, which starts a private Xvfb
   display and mirrors real X11 client windows into Rill.
+- `rill-sessiond`, an independent session manager: an XSMP server secured by
+  a MIT-MAGIC-COOKIE-1 in the ICE authority file, XDG autostart execution
+  (Hidden/TryExec/OnlyShowIn filtering, XFCE entries included), session-body
+  supervision and logout coordination through a control fifo. Sessions can
+  run without xfce4-session via `RILL_SESSION=rill rill-session`.
 
 ## Linux Launchers
 

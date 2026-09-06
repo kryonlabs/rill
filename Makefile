@@ -136,7 +136,7 @@ protocol-test: $(BUILD_DIR)/rill_x11_protocol_test
 xembed-test: $(BUILD_DIR)/rill_xembed_test
 	xvfb-run -a $(BUILD_DIR)/rill_xembed_test
 
-test: platform-test xembed-test
+test: platform-test xembed-test sessiond-test
 
 build/protocols/toplevel-client.h: protocols/wlr-foreign-toplevel-management-unstable-v1.xml
 	mkdir -p build/protocols
@@ -164,6 +164,7 @@ PREFIX ?= /usr/local
 .PHONY: install session-test
 install: $(BIN)
 	install -Dm755 $(WM_BIN) $(DESTDIR)$(PREFIX)/bin/rill-wm
+	install -Dm755 $(SESSIOND_BIN) $(DESTDIR)$(PREFIX)/bin/rill-sessiond
 	install -Dm755 $(BIN) $(DESTDIR)$(PREFIX)/bin/rill
 	install -Dm755 scripts/rill-session $(DESTDIR)$(PREFIX)/bin/rill-session
 	install -Dm755 scripts/rill-window $(DESTDIR)$(PREFIX)/bin/rill-window
@@ -191,7 +192,19 @@ WM_BIN := $(BUILD_DIR)/rill-wm
 $(WM_BIN): src/wm.c src/wm_compositor.c src/session.c include/session.h include/wm_compositor.h | $(BUILD_DIR)
 	$(CC) -Iinclude $(CFLAGS) $(shell pkg-config --cflags $(WM_PKGS)) -o $@ src/wm.c src/wm_compositor.c src/session.c $(shell pkg-config --libs $(WM_PKGS))
 
-all: $(WM_BIN)
+SESSIOND_BIN := $(BUILD_DIR)/rill-sessiond
+$(SESSIOND_BIN): src/rill_sessiond.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(shell pkg-config --cflags sm ice) -o $@ src/rill_sessiond.c $(shell pkg-config --libs sm ice)
+
+$(BUILD_DIR)/rill_sessiond_test: tests/rill_sessiond_test.c $(SESSIOND_BIN) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(shell pkg-config --cflags sm ice) -o $@ tests/rill_sessiond_test.c $(shell pkg-config --libs sm ice)
+
+.PHONY: sessiond-test
+sessiond-test: $(BUILD_DIR)/rill_sessiond_test $(SESSIOND_BIN)
+	$(BUILD_DIR)/rill_sessiond_test $(abspath $(SESSIOND_BIN))
+
+all: $(WM_BIN) $(SESSIOND_BIN)
+install session-smoke plugin-smoke nested-smoke: $(SESSIOND_BIN)
 install session-smoke plugin-smoke nested-smoke: $(WM_BIN)
 
 $(BUILD_DIR)/wm_test: tests/wm_test.c | $(BUILD_DIR)

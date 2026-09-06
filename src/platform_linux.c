@@ -1060,6 +1060,23 @@ linux_session_action(const char *action)
         if(strcmp(action, "lock") == 0)
             return g_spawn_command_line_async("xflock4", NULL) ||
                    g_spawn_command_line_async("loginctl lock-session", NULL);
+        /* Rill's own session manager coordinates the logout when running;
+           fall back to the Xfce session otherwise. */
+        {
+            const char *runtime = getenv("XDG_RUNTIME_DIR");
+            char control[512];
+            FILE *fifo;
+            if(runtime != NULL && runtime[0] != '\0') {
+                snprintf(control, sizeof(control),
+                         "%s/rill-session-%ld.control", runtime, (long)getuid());
+                fifo = fopen(control, "a");
+                if(fifo != NULL) {
+                    fputs("logout\n", fifo);
+                    fclose(fifo);
+                    return 1;
+                }
+            }
+        }
         return g_spawn_command_line_async("xfce4-session-logout", NULL);
     } else
         return 0;

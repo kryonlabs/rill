@@ -57,12 +57,15 @@ Linux execution/display bridge, neither of which is implemented here.
 
 1. **Session lifecycle:** X11 now has a display-manager entry and an Xfce-backed
    session with desktop XSMP registration. Startup, crash restart and logout
-   have passed integration tests. The Rill end-session dialog performs log out
-   through the session manager and restart/shutdown/suspend through logind;
-   these power actions still need validation on real hardware. Saved-session
-   restoration and cancellation with unsaved applications still need
-   end-to-end validation. Native Wayland and Plan 9 session lifecycles remain
-   to be implemented.
+   have passed integration tests. `rill-sessiond` additionally provides an
+   independent session manager (XSMP server with cookie auth, XDG autostart,
+   body supervision, fifo-coordinated logout; covered by a parity test), and
+   `RILL_SESSION=rill rill-session` starts a session without xfce4-session.
+   The end-session dialog performs log out through Rill's own manager when
+   running and restart/shutdown/suspend through logind; power actions still
+   need validation on real hardware. Saved-session restoration and
+   cancellation with unsaved applications still need end-to-end validation.
+   Native Wayland and Plan 9 session lifecycles remain to be implemented.
 2. **Complete X11 window management:** ICCCM focus protocols, transient/modal
    relationships, size hints, interactive resize, minimize/maximize/fullscreen,
    stacking rules, Alt-Tab, struts/workareas, multi-monitor layout and hotplug.
