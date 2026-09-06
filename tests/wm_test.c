@@ -5,6 +5,7 @@
 #include <X11/extensions/Xcomposite.h>
 #include <X11/extensions/shape.h>
 #include <X11/extensions/sync.h>
+#include <X11/extensions/Xrandr.h>
 #include <X11/keysym.h>
 #include <assert.h>
 #include <signal.h>
@@ -138,6 +139,7 @@ int main(int argc, char **argv)
     root = DefaultRootWindow(d);
     atexit(cleanup);
     setenv("RILL_WM_PING_MS", "300", 1);
+    setenv("RILL_WM_BUTTON_LAYOUT", "O|HC", 1);
     start(argv[1]);
     Window dock = XCreateSimpleWindow(d, root, 0, 0, 1280, 40, 0, 0, 0x222222);
     Atom type = atom("_NET_WM_WINDOW_TYPE_DOCK");
@@ -290,6 +292,62 @@ int main(int argc, char **argv)
     check(value(root, "_NET_ACTIVE_WINDOW", XA_WINDOW, 0) == w,
           "Alt-Tab selects the previously focused window");
     XDestroyWindow(d, second);
+    pump();
+    /* Imported button layout "O|HC": close at the far right, hide beside it. */
+    position(w, &x, &y);
+    XTestFakeMotionEvent(d, DefaultScreen(d), x + attrs(w).width - 10, y - 16, CurrentTime);
+    pump();
+    XTestFakeButtonEvent(d, 1, True, CurrentTime);
+    XTestFakeButtonEvent(d, 1, False, CurrentTime);
+    pump();
+    int button_close = 0;
+    while (XPending(d)) {
+        XEvent e;
+        XNextEvent(d, &e);
+        if (e.type == ClientMessage && e.xclient.message_type == atom("WM_PROTOCOLS") &&
+            (Atom)e.xclient.data.l[0] == atom("WM_DELETE_WINDOW"))
+            button_close = 1;
+    }
+    check(button_close, "rightmost configured button closes");
+    send(w, "_NET_ACTIVE_WINDOW", 2, 0, 0, 0, 0);
+    XTestFakeMotionEvent(d, DefaultScreen(d), x + attrs(w).width - 32, y - 16, CurrentTime);
+    pump();
+    XTestFakeButtonEvent(d, 1, True, CurrentTime);
+    XTestFakeButtonEvent(d, 1, False, CurrentTime);
+    pump();
+    check(attrs(parent(w)).map_state == IsUnmapped, "second configured button hides");
+    send(w, "_NET_ACTIVE_WINDOW", 2, 0, 0, 0, 0);
+    /* A RandR fake monitor drives monitor-aware maximize and tiling. */
+    XRRMonitorInfo fake = {0};
+    fake.name = atom("RillRight");
+    fake.x = 640;
+    fake.y = 0;
+    fake.width = 640;
+    fake.height = 800;
+    fake.mwidth = 640;
+    fake.mheight = 800;
+    XRRSetMonitor(d, root, &fake);
+    pump();
+    Window mono = XCreateSimpleWindow(d, root, 700, 300, 200, 150, 0, 0, 0x0f0f0f);
+    XStoreName(d, mono, "Right monitor window");
+    XMapWindow(d, mono);
+    pump();
+    send(mono, "_NET_WM_STATE", 1, atom("_NET_WM_STATE_MAXIMIZED_HORZ"),
+         atom("_NET_WM_STATE_MAXIMIZED_VERT"), 0, 0);
+    position(mono, &x, &y);
+    check(x == 643 && attrs(mono).width == 634, "maximize follows the right monitor");
+    key(XK_Super_L, XK_Right);
+    position(mono, &x, &y);
+    check(x == 963 && attrs(mono).width == 314, "tiling uses the right monitor workarea");
+    XRRDeleteMonitor(d, root, atom("RillRight"));
+    pump();
+    send(mono, "_NET_WM_STATE", 0, atom("_NET_WM_STATE_MAXIMIZED_HORZ"),
+         atom("_NET_WM_STATE_MAXIMIZED_VERT"), 0, 0);
+    send(mono, "_NET_WM_STATE", 1, atom("_NET_WM_STATE_MAXIMIZED_HORZ"),
+         atom("_NET_WM_STATE_MAXIMIZED_VERT"), 0, 0);
+    position(mono, &x, &y);
+    check(x == 3 && attrs(mono).width == 1274, "monitor removal returns to full-screen maximize");
+    XDestroyWindow(d, mono);
     pump();
     /* Moving through EWMH must use native pointer input, not UI emulation. */
     position(w, &x, &y);
@@ -518,6 +576,7 @@ int main(int argc, char **argv)
         fclose(keys);
     }
     setenv("RILL_WM_KEYS", "/tmp/rill-wm-test-keys", 1);
+    setenv("RILL_WM_FOCUS_MODE", "follows-mouse", 1);
     start(argv[1]);
     check(parent(w) != root, "new WM adopts live app");
     /* The adopted app lives on workspace 3; activate it so key bindings have a target. */
@@ -554,6 +613,12 @@ int main(int argc, char **argv)
             configured_close = 1;
     }
     check(configured_close, "configured Ctrl-Alt-q closes the focused window");
+    /* Focus-follows-mouse moves focus without clicks in this mode. */
+    position(w, &x, &y);
+    XTestFakeMotionEvent(d, DefaultScreen(d), x + 160, y + 100, CurrentTime);
+    pump();
+    check(value(root, "_NET_ACTIVE_WINDOW", XA_WINDOW, 0) == w,
+          "pointer entry focuses a window in follows-mouse mode");
     XDestroyWindow(d, w);
     XDestroyWindow(d, dock);
     pump();

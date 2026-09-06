@@ -72,6 +72,14 @@ static void switcher_drop(Client *c);
 static void send_ping(Client *c);
 
 enum { Border = 3, Title = 28, Button = 25 };
+/* Decoration buttons, focus model and title double-click imported from the
+   xfwm4 xfconf channel when present; RILL_WM_BUTTON_LAYOUT and
+   RILL_WM_FOCUS_MODE override for testing. Letters: O menu, T stick, S shade,
+   H hide, M maximize, C close, split left|right of the title. */
+static char button_left[8], button_right[8];
+static int follow_mouse;
+enum { DoubleClickMaximize, DoubleClickShade, DoubleClickNone };
+static int double_click = DoubleClickMaximize;
 static Atom atom(const char *name) { return XInternAtom(display, name, False); }
 static int max(int a, int b) { return a > b ? a : b; }
 static int min(int a, int b) { return a < b ? a : b; }
@@ -157,6 +165,11 @@ static void restack(void);
 static void configure(Client *c);
 static void update_workarea(void);
 static void finish_drag(int cancel);
+static void close_client(Client *c, Time time);
+static void maximize(Client *c);
+static void minimize(Client *c);
+static void move_desktop(Client *c, int value);
+static void state(Client *c);
 
 static void protocol(Client *c, const char *name, Time time)
 {
@@ -210,6 +223,104 @@ static void title(Client *c)
         }
     }
 }
+static void set_button_layout(const char *layout)
+{
+    const char *bar = strchr(layout, '|');
+    char left[8];
+    int n = 0;
+    snprintf(left, sizeof(left), "%.*s", bar ? (int)(bar - layout) : (int)strlen(layout), layout);
+    const char *groups[2] = {left, bar ? bar + 1 : ""};
+    for (int side = 0; side < 2; side++) {
+        char *out = side ? button_right : button_left;
+        n = 0;
+        for (const char *p = groups[side]; *p && n < 7; p++)
+            if (strchr("OTSHMC", *p))
+                out[n++] = *p;
+        out[n] = 0;
+    }
+}
+static int xfwm4_setting(const char *property, char *out, size_t size)
+{
+    char command[256];
+    snprintf(command, sizeof(command), "xfconf-query -c xfwm4 -p %s 2>/dev/null", property);
+    FILE *stream = popen(command, "r");
+    if (!stream)
+        return 0;
+    int ok = fgets(out, (int)size, stream) != NULL;
+    pclose(stream);
+    if (ok) {
+        char *end = out + strlen(out);
+        while (end > out && (end[-1] == '\n' || end[-1] == '\r' || end[-1] == ' '))
+            *--end = 0;
+    }
+    return ok && out[0];
+}
+static void load_decoration_preferences(void)
+{
+    char value[128];
+    set_button_layout("|HMC");
+    const char *override = getenv("RILL_WM_BUTTON_LAYOUT");
+    if (override && *override)
+        set_button_layout(override);
+    else if (xfwm4_setting("/general/button_layout", value, sizeof(value)))
+        set_button_layout(value);
+    const char *mode = getenv("RILL_WM_FOCUS_MODE");
+    if (mode && strcmp(mode, "follows-mouse") == 0)
+        follow_mouse = 1;
+    else if (mode && strcmp(mode, "click") == 0)
+        follow_mouse = 0;
+    else if (xfwm4_setting("/general/focus_follows_mouse", value, sizeof(value)))
+        follow_mouse = strcmp(value, "true") == 0;
+    if (xfwm4_setting("/general/double_click_action", value, sizeof(value))) {
+        if (strcmp(value, "shade") == 0)
+            double_click = DoubleClickShade;
+        else if (strcmp(value, "none") == 0)
+            double_click = DoubleClickNone;
+    }
+}
+static void draw_button_glyph(Client *c, int x, char kind)
+{
+    XSetForeground(display, c->paint, 0xffe6e9ef);
+    Window frame = c->frame;
+    GC paint = c->paint;
+    if (kind == 'C') {
+        XDrawLine(display, frame, paint, x + 8, 10, x + 17, 19);
+        XDrawLine(display, frame, paint, x + 17, 10, x + 8, 19);
+    } else if (kind == 'M')
+        XDrawRectangle(display, frame, paint, x + 8, 10, 9, 9);
+    else if (kind == 'H')
+        XDrawLine(display, frame, paint, x + 8, 19, x + 17, 19);
+    else if (kind == 'S') {
+        XDrawRectangle(display, frame, paint, x + 7, 8, 11, 13);
+        XDrawLine(display, frame, paint, x + 7, 14, x + 18, 14);
+    } else if (kind == 'T') {
+        XDrawLine(display, frame, paint, x + 12, 8, x + 17, 14);
+        XDrawLine(display, frame, paint, x + 17, 14, x + 12, 20);
+        XDrawLine(display, frame, paint, x + 12, 20, x + 7, 14);
+        XDrawLine(display, frame, paint, x + 7, 14, x + 12, 8);
+    } else if (kind == 'O') {
+        XDrawLine(display, frame, paint, x + 8, 10, x + 17, 10);
+        XDrawLine(display, frame, paint, x + 8, 14, x + 17, 14);
+        XDrawLine(display, frame, paint, x + 8, 18, x + 17, 18);
+    }
+}
+static void activate_button(Client *c, char kind, int x, int y, Time time)
+{
+    if (kind == 'C')
+        close_client(c, time);
+    else if (kind == 'M')
+        maximize(c);
+    else if (kind == 'H')
+        minimize(c);
+    else if (kind == 'S' && c->decorated) {
+        c->shaded = !c->shaded;
+        configure(c);
+        state(c);
+    } else if (kind == 'T')
+        move_desktop(c, c->desktop < 0 ? desktop : -1);
+    else if (kind == 'O')
+        menu_open(c, x, y, time);
+}
 static void draw_frame(Client *c)
 {
     if (!c->frame || !c->title)
@@ -228,20 +339,14 @@ static void draw_frame(Client *c)
                    c->geometry.h);
     XFillRectangle(display, c->frame, c->paint, 0, c->geometry.h + c->title + c->border, width,
                    c->border);
-    XSetForeground(display, c->paint, 0xffe6e9ef);
-    for (int i = 0; i < 3; i++) {
-        int x = width - (i + 1) * Button;
-        if (i == 0) {
-            XDrawLine(display, c->frame, c->paint, x + 8, 10, x + 17, 19);
-            XDrawLine(display, c->frame, c->paint, x + 17, 10, x + 8, 19);
-        }
-        if (i == 1)
-            XDrawRectangle(display, c->frame, c->paint, x + 8, 10, 9, 9);
-        if (i == 2)
-            XDrawLine(display, c->frame, c->paint, x + 8, 19, x + 17, 19);
-    }
+    int n_left = (int)strlen(button_left), n_right = (int)strlen(button_right);
+    for (int i = 0; i < n_right; i++)
+        draw_button_glyph(c, width - (n_right - i) * Button, button_right[i]);
+    for (int i = 0; i < n_left; i++)
+        draw_button_glyph(c, i * Button, button_left[i]);
     if (c->draw && font) {
-        XRectangle clip = {7, 0, (unsigned short)max(0, width - 3 * Button - 14), Title};
+        XRectangle clip = {7 + n_left * Button, 0,
+                           (unsigned short)max(0, width - (n_left + n_right) * Button - 14), Title};
         XftDrawSetClipRectangles(c->draw, 0, 0, &clip, 1);
         XftDrawStringUtf8(c->draw, &text_color, font, 8, (Title + font->ascent - font->descent) / 2,
                           (const FcChar8 *)c->name, strlen(c->name));
@@ -783,7 +888,8 @@ static void manage(Window window)
     while (*tail)
         tail = &(*tail)->next;
     *tail = c;
-    XSelectInput(display, window, PropertyChangeMask | StructureNotifyMask | FocusChangeMask);
+    XSelectInput(display, window,
+                 PropertyChangeMask | StructureNotifyMask | FocusChangeMask | EnterWindowMask);
     if (have_shape)
         XShapeSelectInput(display, window, ShapeNotifyMask);
     if (!c->special) {
@@ -1623,19 +1729,30 @@ static void button(XButtonEvent *e)
     if (e->button != 1)
         return;
     int width = c->geometry.w + 2 * c->border;
-    if (e->y < c->title + c->border && e->x >= width - 3 * Button) {
-        int b = (width - e->x) / Button;
-        if (b == 0)
-            close_client(c, e->time);
-        else if (b == 1)
-            maximize(c);
-        else
-            minimize(c);
-        return;
+    int n_left = (int)strlen(button_left), n_right = (int)strlen(button_right);
+    if (e->y < c->title + c->border) {
+        if (e->x >= width - n_right * Button) {
+            int index = (width - e->x) / Button;
+            if (index < n_right)
+                activate_button(c, button_right[n_right - 1 - index], e->x_root, e->y_root,
+                                e->time);
+            return;
+        }
+        if (e->x < n_left * Button) {
+            int index = e->x / Button;
+            if (index < n_left)
+                activate_button(c, button_left[index], e->x_root, e->y_root, e->time);
+            return;
+        }
     }
-    if (e->y < c->title + c->border && e->x > c->border && e->x < width - c->border) {
+    if (e->y < c->title + c->border && e->x >= n_left * Button && e->x < width - n_right * Button) {
         if (last_click_window == c->window && e->time - last_click_time < 300) {
-            maximize(c);
+            if (double_click == DoubleClickShade && c->decorated) {
+                c->shaded = !c->shaded;
+                configure(c);
+                state(c);
+            } else if (double_click == DoubleClickMaximize)
+                maximize(c);
             last_click_time = 0;
             return;
         }
@@ -1977,6 +2094,16 @@ static void event(XEvent *e)
     case KeyPress:
         key(&e->xkey);
         break;
+    case EnterNotify:
+        /* Focus-follows-mouse skips grabs and inferior crossings. */
+        if (follow_mouse && (e->xcrossing.mode == NotifyNormal ||
+                             e->xcrossing.mode == NotifyUngrab) &&
+            e->xcrossing.detail != NotifyInferior) {
+            Client *entered = find(e->xcrossing.window);
+            if (entered && !entered->special && visible(entered) && entered != focused)
+                focus(entered, e->xcrossing.time);
+        }
+        break;
     case KeyRelease:
         if (switcher_active)
             for (int i = 0; i < alt_key_count; i++)
@@ -2163,6 +2290,7 @@ static int initialize(void)
                       DefaultColormap(display, screen_number), "#eeeeee", &text_color);
     move_cursor = XCreateFontCursor(display, XC_fleur);
     resize_cursor = XCreateFontCursor(display, XC_bottom_right_corner);
+    load_decoration_preferences();
     char keys_path[512];
     const char *keys_override = getenv("RILL_WM_KEYS");
     if (keys_override && *keys_override)

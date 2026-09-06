@@ -30,6 +30,15 @@ xfce4-session and Thunar. Their code and APIs have not been reimplemented.
   offers a force close.
 - `_NET_WM_SYNC_REQUEST` synchronized resizing: interactive resizes advance the
   client's frame counter and briefly wait for its acknowledgement.
+- xfwm4 preferences import: the decoration button layout (`O` menu, `T` stick,
+  `S` shade, `H` hide, `M` maximize, `C` close, split left|right of the title),
+  the title double-click action and the focus model (click or
+  focus-follows-mouse) are read from the xfwm4 xfconf channel at startup.
+  `RILL_WM_BUTTON_LAYOUT` and `RILL_WM_FOCUS_MODE` override them without
+  xfconf.
+- Monitor-aware placement: maximizing, tiling and fullscreen use the RandR
+  monitor containing the window, including fake monitors, and follow monitor
+  changes.
 - Transient/modal dialogs, parent minimize/restore, panel struts/work areas,
   basic monitor-aware maximization/fullscreen and display resize handling.
 - ICCCM delete/take-focus messages, EWMH state/move/resize requests, Motif
@@ -56,7 +65,7 @@ Default controls; every one of them can be rebound through the key file below.
 | Alt+F7 / Alt+F8 | Move / resize using keyboard or pointer |
 | Alt+Space, or title right-click | Window menu |
 | Alt+left/right drag | Move / resize |
-| Title double-click / wheel | Maximize / shade |
+| Title double-click / wheel | Maximize or shade (configured) / shade |
 | Ctrl+Alt+Left/Right | Switch workspace |
 | Ctrl+Alt+Shift+Left/Right | Move active window between workspaces |
 | Super+arrows | Tile window |
@@ -118,9 +127,9 @@ network or privileged functionality.
 
 Rill WM is not yet a 1:1 xfwm4 replacement. These gaps remain explicit:
 
-- xfwm4 theme parsing, matching decoration appearance, xfconf preference
-  compatibility and a graphical shortcut/settings interface (shortcuts are
-  configurable through the key file today).
+- xfwm4 theme parsing and matching decoration appearance; the imported
+  preferences cover button layout, double-click action and focus model, but
+  not themed decoration pixmaps or a graphical settings interface.
 - Detailed placement policies, full transient/group stacking behavior and
   application-specific compatibility.
 - Comprehensive session geometry restoration after a WM crash, dynamic

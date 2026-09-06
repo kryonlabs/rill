@@ -188,7 +188,7 @@ all: $(WM_BIN)
 install session-smoke plugin-smoke nested-smoke: $(WM_BIN)
 
 $(BUILD_DIR)/wm_test: tests/wm_test.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -o $@ $< $(shell pkg-config --cflags --libs x11 xtst xcomposite xext)
+	$(CC) $(CFLAGS) -o $@ $< $(shell pkg-config --cflags --libs x11 xtst xcomposite xext xrandr)
 .PHONY: wm-test
 wm-test: $(WM_BIN) $(BUILD_DIR)/wm_test
 	xvfb-run -a -s '-screen 0 1280x800x24' $(BUILD_DIR)/wm_test $(abspath $(WM_BIN))
