@@ -129,6 +129,9 @@ typedef struct RillVisualState {
     int battery_percent;
     int battery_charging;
     int battery_available;
+    int volume_percent;
+    int volume_muted;
+    int volume_available;
     char run_input[160];
     int run_selected;
 } RillVisualState;
@@ -264,6 +267,20 @@ static Color
 panel_item_hover_color(void)
 {
     return (Color){48, 54, 74, 255};
+}
+
+/* The bar keeps its own dark palette, so item text contrasts with the bar
+   rather than the system theme (a light GTK theme makes theme text black). */
+static Color
+panel_text_color(void)
+{
+    return (Color){238, 240, 248, 255};
+}
+
+static Color
+panel_text_dim(void)
+{
+    return (Color){178, 184, 202, 255};
 }
 
 static Color
@@ -616,6 +633,15 @@ refresh_battery(RillVisualState *visuals, const RillPlatformServices *platform)
         return;
     visuals->battery_available = platform->battery_state(
         &visuals->battery_percent, &visuals->battery_charging);
+}
+
+static void
+refresh_volume(RillVisualState *visuals, const RillPlatformServices *platform)
+{
+    if(visuals == NULL || platform == NULL || platform->volume_state == NULL)
+        return;
+    visuals->volume_available = platform->volume_state(
+        &visuals->volume_percent, &visuals->volume_muted);
 }
 
 static void
@@ -1411,7 +1437,7 @@ panel_menu_button(RillShellState *shell, int menu_id, int x, int w,
         draw_launcher_icon(NULL, NULL, (Rectangle){x + 5, (float)glyph_y, 14, 14},
                            menu_id == 2 ? GetThemeLink() : GetThemeIcon());
     draw_text_fit(label, x + (menu_id == 1 ? 22 : 24), text_y,
-                  w - (menu_id == 1 ? 26 : 28), Text12, GetThemeText());
+                  w - (menu_id == 1 ? 26 : 28), Text12, panel_text_color());
     if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
         shell->menu_open = shell->menu_open == menu_id ? 0 : menu_id;
         return 1;
@@ -1485,7 +1511,8 @@ draw_workspace_switcher(int x, int width, RillShellState *shell,
         Rectangle button = {x + i * 20, (float)(y + oy + 4), 18, 18};
         DrawRectangleRec(button, index == current ? panel_active_color() : panel_item_color());
         snprintf(label, sizeof(label), "%d", index + 1);
-        DrawText(label, (int)button.x + 4, y + oy + 7, Text12, GetThemeText());
+        DrawText(label, (int)button.x + 4, y + oy + 7, Text12,
+                 panel_text_color());
         if(CheckCollisionPointRec(GetMousePosition(), button) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
             if(!platform->switch_workspace(index))
                 RillShellSetStatus(shell, "Could not switch workspace");
@@ -1650,7 +1677,7 @@ draw_panel_context_menu(RillShellState *shell, RillVisualState *visuals,
         x = 2;
     if(y < 2)
         y = 2;
-    menu = (Rectangle){x, y, 208, index >= 0 ? 188 : 234};
+    menu = (Rectangle){x, y, 208, index >= 0 ? 188 : 240};
     draw_menu_panel(menu);
 
     if(index >= 0) {
@@ -1722,6 +1749,11 @@ draw_panel_context_menu(RillShellState *shell, RillVisualState *visuals,
     if(panel_context_row((Rectangle){x + 6, y + 112, 196, 26},
                          "Add Action Buttons"))
         panel_append_item(visuals, side, plugin);
+    plugin = (RillPanelPlugin){RILL_PANEL_VOLUME, "volume", "", "",
+                               0, 58, 60, 0};
+    if(panel_context_row((Rectangle){x + 6, y + 140, 196, 26},
+                         "Add Volume Control"))
+        panel_append_item(visuals, side, plugin);
     if(panel_context_row((Rectangle){x + 6, y + 84, 196, 26},
                          "Add XFCE Plugin...")) {
 #if RILL_HAS_X11
@@ -1770,7 +1802,7 @@ draw_panel_task_list(RillShellState *shell, const RillPlatformServices *platform
         draw_task_icon(visuals, shell, &shell->tasks[i],
                        (Rectangle){x + 5, (float)(y + oy + 5), 16, 16});
         draw_text_fit(shell->tasks[i].title, x + 27, y + oy + 7, width - 32,
-                      Text12, GetThemeText());
+                      Text12, panel_text_color());
         if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             RillShellSelectTask(shell, i);
             RillShellFocusSelectedTask(shell, platform);
@@ -1881,7 +1913,7 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
                                          (float)plugin->width, (float)ph - 4},
                              panel_item_hover_color());
         draw_text_fit(clock_text, x, y + oy + 7, plugin->width, Text12,
-                      GetThemeText());
+                      panel_text_color());
         if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
             visuals->calendar_open = !visuals->calendar_open;
         return x + plugin->advance;
@@ -1898,7 +1930,7 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
                            (Color){86, 218, 154, 255};
             snprintf(label, sizeof(label), "%s%d%%",
                      visuals->battery_charging ? "+" : "", percent);
-            DrawText(label, x, y + oy + 7, 11, Fade(GetThemeText(), 0.92f));
+            DrawText(label, x, y + oy + 7, 11, panel_text_color());
             fill = 28 * percent / 100;
             DrawRectangle(x + 26, y + oy + 18, 28, 3, Fade(BLACK, 0.45f));
             DrawRectangle(x + 26, y + oy + 18, fill, 3, charge);
@@ -1913,14 +1945,62 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
             DrawRectangleRec(bounds, hover ? panel_item_hover_color() :
                              panel_active_color());
         DrawRectangle((int)bounds.x + 4, (int)bounds.y + 4, 12, 9,
-                      GetThemeText());
+                      panel_text_color());
         DrawLine((int)bounds.x + 4, (int)bounds.y + 15,
-                 (int)bounds.x + 15, (int)bounds.y + 15, GetThemeText());
+                 (int)bounds.x + 15, (int)bounds.y + 15, panel_text_color());
         if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
            platform != NULL && platform->show_desktop != NULL) {
             visuals->show_desktop_on = !visuals->show_desktop_on;
             if(!platform->show_desktop(visuals->show_desktop_on))
                 RillShellSetStatus(shell, "Show desktop unavailable");
+        }
+        return x + plugin->advance;
+    }
+    case RILL_PANEL_VOLUME: {
+        Rectangle bounds = {x, (float)y + 2, (float)plugin->width,
+                            (float)ph - 4};
+        int hover = CheckCollisionPointRec(GetMousePosition(), bounds);
+        char label[24];
+        Color accent = visuals->volume_muted ?
+                       (Color){224, 82, 68, 255} : panel_text_color();
+        int cy = y + ph / 2;
+
+        if(hover)
+            DrawRectangleRec(bounds, panel_item_hover_color());
+        /* Speaker glyph with sound waves (or a cross when muted). */
+        DrawTriangle((Vector2){x + 6, (float)cy - 3},
+                     (Vector2){x + 6, (float)cy + 3},
+                     (Vector2){x + 11, (float)cy}, accent);
+        DrawRectangle(x + 3, (float)cy - 2, 3, 4, accent);
+        if(visuals->volume_muted) {
+            DrawLine(x + 14, (float)cy - 4, x + 19, (float)cy + 4, accent);
+            DrawLine(x + 19, (float)cy - 4, x + 14, (float)cy + 4, accent);
+        } else {
+            DrawCircleLines(x + 15, (float)cy, 3, accent);
+            if(visuals->volume_percent > 50)
+                DrawCircleLines(x + 15, (float)cy, 6, accent);
+        }
+        snprintf(label, sizeof(label), "%d%%", visuals->volume_percent);
+        draw_text_fit(label, x + 26, y + oy + 7, plugin->width - 30, Text12,
+                      accent);
+        if(hover && visuals->volume_available && platform != NULL &&
+           platform->volume_set != NULL) {
+            float wheel = GetMouseWheelMove();
+            if(wheel != 0) {
+                int next = visuals->volume_percent + (wheel > 0 ? 5 : -5);
+                if(next < 0)
+                    next = 0;
+                if(next > 100)
+                    next = 100;
+                if(platform->volume_set(next, -1)) {
+                    visuals->volume_percent = next;
+                    visuals->volume_muted = next == 0;
+                } else
+                    RillShellSetStatus(shell, "Could not change the volume");
+            } else if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                if(platform->volume_set(-1, !visuals->volume_muted))
+                    visuals->volume_muted = !visuals->volume_muted;
+            }
         }
         return x + plugin->advance;
     }
@@ -2011,7 +2091,7 @@ draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
         int oy = (panel_h - PANEL_H) / 2;
         if(screen_w > 70)
             draw_text_fit(clock_text, screen_w - 58, panel_y + oy + 7, 54,
-                          Text12, GetThemeText());
+                          Text12, panel_text_color());
         if(CheckCollisionPointRec(GetMousePosition(),
                                   (Rectangle){0, (float)panel_y, (float)screen_w,
                                               (float)panel_h}) &&
@@ -3621,6 +3701,7 @@ main(int argc, char **argv)
             refresh_tray_icons(&visuals, platform);
             refresh_notifications(&visuals, platform);
             refresh_battery(&visuals, platform);
+            refresh_volume(&visuals, platform);
             next_refresh = GetTime() + 1.0;
         }
         if(!test_scene_active(&test))

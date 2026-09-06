@@ -362,6 +362,61 @@ main(int argc, char **argv)
         unlink(executable);
     }
 
+    /* Default-sink volume runs through pactl, faked via PATH for the test. */
+    {
+        char fake_dir[512];
+        char fake_pactl[600];
+        char record[512];
+        char script[1024];
+        char command[2600];
+        char original_path[2048];
+        const char *saved_path = getenv("PATH");
+        char volume_log[400] = "";
+        int percent = 0;
+        int muted = 0;
+        FILE *file;
+
+        snprintf(fake_dir, sizeof(fake_dir), "%s/bin", root);
+        mkdir(fake_dir, 0700);
+        snprintf(record, sizeof(record), "%s/volume-log", root);
+        snprintf(fake_pactl, sizeof(fake_pactl), "%s/pactl", fake_dir);
+        snprintf(script, sizeof(script),
+                 "#!/bin/sh\n"
+                 "case \"$1\" in\n"
+                 "  get-sink-volume) echo 'Volume: front-left: 27525 /"
+                 "  42%% / -24.06 dB' ;;\n"
+                 "  get-sink-mute) echo 'Mute: yes' ;;\n"
+                 "  set-sink-*) echo \"$*\" >> '%s' ;;\n"
+                 "esac\n",
+                 record);
+        check("write fake pactl", write_file(fake_pactl, script), &failures);
+        chmod(fake_pactl, 0700);
+        snprintf(original_path, sizeof(original_path), "%s",
+                 saved_path != NULL ? saved_path : "/usr/bin:/bin");
+        snprintf(command, sizeof(command), "%s:%s", fake_dir, original_path);
+        setenv("PATH", command, 1);
+        check("volume state parsed", platform->volume_state != NULL &&
+              platform->volume_state(&percent, &muted) && percent == 42 &&
+              muted, &failures);
+        check("volume set dispatched", platform->volume_set != NULL &&
+              platform->volume_set(55, 0), &failures);
+        file = fopen(record, "r");
+        if(file != NULL) {
+            size_t n = fread(volume_log, 1, sizeof(volume_log) - 1, file);
+            volume_log[n] = '\0';
+            fclose(file);
+        }
+        check("volume commands recorded",
+              strstr(volume_log, "set-sink-volume @DEFAULT_SINK@ 55%") !=
+              NULL &&
+              strstr(volume_log, "set-sink-mute @DEFAULT_SINK@ 0") != NULL,
+              &failures);
+        setenv("PATH", original_path, 1);
+        unlink(fake_pactl);
+        unlink(record);
+        rmdir(fake_dir);
+    }
+
     /* Battery state reads the platform power-supply directory. */
     {
         int percent = 0;

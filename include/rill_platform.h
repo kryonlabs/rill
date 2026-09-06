@@ -79,6 +79,10 @@ typedef struct RillPlatformServices {
     /* Place the tray host window at the panel's tray slot; visible=0 moves
        it offscreen. */
     void (*xembed_tray_layout)(int x, int y, int height, int visible);
+    /* Default audio sink volume; 0 when unavailable. */
+    int (*volume_state)(int *percent, int *muted);
+    /* Set sink volume/mute; -1 leaves a value unchanged. */
+    int (*volume_set)(int percent, int muted);
 } RillPlatformServices;
 
 int RillSettingsEnsureDirectory(const char *path);

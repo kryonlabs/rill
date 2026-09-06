@@ -12,7 +12,8 @@ typedef enum RillPanelPluginKind {
     RILL_PANEL_CLOCK,
     RILL_PANEL_RESOURCE,
     RILL_PANEL_SHOW_DESKTOP,
-    RILL_PANEL_ACTIONS
+    RILL_PANEL_ACTIONS,
+    RILL_PANEL_VOLUME
 } RillPanelPluginKind;
 
 typedef struct RillPanelPlugin {

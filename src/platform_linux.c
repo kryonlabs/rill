@@ -1763,6 +1763,79 @@ linux_xembed_tray_layout(int x, int y, int height, int visible)
     XFlush(xembed_display);
 }
 
+/* Default-sink volume through pactl, which serves both PulseAudio and
+   PipeWire. Commands run through PATH so tests can substitute a fake. */
+static int
+linux_run_capture(const char *command, char *out, size_t size)
+{
+    gchar *output = NULL;
+    GError *error = NULL;
+
+    if(out != NULL && size > 0)
+        out[0] = '\0';
+    if(!g_spawn_command_line_sync(command, &output, NULL, NULL, &error)) {
+        if(error != NULL)
+            g_error_free(error);
+        return 0;
+    }
+    if(out != NULL && size > 0 && output != NULL)
+        snprintf(out, size, "%s", output);
+    g_free(output);
+    return 1;
+}
+
+static int
+linux_volume_state(int *percent, int *muted)
+{
+    char output[1024];
+    const char *percent_sign;
+    const char *digits;
+    int value = -1;
+
+    if(percent == NULL || muted == NULL)
+        return 0;
+    if(!linux_run_capture("pactl get-sink-volume @DEFAULT_SINK@", output,
+                          sizeof(output)))
+        return 0;
+    percent_sign = strchr(output, '%');
+    if(percent_sign == NULL)
+        return 0;
+    digits = percent_sign;
+    while(digits > output && digits[-1] >= '0' && digits[-1] <= '9')
+        digits--;
+    if(digits == percent_sign)
+        return 0;
+    value = atoi(digits);
+    if(value < 0 || value > 100)
+        return 0;
+    *percent = value;
+    if(linux_run_capture("pactl get-sink-mute @DEFAULT_SINK@", output,
+                         sizeof(output)))
+        *muted = strstr(output, "Mute: yes") != NULL;
+    else
+        *muted = 0;
+    return 1;
+}
+
+static int
+linux_volume_set(int percent, int muted)
+{
+    char command[128];
+    int ok = 1;
+
+    if(percent >= 0 && percent <= 100) {
+        snprintf(command, sizeof(command),
+                 "pactl set-sink-volume @DEFAULT_SINK@ %d%%", percent);
+        ok = linux_run_capture(command, NULL, 0) && ok;
+    }
+    if(muted == 0 || muted == 1) {
+        snprintf(command, sizeof(command), "pactl set-sink-mute @DEFAULT_SINK@ %d",
+                 muted);
+        ok = linux_run_capture(command, NULL, 0) && ok;
+    }
+    return ok;
+}
+
 static int
 tray_item_property(const char *bus, const char *path, const char *name,
                    GVariant **out)
@@ -1950,7 +2023,9 @@ static const RillPlatformServices services = {
     linux_notification_action,
     linux_battery_state,
     linux_xembed_tray_count,
-    linux_xembed_tray_layout
+    linux_xembed_tray_layout,
+    linux_volume_state,
+    linux_volume_set
 };
 
 const RillPlatformServices *

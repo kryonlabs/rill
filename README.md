@@ -34,7 +34,8 @@ adapters.
   Lock, log out, restart, shut down and suspend are available from the
   end-session dialog (locking uses xflock4 or loginctl). The panel's resource
   item shows battery charge and charging state from the platform's
-  power-supply data.
+  power-supply data, and a volume item controls the default audio sink through
+  pactl: the mouse wheel changes the level, clicking toggles mute.
 - Optional Wayland task discovery/focus/close through wlr foreign-toplevel management.
 - Persistent panel layouts, including native Plan 9 save recovery.
 - Persistent shell settings (wallpaper, wallpaper slideshow, clock format,
