@@ -79,10 +79,11 @@ Linux execution/display bridge, neither of which is implemented here.
    drag/drop, context actions, file operations, panel preferences, plugin
    properties, multiple panels, auto-hide, per-output positioning and migration
    from existing Xfce configuration. Rill's settings app already picks
-   wallpapers from platform directories with an optional slideshow and
-   configures clock formats and panel height; wallpaper/output settings beyond
-   that and the xfsettingsd-backed inputs remain to be reimplemented.
-   Resource/tray/language items are still
+   wallpapers from platform directories with an optional slideshow; the panel
+   supports top/bottom placement, adjustable height, auto-hide, a clock
+   calendar, show-desktop and session action items and per-item width
+   properties. Wallpaper/output settings beyond that and the xfsettingsd-backed
+   inputs remain to be reimplemented. Resource/tray/language items are still
    incomplete; do not interpret their current drawings as working services.
 6. **Plan 9 integration:** build and launch the whole application against the
    intended Kryon revision in Taiji, verify live rio focus/close behavior, native

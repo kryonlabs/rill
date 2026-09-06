@@ -1080,6 +1080,27 @@ linux_session_action(const char *action)
     return ok;
 }
 
+static int
+linux_show_desktop(int show)
+{
+    XLibreSession session;
+    XEvent event = {0};
+    int result;
+    if(RillWaylandSession()) return 0;
+    if(!xlibre_open(&session)) return 0;
+    event.xclient.type = ClientMessage;
+    event.xclient.window = session.root;
+    event.xclient.message_type = XInternAtom(session.display,
+                                             "_NET_SHOWING_DESKTOP", False);
+    event.xclient.format = 32;
+    event.xclient.data.l[0] = show ? 1 : 0;
+    result = XSendEvent(session.display, session.root, False,
+                        SubstructureRedirectMask | SubstructureNotifyMask, &event);
+    XFlush(session.display);
+    xlibre_close(&session);
+    return result != 0;
+}
+
 static const RillPlatformServices services = {
     "xlibre",
     linux_list_launchers,
@@ -1090,7 +1111,8 @@ static const RillPlatformServices services = {
     linux_settings_root,
     linux_workspace_count, linux_current_workspace, linux_switch_workspace,
     linux_list_wallpapers,
-    linux_session_action
+    linux_session_action,
+    linux_show_desktop
 };
 
 const RillPlatformServices *

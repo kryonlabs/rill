@@ -18,7 +18,9 @@ static const RillPanelPluginKindMap kind_names[] = {
     {RILL_PANEL_TRAY, "tray"},
     {RILL_PANEL_LANGUAGE, "language"},
     {RILL_PANEL_CLOCK, "clock"},
-    {RILL_PANEL_RESOURCE, "resource"}
+    {RILL_PANEL_RESOURCE, "resource"},
+    {RILL_PANEL_SHOW_DESKTOP, "show-desktop"},
+    {RILL_PANEL_ACTIONS, "actions"}
 };
 
 static const RillPanelPlugin left_plugins[] = {
@@ -30,7 +32,9 @@ static const RillPanelPlugin left_plugins[] = {
 static const RillPanelPlugin right_plugins[] = {
     {RILL_PANEL_WORKSPACES, "workspaces", "", "", 0, 42, 42, 0},
     {RILL_PANEL_SEPARATOR, "sep-status", "", "", 0, 0, 8, 0},
-    {RILL_PANEL_CLOCK, "clock", "", "", 0, 60, 64, 0}
+    {RILL_PANEL_SHOW_DESKTOP, "show-desktop", "", "", 0, 26, 28, 0},
+    {RILL_PANEL_CLOCK, "clock", "", "", 0, 60, 64, 0},
+    {RILL_PANEL_ACTIONS, "actions", "", "", 0, 26, 28, 0}
 };
 
 const RillPanelPlugin *

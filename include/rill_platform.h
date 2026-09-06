@@ -39,6 +39,8 @@ typedef struct RillPlatformServices {
     int (*list_wallpapers)(char (*paths)[512], int cap);
     /* Session actions: "logout", "restart", "shutdown", "suspend". */
     int (*session_action)(const char *action);
+    /* Toggle the WM's show-desktop state (EWMH _NET_SHOWING_DESKTOP). */
+    int (*show_desktop)(int show);
 } RillPlatformServices;
 
 int RillSettingsEnsureDirectory(const char *path);

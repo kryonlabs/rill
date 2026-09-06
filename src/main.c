@@ -92,6 +92,14 @@ typedef struct RillVisualState {
     int panel_context_y;
     char clock_format[64];
     int panel_height;
+    int panel_bottom;
+    int panel_autohide;
+    int panel_hidden;
+    int calendar_open;
+    int properties_open;
+    int properties_side;
+    int properties_index;
+    int show_desktop_on;
     int logout_open;
     int wallpaper_slideshow;
     double wallpaper_next_swap;
@@ -104,6 +112,37 @@ typedef struct RillVisualState {
 
 static RillSettings rill_settings;
 static char rill_settings_path[1024];
+
+/* Panel geometry: height is configurable and autohide collapses the bar to a
+   3-pixel sliver until the pointer reaches its screen edge. */
+static int
+rill_panel_visible_height(const RillVisualState *visuals)
+{
+    if(visuals == NULL)
+        return PANEL_H;
+    if(visuals->panel_autohide && visuals->panel_hidden)
+        return 3;
+    return visuals->panel_height;
+}
+
+static int
+rill_panel_top(const RillVisualState *visuals)
+{
+    if(visuals != NULL && visuals->panel_bottom)
+        return GetScreenHeight() - rill_panel_visible_height(visuals);
+    return 0;
+}
+
+/* Menus anchor below a top panel or above a bottom panel. */
+static int
+rill_menu_anchor_y(const RillVisualState *visuals, int menu_height)
+{
+    int top = rill_panel_top(visuals);
+    int height = rill_panel_visible_height(visuals);
+    if(visuals != NULL && visuals->panel_bottom)
+        return top - 2 - menu_height;
+    return top + height + 2;
+}
 
 typedef struct RillTestState {
     const char *scene;
@@ -447,6 +486,11 @@ apply_saved_settings(RillShellState *shell, RillVisualState *visuals)
              RillSettingsGet(&rill_settings, "clock-format", "%H:%M"));
     height = RillSettingsGetInteger(&rill_settings, "panel-height", PANEL_H);
     visuals->panel_height = height < 20 ? 20 : (height > 48 ? 48 : height);
+    visuals->panel_bottom =
+        strcmp(RillSettingsGet(&rill_settings, "panel-side", "top"),
+               "bottom") == 0;
+    visuals->panel_autohide =
+        RillSettingsGetInteger(&rill_settings, "panel-autohide", 0) != 0;
     visuals->wallpaper_slideshow =
         RillSettingsGetInteger(&rill_settings, "wallpaper-slideshow", 0) != 0;
     wallpaper = RillSettingsGet(&rill_settings, "wallpaper", NULL);
@@ -698,9 +742,13 @@ draw_wallpaper(const RillVisualState *visuals)
     float scale;
     float sw;
     float sh;
+    int top;
+    int panel_space;
 
-    screen = (Rectangle){0, PANEL_H, GetScreenWidth(),
-                         GetScreenHeight() - PANEL_H};
+    top = visuals->panel_bottom ? 0 : rill_panel_visible_height(visuals);
+    panel_space = rill_panel_visible_height(visuals);
+    screen = (Rectangle){0, (float)top, (float)GetScreenWidth(),
+                         (float)(GetScreenHeight() - panel_space)};
     if(visuals->wallpaper_ready) {
         sw = (float)visuals->wallpaper.width;
         sh = (float)visuals->wallpaper.height;
@@ -714,11 +762,11 @@ draw_wallpaper(const RillVisualState *visuals)
         DrawTexturePro(visuals->wallpaper, src, screen, (Vector2){0, 0}, 0.0f,
                        WHITE);
     } else {
-        DrawRectangle(0, PANEL_H, GetScreenWidth(),
-                      GetScreenHeight() - PANEL_H,
+        DrawRectangle(0, top, GetScreenWidth(),
+                      GetScreenHeight() - panel_space,
                       opaque_color(GetThemeBackground()));
     }
-    DrawRectangle(0, PANEL_H, GetScreenWidth(), GetScreenHeight() - PANEL_H,
+    DrawRectangle(0, top, GetScreenWidth(), GetScreenHeight() - panel_space,
                   Fade(BLACK, 0.05f));
 }
 
@@ -1023,6 +1071,7 @@ draw_desktop(RillShellState *shell, const RillPlatformServices *platform,
              RillVisualState *visuals)
 {
     int shown = 0;
+    int top = visuals->panel_bottom ? 0 : rill_panel_visible_height(visuals);
 
     if(shell == NULL)
         return;
@@ -1035,21 +1084,21 @@ draw_desktop(RillShellState *shell, const RillPlatformServices *platform,
         col = shown / 6;
         row = shown % 6;
         draw_desktop_icon(shell, platform, visuals, 28 + col * 94,
-                          PANEL_H + 28 + row * 94, &shell->launchers[i],
+                          top + 28 + row * 94, &shell->launchers[i],
                           shown == 0 ? GetThemeLink() :
                           (shown == 1 ? GetThemeButtonHover() :
                            GetThemeIcon()));
         shown++;
-        if(PANEL_H + 28 + shown * 94 > GetScreenHeight() + 94)
+        if(top + 28 + shown * 94 > GetScreenHeight() + 94)
             break;
     }
 }
 
 static void
-draw_panel_separator(int x)
+draw_panel_separator(int x, int y, int ph)
 {
-    DrawRectangle(x, 4, 1, PANEL_H - 8, Fade(BLACK, 0.45f));
-    DrawRectangle(x + 1, 4, 1, PANEL_H - 8, Fade(WHITE, 0.13f));
+    DrawRectangle(x, y + 4, 1, ph - 8, Fade(BLACK, 0.45f));
+    DrawRectangle(x + 1, y + 4, 1, ph - 8, Fade(WHITE, 0.13f));
 }
 
 static void
@@ -1066,9 +1115,11 @@ draw_applications_mark(int x, int y)
 
 static int
 panel_menu_button(RillShellState *shell, int menu_id, int x, int w,
-                  const char *label, int id)
+                  const char *label, int id, int y, int ph)
 {
-    Rectangle bounds = {x, 2, w, PANEL_H - 4};
+    Rectangle bounds = {x, (float)y + 2, (float)w, (float)ph - 4};
+    int glyph_y = y + (ph - 14) / 2;
+    int text_y = y + (ph - 12) / 2;
     int hover;
 
     (void)id;
@@ -1077,11 +1128,11 @@ panel_menu_button(RillShellState *shell, int menu_id, int x, int w,
         DrawRectangleRec(bounds, shell->menu_open == menu_id ?
                          panel_active_color() : panel_item_hover_color());
     if(menu_id == 1)
-        draw_applications_mark(x + 3, 6);
+        draw_applications_mark(x + 3, y + (ph - 14) / 2 + 1);
     else
-        draw_launcher_icon(NULL, NULL, (Rectangle){x + 5, 6, 14, 14},
+        draw_launcher_icon(NULL, NULL, (Rectangle){x + 5, (float)glyph_y, 14, 14},
                            menu_id == 2 ? GetThemeLink() : GetThemeIcon());
-    draw_text_fit(label, x + (menu_id == 1 ? 22 : 24), 7,
+    draw_text_fit(label, x + (menu_id == 1 ? 22 : 24), text_y,
                   w - (menu_id == 1 ? 26 : 28), Text12, GetThemeText());
     if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
         shell->menu_open = shell->menu_open == menu_id ? 0 : menu_id;
@@ -1093,10 +1144,10 @@ panel_menu_button(RillShellState *shell, int menu_id, int x, int w,
 static void
 draw_quick_launcher(RillShellState *shell, const RillPlatformServices *platform,
                     RillVisualState *visuals, int x, const char *launcher_id,
-                    int id)
+                    int id, int y, int ph)
 {
-    Rectangle bounds = {x, 2, 22, PANEL_H - 4};
-    Rectangle icon = {x + 3, 5, 16, 16};
+    Rectangle bounds = {x, (float)y + 2, 22, (float)ph - 4};
+    Rectangle icon = {x + 3, (float)(y + (ph - 16) / 2), 16, 16};
     const RillLauncher *launcher = launcher_by_id(shell, launcher_id);
     int hover = CheckCollisionPointRec(GetMousePosition(), bounds);
 
@@ -1109,36 +1160,38 @@ draw_quick_launcher(RillShellState *shell, const RillPlatformServices *platform,
 }
 
 static void
-draw_tray_indicator(int x, int kind, Color color)
+draw_tray_indicator(int x, int kind, Color color, int y, int ph)
 {
+    int oy = y + (ph - PANEL_H) / 2;
     if(kind == 0) {
-        DrawLine(x + 3, 15, x + 8, 10, color);
-        DrawLine(x + 8, 10, x + 15, 10, color);
-        DrawLine(x + 4, 16, x + 9, 12, color);
-        DrawLine(x + 9, 12, x + 14, 12, color);
+        DrawLine(x + 3, oy + 15, x + 8, oy + 10, color);
+        DrawLine(x + 8, oy + 10, x + 15, oy + 10, color);
+        DrawLine(x + 4, oy + 16, x + 9, oy + 12, color);
+        DrawLine(x + 9, oy + 12, x + 14, oy + 12, color);
     } else if(kind == 1) {
-        DrawRectangle(x + 3, 12, 4, 5, color);
-        DrawTriangle((Vector2){x + 7, 12}, (Vector2){x + 13, 8},
-                     (Vector2){x + 13, 20}, color);
-        DrawCircleLines(x + 15, 14, 4, color);
+        DrawRectangle(x + 3, oy + 12, 4, 5, color);
+        DrawTriangle((Vector2){x + 7, (float)oy + 12}, (Vector2){x + 13, (float)oy + 8},
+                     (Vector2){x + 13, (float)oy + 20}, color);
+        DrawCircleLines(x + 15, oy + 14, 4, color);
     } else {
-        DrawCircle(x + 10, 14, 5, color);
-        DrawLine(x + 10, 7, x + 10, 4, color);
+        DrawCircle(x + 10, oy + 14, 5, color);
+        DrawLine(x + 10, oy + 7, x + 10, oy + 4, color);
     }
 }
 
 static void
 draw_workspace_switcher(int x, int width, RillShellState *shell,
-                         const RillPlatformServices *platform)
+                         const RillPlatformServices *platform, int y, int ph)
 {
     int count, current;
+    int oy = (ph - PANEL_H) / 2;
     if(platform->workspace_count == NULL || platform->current_workspace == NULL ||
        platform->switch_workspace == NULL) return;
     count = platform->workspace_count();
     current = platform->current_workspace();
     if(count <= 0 || current < 0 || width < 20) return;
     /* Scroll cycles every workspace even when the panel item is narrow. */
-    Rectangle bounds = {x, 2, width, PANEL_H - 4};
+    Rectangle bounds = {x, (float)y + 2, (float)width, (float)ph - 4};
     if(CheckCollisionPointRec(GetMousePosition(), bounds)) {
         float wheel = GetMouseWheelMove();
         int next = (current + (wheel > 0 ? -1 : 1) + count) % count;
@@ -1151,10 +1204,10 @@ draw_workspace_switcher(int x, int width, RillShellState *shell,
     for(int i = 0; i < visible && first + i < count; i++) {
         char label[16];
         int index = first + i;
-        Rectangle button = {x + i * 20, 4, 18, 18};
+        Rectangle button = {x + i * 20, (float)(y + oy + 4), 18, 18};
         DrawRectangleRec(button, index == current ? panel_active_color() : panel_item_color());
         snprintf(label, sizeof(label), "%d", index + 1);
-        DrawText(label, (int)button.x + 4, 7, Text12, GetThemeText());
+        DrawText(label, (int)button.x + 4, y + oy + 7, Text12, GetThemeText());
         if(CheckCollisionPointRec(GetMousePosition(), button) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
             if(!platform->switch_workspace(index))
                 RillShellSetStatus(shell, "Could not switch workspace");
@@ -1162,11 +1215,12 @@ draw_workspace_switcher(int x, int width, RillShellState *shell,
 }
 
 static void
-draw_panel_resource(int x, const char *label, Color color)
+draw_panel_resource(int x, const char *label, Color color, int y, int ph)
 {
-    DrawText(label, x, 7, 11, Fade(GetThemeText(), 0.88f));
-    DrawRectangle(x + 26, 18, 28, 3, Fade(BLACK, 0.45f));
-    DrawRectangle(x + 26, 18, 16, 3, color);
+    int oy = (ph - PANEL_H) / 2;
+    DrawText(label, x, y + oy + 7, 11, Fade(GetThemeText(), 0.88f));
+    DrawRectangle(x + 26, y + oy + 18, 28, 3, Fade(BLACK, 0.45f));
+    DrawRectangle(x + 26, y + oy + 18, 16, 3, color);
 }
 
 static void
@@ -1316,9 +1370,9 @@ draw_panel_context_menu(RillShellState *shell, RillVisualState *visuals,
         y = GetScreenHeight() - 188;
     if(x < 2)
         x = 2;
-    if(y < PANEL_H + 2)
-        y = PANEL_H + 2;
-    menu = (Rectangle){x, y, 208, index >= 0 ? 188 : 116};
+    if(y < 2)
+        y = 2;
+    menu = (Rectangle){x, y, 208, index >= 0 ? 188 : 234};
     draw_menu_panel(menu);
 
     if(index >= 0) {
@@ -1339,13 +1393,32 @@ draw_panel_context_menu(RillShellState *shell, RillVisualState *visuals,
             panel_remove_item(visuals, side, visuals->panel_context_index);
         if(panel_context_row((Rectangle){x + 6, y + 114, 196, 26},
                              "Properties")) {
-            snprintf(shell->status, sizeof(shell->status), "%s properties",
-                     title);
+            visuals->properties_open = 1;
+            visuals->properties_side = side;
+            visuals->properties_index = index;
             visuals->panel_context_open = 0;
         }
         y += 140;
     } else {
-        y += 6;
+        if(panel_context_row((Rectangle){x + 6, y + 6, 196, 26},
+                             visuals->panel_bottom ? "Move Panel to Top" :
+                             "Move Panel to Bottom")) {
+            visuals->panel_bottom = !visuals->panel_bottom;
+            RillSettingsSet(&rill_settings, "panel-side",
+                            visuals->panel_bottom ? "bottom" : "top");
+            rill_settings_persist(shell);
+            visuals->panel_context_open = 0;
+        }
+        if(panel_context_row((Rectangle){x + 6, y + 34, 196, 26},
+                             visuals->panel_autohide ? "Autohide: on" :
+                             "Autohide: off")) {
+            visuals->panel_autohide = !visuals->panel_autohide;
+            RillSettingsSetInteger(&rill_settings, "panel-autohide",
+                                   visuals->panel_autohide);
+            rill_settings_persist(shell);
+            visuals->panel_context_open = 0;
+        }
+        y += 62;
     }
 
     plugin = (RillPanelPlugin){RILL_PANEL_SEPARATOR, "separator", "", "",
@@ -1360,6 +1433,16 @@ draw_panel_context_menu(RillShellState *shell, RillVisualState *visuals,
                                0, 42, 42, 0};
     if(panel_context_row((Rectangle){x + 6, y + 56, 196, 26},
                          "Add Workspaces"))
+        panel_append_item(visuals, side, plugin);
+    plugin = (RillPanelPlugin){RILL_PANEL_SHOW_DESKTOP, "show-desktop", "", "",
+                               0, 26, 28, 0};
+    if(panel_context_row((Rectangle){x + 6, y + 84, 196, 26},
+                         "Add Show Desktop"))
+        panel_append_item(visuals, side, plugin);
+    plugin = (RillPanelPlugin){RILL_PANEL_ACTIONS, "actions", "", "",
+                               0, 26, 28, 0};
+    if(panel_context_row((Rectangle){x + 6, y + 112, 196, 26},
+                         "Add Action Buttons"))
         panel_append_item(visuals, side, plugin);
     if(panel_context_row((Rectangle){x + 6, y + 84, 196, 26},
                          "Add XFCE Plugin...")) {
@@ -1384,9 +1467,11 @@ draw_panel_context_menu(RillShellState *shell, RillVisualState *visuals,
 
 static int
 draw_panel_task_list(RillShellState *shell, const RillPlatformServices *platform,
-                     RillVisualState *visuals, int x, int right)
+                     RillVisualState *visuals, int x, int right, int y, int ph)
 {
     int i;
+    int oy = (ph - PANEL_H) / 2;
+    int flash = (int)(GetTime() * 2.0f) % 2 == 0;
 
     for(i = 0; i < shell->task_count && x < right - 120; i++) {
         Rectangle task_rect;
@@ -1394,18 +1479,20 @@ draw_panel_task_list(RillShellState *shell, const RillPlatformServices *platform
         int width;
 
         width = shell->tasks[i].focused ? 190 : 154;
-        task_rect = (Rectangle){x, 1, width, PANEL_H - 2};
+        task_rect = (Rectangle){x, (float)y + 1, (float)width, (float)ph - 2};
         hover = CheckCollisionPointRec(GetMousePosition(), task_rect);
         DrawRectangleRec(task_rect, shell->tasks[i].focused ?
                          panel_active_color() :
-                         (hover ? panel_item_hover_color() :
-                          panel_item_color()));
+                         (shell->tasks[i].urgent && flash ?
+                          (Color){0x80, 0x53, 0x28, 0xff} :
+                          (hover ? panel_item_hover_color() :
+                           panel_item_color())));
         DrawRectangleLinesEx(task_rect, 1.0f, shell->tasks[i].focused ?
                              Fade(WHITE, 0.55f) : Fade(BLACK, 0.40f));
         draw_task_icon(visuals, shell, &shell->tasks[i],
-                       (Rectangle){x + 5, 5, 16, 16});
-        draw_text_fit(shell->tasks[i].title, x + 27, 7, width - 32, Text12,
-                      GetThemeText());
+                       (Rectangle){x + 5, (float)(y + oy + 5), 16, 16});
+        draw_text_fit(shell->tasks[i].title, x + 27, y + oy + 7, width - 32,
+                      Text12, GetThemeText());
         if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             RillShellSelectTask(shell, i);
             RillShellFocusSelectedTask(shell, platform);
@@ -1419,19 +1506,19 @@ static int
 draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
                   const RillPlatformServices *platform,
                   RillVisualState *visuals, int x, int task_right, int side,
-                  int index,
-                  const char *clock_text)
+                  int index, const char *clock_text, int y, int ph)
 {
     Rectangle context_bounds;
+    int oy = (ph - PANEL_H) / 2;
 
     if(plugin == NULL)
         return x;
-    context_bounds = (Rectangle){x, 0,
+    context_bounds = (Rectangle){x, (float)y,
                                  plugin->kind == RILL_PANEL_TASK_LIST ?
-                                 task_right - x :
-                                 (plugin->advance > 0 ? plugin->advance :
+                                 (float)(task_right - x) :
+                                 (float)(plugin->advance > 0 ? plugin->advance :
                                   plugin->width),
-                                 PANEL_H};
+                                 (float)ph};
     if(context_bounds.width < 12)
         context_bounds.width = 12;
     if(CheckCollisionPointRec(GetMousePosition(), context_bounds) &&
@@ -1439,43 +1526,84 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
         open_panel_context(visuals, side, index);
     switch(plugin->kind) {
     case RILL_PANEL_SEPARATOR:
-        draw_panel_separator(x);
+        draw_panel_separator(x, y, ph);
         return x + plugin->advance;
     case RILL_PANEL_MENU:
         if(plugin->menu_id != 1 && GetScreenWidth() < 620)
             return x;
         panel_menu_button(shell, plugin->menu_id, x, plugin->width,
-                          plugin->label, 0);
+                          plugin->label, 0, y, ph);
         return x + plugin->advance;
     case RILL_PANEL_LAUNCHER:
         draw_quick_launcher(shell, platform, visuals, x, plugin->launcher_id,
-                            0);
+                            0, y, ph);
         return x + plugin->advance;
     case RILL_PANEL_TASK_LIST:
-        return draw_panel_task_list(shell, platform, visuals, x, task_right);
+        return draw_panel_task_list(shell, platform, visuals, x, task_right,
+                                    y, ph);
     case RILL_PANEL_WORKSPACES:
-        draw_workspace_switcher(x, plugin->width, shell, platform);
+        draw_workspace_switcher(x, plugin->width, shell, platform, y, ph);
         return x + plugin->advance;
     case RILL_PANEL_TRAY:
         draw_tray_indicator(x, plugin->variant,
                             plugin->variant == 0 ? GetThemeLink() :
                             (plugin->variant == 1 ? GetThemeIcon() :
-                             GetThemeButtonHover()));
+                             GetThemeButtonHover()), y, ph);
         return x + plugin->advance;
     case RILL_PANEL_LANGUAGE:
-        DrawText(plugin->label, x, 7, Text12,
+        DrawText(plugin->label, x, y + oy + 7, Text12,
              (Color){92, 185, 255, 255});
         return x + plugin->advance;
-    case RILL_PANEL_CLOCK:
-        draw_text_fit(clock_text, x, 7, plugin->width, Text12,
+    case RILL_PANEL_CLOCK: {
+        Rectangle bounds = {x, (float)y, (float)plugin->width, (float)ph};
+        int hover = CheckCollisionPointRec(GetMousePosition(), bounds);
+        if(hover)
+            DrawRectangleRec((Rectangle){x, (float)y + 2,
+                                         (float)plugin->width, (float)ph - 4},
+                             panel_item_hover_color());
+        draw_text_fit(clock_text, x, y + oy + 7, plugin->width, Text12,
                       GetThemeText());
+        if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+            visuals->calendar_open = !visuals->calendar_open;
         return x + plugin->advance;
+    }
     case RILL_PANEL_RESOURCE:
         draw_panel_resource(x, plugin->label,
                             plugin->variant == 0 ?
                             (Color){104, 190, 255, 255} :
-                            (Color){86, 218, 154, 255});
+                            (Color){86, 218, 154, 255}, y, ph);
         return x + plugin->advance;
+    case RILL_PANEL_SHOW_DESKTOP: {
+        Rectangle bounds = {x, (float)y + 2, 20, (float)ph - 4};
+        int hover = CheckCollisionPointRec(GetMousePosition(), bounds);
+        if(visuals->show_desktop_on || hover)
+            DrawRectangleRec(bounds, hover ? panel_item_hover_color() :
+                             panel_active_color());
+        DrawRectangle((int)bounds.x + 4, (int)bounds.y + 4, 12, 9,
+                      GetThemeText());
+        DrawLine((int)bounds.x + 4, (int)bounds.y + 15,
+                 (int)bounds.x + 15, (int)bounds.y + 15, GetThemeText());
+        if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+           platform != NULL && platform->show_desktop != NULL) {
+            visuals->show_desktop_on = !visuals->show_desktop_on;
+            if(!platform->show_desktop(visuals->show_desktop_on))
+                RillShellSetStatus(shell, "Show desktop unavailable");
+        }
+        return x + plugin->advance;
+    }
+    case RILL_PANEL_ACTIONS: {
+        Rectangle bounds = {x, (float)y + 2, 20, (float)ph - 4};
+        int hover = CheckCollisionPointRec(GetMousePosition(), bounds);
+        if(hover)
+            DrawRectangleRec(bounds, panel_item_hover_color());
+        draw_symbol_icon((Rectangle){x + 3, (float)(y + (ph - 16) / 2), 16, 16},
+                         "power", GetThemeLink());
+        if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            shell->menu_open = 0;
+            visuals->logout_open = 1;
+        }
+        return x + plugin->advance;
+    }
     default:
         return x;
     }
@@ -1494,13 +1622,36 @@ draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
     int i;
     int left_count;
     int right_count;
+    int panel_y;
+    int panel_h;
     const RillPanelPlugin *left_plugins;
     const RillPanelPlugin *right_plugins;
 
     screen_w = GetScreenWidth();
-    DrawRectangle(0, 0, screen_w, PANEL_H, panel_color());
-    DrawRectangle(0, PANEL_H - 1, screen_w, 1, Fade(BLACK, 0.72f));
-    DrawRectangle(0, 0, screen_w, 1, Fade(WHITE, 0.10f));
+    panel_h = visuals->panel_height;
+    if(visuals->panel_autohide) {
+        Vector2 mouse = GetMousePosition();
+        panel_y = rill_panel_top(visuals);
+        int edge = visuals->panel_bottom ? mouse.y >= GetScreenHeight() - 4 :
+                                           mouse.y <= 3;
+        Rectangle bar = {0, (float)panel_y, (float)screen_w,
+                         (float)panel_h};
+        visuals->panel_hidden = !edge && !CheckCollisionPointRec(mouse, bar) &&
+                                shell->menu_open == 0 && !visuals->calendar_open;
+        if(visuals->panel_hidden)
+            panel_h = 3;
+        panel_y = rill_panel_top(visuals);
+    } else {
+        visuals->panel_hidden = 0;
+        panel_y = rill_panel_top(visuals);
+    }
+    DrawRectangle(0, panel_y, screen_w, panel_h, panel_color());
+    DrawRectangle(0, visuals->panel_bottom ? panel_y : panel_y + panel_h - 1,
+                  screen_w, 1, Fade(BLACK, 0.72f));
+    DrawRectangle(0, visuals->panel_bottom ? panel_y + panel_h - 1 : panel_y,
+                  screen_w, 1, Fade(WHITE, 0.10f));
+    if(visuals->panel_hidden)
+        return;
 
     now = time(NULL);
     local = localtime(&now);
@@ -1515,28 +1666,33 @@ draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
     left_count = visuals->left_panel_count;
     for(i = 0; i < left_count; i++)
         x = draw_panel_plugin(&left_plugins[i], shell, platform,
-                              visuals, x, right, 0, i, clock_text);
+                              visuals, x, right, 0, i, clock_text,
+                              panel_y, panel_h);
 
     if(screen_w < 760) {
+        int oy = (panel_h - PANEL_H) / 2;
         if(screen_w > 70)
-            draw_text_fit(clock_text, screen_w - 58, 7, 54, Text12,
-                          GetThemeText());
+            draw_text_fit(clock_text, screen_w - 58, panel_y + oy + 7, 54,
+                          Text12, GetThemeText());
         if(CheckCollisionPointRec(GetMousePosition(),
-                                  (Rectangle){0, 0, screen_w, PANEL_H}) &&
+                                  (Rectangle){0, (float)panel_y, (float)screen_w,
+                                              (float)panel_h}) &&
            IsMouseButtonPressed(MOUSE_BUTTON_RIGHT))
             open_panel_context(visuals, 1, -1);
         return;
     }
 
     x = screen_w - 286;
-    draw_panel_separator(x - 6);
+    draw_panel_separator(x - 6, panel_y, panel_h);
     right_plugins = visuals->right_panel;
     right_count = visuals->right_panel_count;
     for(i = 0; i < right_count; i++)
         x = draw_panel_plugin(&right_plugins[i], shell, platform,
-                              visuals, x, right, 1, i, clock_text);
+                              visuals, x, right, 1, i, clock_text,
+                              panel_y, panel_h);
     if(CheckCollisionPointRec(GetMousePosition(),
-                              (Rectangle){0, 0, screen_w, PANEL_H}) &&
+                              (Rectangle){0, (float)panel_y, (float)screen_w,
+                                          (float)panel_h}) &&
        IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) &&
        !visuals->panel_context_open)
         open_panel_context(visuals, 1, -1);
@@ -1855,13 +2011,14 @@ draw_applications_menu(RillShellState *shell,
     menu_w = screen_w < 456 ? screen_w - 8 : 440;
     if(menu_w < 320)
         menu_w = screen_w - 8;
-    menu_h = screen_h - PANEL_H - 10;
+    menu_h = screen_h - rill_panel_visible_height(visuals) - 10;
     if(menu_h > 430)
         menu_h = 430;
     if(menu_h < 300)
-        menu_h = screen_h - PANEL_H - 4;
+        menu_h = screen_h - rill_panel_visible_height(visuals) - 4;
     category_w = menu_w >= 400 ? 128 : 112;
-    menu = (Rectangle){4, PANEL_H + 2, menu_w, menu_h};
+    menu = (Rectangle){4, (float)rill_menu_anchor_y(visuals, menu_h), menu_w,
+                       (float)menu_h};
     draw_menu_panel(menu);
 
     draw_whisker_header(menu, shell, platform, visuals);
@@ -1927,8 +2084,7 @@ draw_applications_menu(RillShellState *shell,
     EndScissorMode();
 
     if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
-       !CheckCollisionPointRec(GetMousePosition(), menu) &&
-       GetMousePosition().y > PANEL_H) {
+       !CheckCollisionPointRec(GetMousePosition(), menu)) {
         shell->menu_open = 0;
         shell->app_menu_search_active = 0;
     }
@@ -1965,7 +2121,8 @@ draw_task_icon(RillVisualState *visuals, RillShellState *shell,
 }
 
 static void
-draw_places_menu(RillShellState *shell, const RillPlatformServices *platform)
+draw_places_menu(RillShellState *shell, const RillPlatformServices *platform,
+                 RillVisualState *visuals)
 {
     Rectangle menu;
     const char *items[] = {"Home", "Desktop", "File System"};
@@ -1973,11 +2130,11 @@ draw_places_menu(RillShellState *shell, const RillPlatformServices *platform)
 
     if(shell->menu_open != 2)
         return;
-    menu = (Rectangle){116, PANEL_H + 2, 190, 106};
+    menu = (Rectangle){116, (float)rill_menu_anchor_y(visuals, 106), 190, 106};
     draw_menu_panel(menu);
-    y = PANEL_H + 8;
+    y = (int)menu.y + 6;
     for(int i = 0; i < 3; i++) {
-        if(draw_menu_row((Rectangle){122, y, 178, 28}, items[i], "files")) {
+        if(draw_menu_row((Rectangle){122, (float)y, 178, 28}, items[i], "files")) {
             open_launcher_id(shell, platform, "files");
             shell->menu_open = 0;
         }
@@ -1992,27 +2149,152 @@ draw_system_menu(RillShellState *shell, const RillPlatformServices *platform,
                  RillVisualState *visuals)
 {
     Rectangle menu;
+    int y;
 
     if(shell->menu_open != 3)
         return;
-    menu = (Rectangle){182, PANEL_H + 2, 190, 104};
+    menu = (Rectangle){182, (float)rill_menu_anchor_y(visuals, 104), 190, 104};
     draw_menu_panel(menu);
-    if(draw_menu_row((Rectangle){188, PANEL_H + 8, 178, 28}, "Settings",
+    y = (int)menu.y + 6;
+    if(draw_menu_row((Rectangle){188, (float)y, 178, 28}, "Settings",
                      "settings")) {
         open_launcher_id(shell, platform, "settings");
         shell->menu_open = 0;
     }
-    if(draw_menu_row((Rectangle){188, PANEL_H + 40, 178, 28}, "About Rill",
+    if(draw_menu_row((Rectangle){188, (float)y + 32, 178, 28}, "About Rill",
                      "about")) {
         open_launcher_id(shell, platform, "about");
         shell->menu_open = 0;
     }
-    if(draw_menu_row((Rectangle){188, PANEL_H + 72, 178, 28}, "Log Out",
+    if(draw_menu_row((Rectangle){188, (float)y + 64, 178, 28}, "Log Out",
                      "power")) {
         shell->menu_open = 0;
         if(visuals != NULL)
             visuals->logout_open = 1;
     }
+}
+
+static void
+draw_panel_properties(RillShellState *shell, RillVisualState *visuals)
+{
+    RillPanelPlugin *plugins;
+    int count;
+    RillPanelPlugin *plugin;
+    Rectangle full = {0, 0, (float)GetScreenWidth(), (float)GetScreenHeight()};
+    Rectangle panel;
+    char sample[32];
+
+    if(visuals == NULL || !visuals->properties_open)
+        return;
+    plugins = panel_plugins_for_side(visuals, visuals->properties_side, &count);
+    if(plugins == NULL || visuals->properties_index < 0 ||
+       visuals->properties_index >= count) {
+        visuals->properties_open = 0;
+        return;
+    }
+    plugin = &plugins[visuals->properties_index];
+    panel = (Rectangle){(GetScreenWidth() - 264) / 2.0f,
+                        (GetScreenHeight() - 132) / 2.0f, 264, 132};
+    DrawRectangleRec(full, Fade(BLACK, 0.30f));
+    DrawRectangleRounded(panel, 0.03f, 8, opaque_color(GetThemeSurface()));
+    DrawRectangleRoundedLinesEx(panel, 0.03f, 8, 2.0f, GetThemeLink());
+    DrawText("Panel item", (int)panel.x + 14, (int)panel.y + 12, Text16,
+             GetThemeText());
+    draw_text_fit(RillPanelPluginKindName(plugin->kind), (int)panel.x + 14,
+                  (int)panel.y + 36, (int)panel.width - 28, Text12,
+                  GetThemeIcon());
+
+    DrawText("Width", (int)panel.x + 14, (int)panel.y + 64, Text14,
+             GetThemeText());
+    if(draw_settings_button((Rectangle){panel.x + 150, panel.y + 60, 26, 24},
+                            "-", 0) && plugin->width > 8) {
+        plugin->width -= 2;
+        plugin->advance = plugin->advance > 2 ? plugin->advance - 2 : 0;
+        visuals->panel_dirty = 1;
+    }
+    snprintf(sample, sizeof(sample), "%d", plugin->width);
+    draw_text_fit(sample, (int)panel.x + 184, (int)panel.y + 64, 34, Text14,
+                  GetThemeText());
+    if(draw_settings_button((Rectangle){panel.x + 222, panel.y + 60, 26, 24},
+                            "+", 0) && plugin->width < 600) {
+        plugin->width += 2;
+        plugin->advance += 2;
+        visuals->panel_dirty = 1;
+    }
+    if(draw_settings_button((Rectangle){panel.x + 14, panel.y + 94, 100, 26},
+                            "Done", 0)) {
+        visuals->properties_open = 0;
+        RillShellSetStatus(shell, "Panel item updated");
+    }
+    if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+       !CheckCollisionPointRec(GetMousePosition(), panel))
+        visuals->properties_open = 0;
+}
+
+static void
+draw_calendar_popup(RillVisualState *visuals)
+{
+    const char *weekdays[7] = {"S", "M", "T", "W", "T", "F", "S"};
+    struct tm day;
+    time_t now;
+    struct tm *local;
+    Rectangle menu;
+    int width = 216;
+    int height = 190;
+    int x;
+    int y;
+    int first;
+    int days;
+    int today;
+
+    if(visuals == NULL || !visuals->calendar_open)
+        return;
+    now = time(NULL);
+    local = localtime(&now);
+    if(local == NULL)
+        return;
+    x = GetScreenWidth() - width - 8;
+    y = rill_menu_anchor_y(visuals, height);
+    menu = (Rectangle){(float)x, (float)y, (float)width, (float)height};
+    draw_menu_panel(menu);
+
+    char month[48];
+    strftime(month, sizeof(month), "%B %Y", local);
+    DrawText(month, (int)menu.x + 14, (int)menu.y + 10, Text14, GetThemeText());
+    for(int i = 0; i < 7; i++)
+        DrawText(weekdays[i], (int)menu.x + 16 + i * 28, (int)menu.y + 34,
+                 Text12, GetThemeIcon());
+
+    memset(&day, 0, sizeof(day));
+    day.tm_year = local->tm_year;
+    day.tm_mon = local->tm_mon;
+    day.tm_mday = 1;
+    mktime(&day);
+    first = day.tm_wday;
+    days = 31;
+    if(local->tm_mon == 1)
+        days = day.tm_year % 4 == 0 && (day.tm_year % 100 != 0 ||
+                                        day.tm_year % 400 == 0) ? 29 : 28;
+    else if(local->tm_mon == 3 || local->tm_mon == 5 || local->tm_mon == 8 ||
+            local->tm_mon == 10)
+        days = 30;
+    today = local->tm_mday;
+    for(int d = 1; d <= days; d++) {
+        char label[8];
+        int cell = first + d - 1;
+        Rectangle cell_rect = {menu.x + 12 + (cell % 7) * 28,
+                               menu.y + 50 + (cell / 7) * 22, 26, 20};
+        snprintf(label, sizeof(label), "%d", d);
+        if(d == today)
+            DrawRectangleRec(cell_rect, panel_active_color());
+        else if(CheckCollisionPointRec(GetMousePosition(), cell_rect))
+            DrawRectangleRec(cell_rect, panel_item_hover_color());
+        DrawText(label, (int)cell_rect.x + 8, (int)cell_rect.y + 4, Text12,
+                 d == today ? WHITE : GetThemeText());
+    }
+    if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+       !CheckCollisionPointRec(GetMousePosition(), menu))
+        visuals->calendar_open = 0;
 }
 
 static void
@@ -2080,8 +2362,8 @@ clamp_window_to_screen(RillAppWindow *app)
     max_y = GetScreenHeight() - 48;
     if(app->x < 0)
         app->x = 0;
-    if(app->y < PANEL_H)
-        app->y = PANEL_H;
+    if(app->y < 0)
+        app->y = 0;
     if(app->x > max_x)
         app->x = max_x;
     if(app->y > max_y)
@@ -2286,7 +2568,7 @@ draw_settings_app(RillShellState *shell, Rectangle content,
     }
 
     y = (int)content.y + 292;
-    DrawText("Panel height (next start)", (int)content.x + 16, y + 4, Text12,
+    DrawText("Panel height", (int)content.x + 16, y + 4, Text12,
          GetThemeIcon());
     if(draw_settings_button((Rectangle){content.x + 240, y, 26, 24}, "-", 0) &&
        visuals->panel_height > 20) {
@@ -2864,9 +3146,11 @@ main(int argc, char **argv)
 #endif
             if(!options.xfce_panel) draw_top_panel(&shell, platform, &visuals);
             draw_applications_menu(&shell, platform, &visuals);
-            draw_places_menu(&shell, platform);
+            draw_places_menu(&shell, platform, &visuals);
             draw_system_menu(&shell, platform, &visuals);
             draw_panel_context_menu(&shell, &visuals, platform);
+            draw_calendar_popup(&visuals);
+            draw_panel_properties(&shell, &visuals);
             draw_logout_dialog(&shell, &visuals, platform);
             if(visuals.wallpaper_slideshow && visuals.wallpaper_count > 1 &&
                GetTime() >= visuals.wallpaper_next_swap) {

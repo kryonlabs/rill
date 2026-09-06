@@ -16,7 +16,12 @@ adapters.
 - Linux application discovery from XDG `.desktop` files. Rill does not keep a
   hard-coded C launcher list for Linux.
 - Plan 9 adapter using native launcher commands and rio window controls.
-- Configurable Rill panel with Applications, task buttons, workspace pager and clock.
+- Configurable Rill panel with Applications, task buttons, workspace pager and
+  clock. The panel can sit at the top or bottom edge, its height is adjustable,
+  it can auto-hide until the pointer reaches its screen edge, and the clock
+  opens a month calendar. Show-desktop and session action buttons are available
+  as panel items, urgent windows flash in the task list, and item widths are
+  editable through the item Properties dialog.
 - Optional Wayland task discovery/focus/close through wlr foreign-toplevel management.
 - Persistent panel layouts, including native Plan 9 save recovery.
 - Persistent shell settings (wallpaper, wallpaper slideshow, clock format,
