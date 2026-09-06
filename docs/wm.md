@@ -21,6 +21,15 @@ xfce4-session and Thunar. Their code and APIs have not been reimplemented.
   selection is applied when Alt is released.
 - Keyboard shortcuts loaded from a user configuration file with xfwm4-style
   defaults.
+- Focus-stealing prevention: application activation requests with stale or
+  zero timestamps raise the demands-attention hint instead of taking focus;
+  pagers activate directly. New windows focus only when they claim a recent
+  user action.
+- `_NET_WM_PING` responsiveness tracking: clients that ignore a ping after a
+  close request are marked unresponsive (red title bar) and the window menu
+  offers a force close.
+- `_NET_WM_SYNC_REQUEST` synchronized resizing: interactive resizes advance the
+  client's frame counter and briefly wait for its acknowledgement.
 - Transient/modal dialogs, parent minimize/restore, panel struts/work areas,
   basic monitor-aware maximization/fullscreen and display resize handling.
 - ICCCM delete/take-focus messages, EWMH state/move/resize requests, Motif
@@ -108,10 +117,10 @@ Rill WM is not yet a 1:1 xfwm4 replacement. These gaps remain explicit:
 - xfwm4 theme parsing, matching decoration appearance, xfconf preference
   compatibility and a graphical shortcut/settings interface (shortcuts are
   configurable through the key file today).
-- Detailed placement and focus-stealing policies, full transient/group stacking
-  behavior and application-specific compatibility.
-- Sync-resize/ping protocols, comprehensive session geometry restoration after
-  a WM crash, dynamic decoration changes and full input-shape handling.
+- Detailed placement policies, full transient/group stacking behavior and
+  application-specific compatibility.
+- Comprehensive session geometry restoration after a WM crash, dynamic
+  decoration changes and full input-shape handling.
 - Compositor shadows, vsync/frame pacing, efficient damage-region rendering,
   GPU/fullscreen bypass and performance certification under sustained load.
 - Full multi-monitor/hotplug, mixed-DPI and multi-seat validation, accessibility

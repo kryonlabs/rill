@@ -8,12 +8,14 @@
 #include <X11/cursorfont.h>
 #include <X11/extensions/Xrandr.h>
 #include <X11/extensions/shape.h>
+#include <X11/extensions/sync.h>
 #include <X11/keysym.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 typedef struct Geometry {
@@ -26,7 +28,10 @@ typedef struct Client {
     int border, title, old_border, desktop, ignore_unmap;
     int special, dock, minimized, fullscreen, max_h, max_v, above, below, modal;
     int skip_taskbar, skip_pager, shaded, urgent, input, decorated, visible;
-    unsigned long focus_order;
+    int sync_request, hung, ping_pending;
+    XID sync_counter;
+    unsigned long focus_order, ping_time, sync_serial;
+    long ping_sent_ms, sync_sent_ms;
     XSizeHints hints;
     XftDraw *draw;
     GC paint;
@@ -38,6 +43,8 @@ static Window root, support;
 static Client *clients, *focused, *dragged;
 static int screen_number, screen_w, screen_h, desktop, desktops = 4, showing_desktop;
 static int randr_event, have_randr, shape_event, have_shape, claiming, claim_failed;
+static int have_sync;
+static long ping_timeout_ms = 5000;
 static unsigned int numlock_mask;
 static unsigned long focus_order;
 static Time last_time, last_click_time;
@@ -60,7 +67,9 @@ static void menu_close(void);
 static void menu_paint(void);
 static void menu_open(Client *client, int x, int y, Time time);
 static void menu_activate(void);
+static int menu_items(Client *c);
 static void switcher_drop(Client *c);
+static void send_ping(Client *c);
 
 enum { Border = 3, Title = 28, Button = 25 };
 static Atom atom(const char *name) { return XInternAtom(display, name, False); }
@@ -173,9 +182,10 @@ static void close_client(Client *c, Time time)
 {
     if (!c || c->special)
         return;
-    if (has(c->window, "WM_PROTOCOLS", "WM_DELETE_WINDOW"))
+    if (has(c->window, "WM_PROTOCOLS", "WM_DELETE_WINDOW")) {
         protocol(c, "WM_DELETE_WINDOW", time);
-    else
+        send_ping(c);
+    } else
         XKillClient(display, c->window);
 }
 static void title(Client *c)
@@ -208,6 +218,8 @@ static void draw_frame(Client *c)
     unsigned long color = c == focused ? 0x344c6b : 0x41444b;
     if (c->urgent && c != focused)
         color = 0x805328;
+    if (c->hung)
+        color = 0x8a3d2e;
     color |= 0xff000000UL;
     XSetForeground(display, c->paint, color);
     XFillRectangle(display, c->frame, c->paint, 0, 0, width, c->title + c->border);
@@ -511,6 +523,46 @@ static Time server_time(void)
     XIfEvent(display, &event, timestamp_event, (XPointer)&requested);
     return event.xproperty.time;
 }
+/* X timestamps wrap; "after" means within half a cycle ahead. */
+static int time_after(Time a, Time b)
+{
+    return a != b && ((a - b) & 0xffffffffUL) < 0x80000000UL;
+}
+static long now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+}
+/* _NET_WM_PING: ask a client to echo a timestamp; no answer marks it hung so
+   the window menu can offer a forced close. */
+static void send_ping(Client *c)
+{
+    if (!c || !has(c->window, "WM_PROTOCOLS", "_NET_WM_PING"))
+        return;
+    Time t = server_time();
+    XEvent e = {0};
+    e.xclient.type = ClientMessage;
+    e.xclient.window = c->window;
+    e.xclient.message_type = atom("WM_PROTOCOLS");
+    e.xclient.format = 32;
+    e.xclient.data.l[0] = atom("_NET_WM_PING");
+    e.xclient.data.l[1] = t;
+    e.xclient.data.l[2] = root;
+    XSendEvent(display, c->window, False, NoEventMask, &e);
+    c->ping_time = t;
+    c->ping_pending = 1;
+    c->ping_sent_ms = now_ms();
+}
+static void ping_check(void)
+{
+    long now = now_ms();
+    for (Client *c = clients; c; c = c->next)
+        if (c->ping_pending && !c->hung && now - c->ping_sent_ms >= ping_timeout_ms) {
+            c->hung = 1;
+            draw_frame(c);
+        }
+}
 static void focus(Client *c, Time time)
 {
     if (time == CurrentTime)
@@ -722,6 +774,11 @@ static void manage(Window window)
             c->minimized = 1;
         XFree(wh);
     }
+    c->sync_request = has(window, "WM_PROTOCOLS", "_NET_WM_SYNC_REQUEST");
+    c->sync_counter = (XID)cardinal(window, "_NET_WM_SYNC_REQUEST_COUNTER", 0);
+    if (getenv("RILL_WM_DEBUG"))
+        fprintf(stderr, "rill-wm: manage %lx sync=%d counter=%lu\n", window, c->sync_request,
+                (unsigned long)c->sync_counter);
     Client **tail = &clients;
     while (*tail)
         tail = &(*tail)->next;
@@ -769,8 +826,21 @@ static void manage(Window window)
     XChangeProperty(display, window, atom("_NET_WM_ALLOWED_ACTIONS"), XA_ATOM, 32, PropModeReplace,
                     (unsigned char *)allowed,
                     c->special ? 0 : sizeof(allowed) / sizeof(allowed[0]));
+    /* Focus new clients only when they claim a user action: no user-time
+       property (legacy clients) or a timestamp at least as recent as the last
+       user input. Stale or zero timestamps leave them in the background. */
+    unsigned long *time_window = property(window, "_NET_WM_USER_TIME_WINDOW", XA_WINDOW, &n);
+    Window user_window = n >= 1 ? (Window)time_window[0] : None;
+    if (time_window)
+        XFree(time_window);
+    unsigned long *user_time = property(user_window ? user_window : window, "_NET_WM_USER_TIME",
+                                        XA_CARDINAL, &n);
+    int has_user_time = n >= 1;
+    Time stamp = has_user_time ? user_time[0] : 0;
+    if (user_time)
+        XFree(user_time);
     if (!c->special && !c->minimized && on_desktop(c) &&
-        cardinal(window, "_NET_WM_USER_TIME", 1) != 0)
+        (!has_user_time || (stamp != 0 && !time_after(last_time, stamp))))
         focus(c, CurrentTime);
     else
         restack();
@@ -868,10 +938,21 @@ static void finish_drag(int cancel)
     XUngrabPointer(display, CurrentTime);
     XUngrabKeyboard(display, CurrentTime);
 }
-static void motion(int x, int y)
+static int motion(int x, int y)
 {
     if (!dragged)
-        return;
+        return 0;
+    /* Sync resize: wait for the client to acknowledge the previous resize by
+       settling its counter, with a short timeout so non-acking clients still
+       resize. */
+    if (drag_mode != 8 && drag_mode != 10 && dragged->sync_request && dragged->sync_counter &&
+        have_sync && dragged->sync_serial) {
+        XSyncValue value;
+        if (XSyncQueryCounter(display, dragged->sync_counter, &value) &&
+            (unsigned long)XSyncValueLow32(value) < dragged->sync_serial &&
+            now_ms() - dragged->sync_sent_ms < 100)
+            return 1;
+    }
     int dx = x - drag_root_x, dy = y - drag_root_y;
     Geometry g = drag_start;
     if (drag_mode == 8 || drag_mode == 10) {
@@ -907,6 +988,18 @@ static void motion(int x, int y)
     }
     dragged->normal = g;
     configure(dragged);
+    if (drag_mode != 8 && drag_mode != 10 && dragged->sync_request && dragged->sync_counter &&
+        have_sync) {
+        dragged->sync_serial = (dragged->sync_serial + 2) | 1;
+        XSyncValue value;
+        XSyncIntsToValue(&value, (int)dragged->sync_serial, 0);
+        XSyncSetCounter(display, dragged->sync_counter, value);
+        dragged->sync_sent_ms = now_ms();
+        if (getenv("RILL_WM_DEBUG"))
+            fprintf(stderr, "rill-wm: sync resize counter=%lu serial=%lu\n",
+                    (unsigned long)dragged->sync_counter, dragged->sync_serial);
+    }
+    return 0;
 }
 /* MRU Alt+Tab switcher: a centered override-redirect panel painted in software
    (background and icons through one XImage, titles through Xft) that commits
@@ -1373,7 +1466,8 @@ static void key(XKeyEvent *e)
         else if (k == XK_Return || k == XK_space)
             menu_activate();
         else if (k == XK_Up || k == XK_Down) {
-            menu_item = (menu_item + (k == XK_Down ? 1 : 8)) % 9;
+            int items = menu_items(menu_client);
+            menu_item = (menu_item + (k == XK_Down ? 1 : items - 1)) % items;
             menu_paint();
         }
         return;
@@ -1493,7 +1587,8 @@ static void button(XButtonEvent *e)
 {
     last_time = e->time;
     if (menu_client) {
-        if (e->button == 1 && e->x >= 0 && e->x < 230 && e->y >= 0 && e->y < 9 * 28) {
+        if (e->button == 1 && e->x >= 0 && e->x < 230 && e->y >= 0 &&
+            e->y < menu_items(menu_client) * 28) {
             menu_item = e->y / 28;
             menu_activate();
         } else if (e->button == 1)
@@ -1556,6 +1651,10 @@ static void button(XButtonEvent *e)
         mode = left ? 6 : right ? 4 : 5;
     begin_drag(c, mode, e->x_root, e->y_root, e->time);
 }
+static int menu_items(Client *c)
+{
+    return 9 + (c && c->hung ? 1 : 0);
+}
 static void menu_close(void)
 {
     if (!menu_client)
@@ -1570,16 +1669,18 @@ static void menu_paint(void)
     if (!menu_client)
         return;
     Client *c = menu_client;
-    const char *labels[] = {c->max_h && c->max_v ? "Restore" : "Maximize",
-                            "Minimize",
-                            c->fullscreen ? "Leave fullscreen" : "Fullscreen",
-                            c->shaded ? "Unroll" : "Roll up",
-                            c->above ? "Normal stacking" : "Always on top",
-                            c->desktop < 0 ? "Only this workspace" : "All workspaces",
-                            "Move to previous workspace",
-                            "Move to next workspace",
-                            "Close"};
-    for (int i = 0; i < 9; i++) {
+    int items = menu_items(c);
+    const char *labels[10] = {c->max_h && c->max_v ? "Restore" : "Maximize",
+                              "Minimize",
+                              c->fullscreen ? "Leave fullscreen" : "Fullscreen",
+                              c->shaded ? "Unroll" : "Roll up",
+                              c->above ? "Normal stacking" : "Always on top",
+                              c->desktop < 0 ? "Only this workspace" : "All workspaces",
+                              "Move to previous workspace",
+                              "Move to next workspace",
+                              "Close",
+                              c->hung ? "Force close" : ""};
+    for (int i = 0; i < items; i++) {
         XSetForeground(display, gc, i == menu_item ? 0x344c6b : 0x30343c);
         XFillRectangle(display, menu_window, gc, 0, i * 28, 230, 28);
         if (font && menu_draw)
@@ -1606,8 +1707,9 @@ static void menu_open(Client *c, int x, int y, Time time)
     }
     menu_client = c;
     menu_item = 0;
-    XMoveWindow(display, menu_window, max(0, min(x, screen_w - 230)),
-                max(0, min(y, screen_h - 9 * 28)));
+    int rows = menu_items(c);
+    XMoveResizeWindow(display, menu_window, max(0, min(x, screen_w - 230)),
+                      max(0, min(y, screen_h - rows * 28)), 230, rows * 28);
     XMapRaised(display, menu_window);
     XGrabPointer(display, menu_window, False,
                  ButtonPressMask | ButtonReleaseMask | PointerMotionMask, GrabModeAsync,
@@ -1660,6 +1762,9 @@ static void menu_activate(void)
     case 8:
         close_client(c, last_time);
         break;
+    case 9:
+        XKillClient(display, c->window);
+        break;
     }
 }
 static void change_state(Client *c, Atom value, long action)
@@ -1697,6 +1802,18 @@ static void message(XClientMessageEvent *e)
 {
     if (e->format != 32)
         return;
+    if (e->message_type == atom("WM_PROTOCOLS") && e->window == root &&
+        (Atom)e->data.l[0] == atom("_NET_WM_PING")) {
+        for (Client *c = clients; c; c = c->next)
+            if (c->ping_pending && (Time)e->data.l[1] == c->ping_time) {
+                c->ping_pending = 0;
+                if (c->hung) {
+                    c->hung = 0;
+                    draw_frame(c);
+                }
+            }
+        return;
+    }
     Client *c = find(e->window);
     if (e->message_type == atom("_NET_NUMBER_OF_DESKTOPS"))
         desktop_count(e->data.l[0]);
@@ -1705,11 +1822,22 @@ static void message(XClientMessageEvent *e)
     else if (e->message_type == atom("_NET_SHOWING_DESKTOP"))
         show_desktop(e->data.l[0] != 0);
     else if (e->message_type == atom("_NET_ACTIVE_WINDOW") && c) {
+        Time stamp = (Time)e->data.l[1];
+        /* Pagers may activate directly. Applications may only take focus with
+           a current timestamp; stale or zero requests raise the urgent hint. */
+        if (e->data.l[0] == 1 && c != focused && (stamp == 0 || time_after(last_time, stamp))) {
+            if (!c->urgent) {
+                c->urgent = 1;
+                draw_frame(c);
+            }
+            state(c);
+            return;
+        }
         if (showing_desktop)
             show_desktop(0);
         if (c->desktop >= 0 && !on_desktop(c))
             switch_desktop(c->desktop);
-        focus(c, (Time)e->data.l[1]);
+        focus(c, stamp);
     } else if (e->message_type == atom("_NET_CLOSE_WINDOW"))
         close_client(c, e->data.l[0]);
     else if (e->message_type == atom("WM_CHANGE_STATE") && e->data.l[0] == IconicState)
@@ -1836,7 +1964,8 @@ static void event(XEvent *e)
     case MotionNotify:
         if (menu_client) {
             int item = e->xmotion.y / 28;
-            if (item >= 0 && item < 9 && item != menu_item) {
+            int items = menu_items(menu_client);
+            if (item >= 0 && item < items && item != menu_item) {
                 menu_item = item;
                 menu_paint();
             }
@@ -1886,6 +2015,9 @@ static void event(XEvent *e)
             if (e->xproperty.atom == atom("_NET_WM_STRUT") ||
                 e->xproperty.atom == atom("_NET_WM_STRUT_PARTIAL"))
                 update_workarea();
+            if (e->xproperty.atom == atom("_NET_WM_SYNC_REQUEST_COUNTER"))
+                c->sync_counter =
+                    (XID)cardinal(c->window, "_NET_WM_SYNC_REQUEST_COUNTER", 0);
         }
         break;
     case ConfigureNotify:
@@ -1971,6 +2103,7 @@ static int initialize(void)
                                "_NET_WM_DESKTOP",
                                "_NET_WM_NAME",
                                "_NET_CLOSE_WINDOW",
+                               "_NET_WM_PING",
                                "_NET_WM_STATE",
                                "_NET_WM_STATE_HIDDEN",
                                "_NET_WM_STATE_FULLSCREEN",
@@ -2019,6 +2152,7 @@ static int initialize(void)
     int error;
     have_shape = XShapeQueryExtension(display, &shape_event, &error);
     have_randr = XRRQueryExtension(display, &randr_event, &error);
+    have_sync = XSyncInitialize(display, &error, &error);
     if (have_randr)
         XRRSelectInput(display, root,
                        RRScreenChangeNotifyMask | RRCrtcChangeNotifyMask |
@@ -2068,6 +2202,11 @@ int main(int argc, char **argv)
     const char *composite = getenv("RILL_WM_COMPOSITE");
     if (composite && strcmp(composite, "0") == 0)
         composite_enabled = 0;
+    const char *ping_ms = getenv("RILL_WM_PING_MS");
+    if (ping_ms) {
+        long value = atol(ping_ms);
+        ping_timeout_ms = value < 100 ? 100 : value;
+    }
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--no-composite") == 0)
             composite_enabled = 0;
@@ -2098,6 +2237,7 @@ int main(int argc, char **argv)
             CompositorEvent(&e);
             event(&e);
         }
+        ping_check();
         CompositorPaint();
         XFlush(display);
         struct pollfd fd = {ConnectionNumber(display), POLLIN, 0};

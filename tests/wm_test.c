@@ -4,6 +4,7 @@
 #include <X11/extensions/XTest.h>
 #include <X11/extensions/Xcomposite.h>
 #include <X11/extensions/shape.h>
+#include <X11/extensions/sync.h>
 #include <X11/keysym.h>
 #include <assert.h>
 #include <signal.h>
@@ -136,6 +137,7 @@ int main(int argc, char **argv)
     check(d != NULL, "display");
     root = DefaultRootWindow(d);
     atexit(cleanup);
+    setenv("RILL_WM_PING_MS", "300", 1);
     start(argv[1]);
     Window dock = XCreateSimpleWindow(d, root, 0, 0, 1280, 40, 0, 0, 0x222222);
     Atom type = atom("_NET_WM_WINDOW_TYPE_DOCK");
@@ -389,6 +391,116 @@ int main(int argc, char **argv)
                 (Atom)e.xclient.data.l[0] == atom("WM_TAKE_FOCUS")),
               "same-workspace request must not queue a stale focus transfer");
     }
+    /* Focus stealing: an application activation with a stale timestamp must
+       only raise the demands-attention hint. */
+    Window stealer = XCreateSimpleWindow(d, root, 500, 80, 200, 120, 0, 0, 0x00ff00);
+    XStoreName(d, stealer, "Stealer test window");
+    XMapWindow(d, stealer);
+    pump();
+    check(value(root, "_NET_ACTIVE_WINDOW", XA_WINDOW, 0) == stealer,
+          "late-mapped window without a user time takes focus");
+    send(w, "_NET_ACTIVE_WINDOW", 1, 1, 0, 0, 0);
+    check(value(root, "_NET_ACTIVE_WINDOW", XA_WINDOW, 0) == stealer,
+          "stale application activation does not steal focus");
+    check(contains(w, "_NET_WM_STATE", XA_ATOM, atom("_NET_WM_STATE_DEMANDS_ATTENTION")),
+          "stale activation raises the urgent hint instead");
+    send(w, "_NET_ACTIVE_WINDOW", 2, 0, 0, 0, 0);
+    check(value(root, "_NET_ACTIVE_WINDOW", XA_WINDOW, 0) == w,
+          "pager activation still focuses directly");
+    XDestroyWindow(d, stealer);
+    pump();
+    /* _NET_WM_PING flags unresponsive clients; the window menu force-closes.
+       The unresponsive app runs in a child process so XKillClient only severs
+       that connection. */
+    pid_t hung_pid = fork();
+    check(hung_pid >= 0, "fork unresponsive client");
+    if (hung_pid == 0) {
+        manager = 0; /* the child must not kill the WM through atexit(cleanup) */
+        Display *cd = XOpenDisplay(NULL);
+        if (!cd)
+            _exit(2);
+        Window hung = XCreateSimpleWindow(cd, DefaultRootWindow(cd), 300, 400, 220, 140, 0, 0,
+                                          0xff00ff);
+        Atom ping[3] = {XInternAtom(cd, "WM_DELETE_WINDOW", False),
+                        XInternAtom(cd, "WM_TAKE_FOCUS", False),
+                        XInternAtom(cd, "_NET_WM_PING", False)};
+        XSetWMProtocols(cd, hung, ping, 3);
+        XStoreName(cd, hung, "Unresponsive test window");
+        XSelectInput(cd, hung, StructureNotifyMask);
+        XMapWindow(cd, hung);
+        XFlush(cd);
+        for (;;) {
+            XEvent wait;
+            XNextEvent(cd, &wait);
+        }
+    }
+    pump();
+    Atom list_type;
+    int list_format;
+    unsigned long list_count, list_after;
+    unsigned char *list_data = NULL;
+    Window hung_app = None;
+    if (XGetWindowProperty(d, root, atom("_NET_CLIENT_LIST"), 0, 4096, False, XA_WINDOW,
+                           &list_type, &list_format, &list_count, &list_after, &list_data) ==
+            Success &&
+        list_data && list_count)
+        hung_app = ((Window *)list_data)[list_count - 1];
+    if (list_data)
+        XFree(list_data);
+    check(hung_app != None, "unresponsive client joins the client list");
+    send(hung_app, "_NET_CLOSE_WINDOW", 4321, 0, 0, 0, 0);
+    usleep(450000);
+    pump();
+    key(XK_Alt_L, XK_space);
+    KeyCode down = XKeysymToKeycode(d, XK_Down);
+    for (int i = 0; i < 9; i++) {
+        XTestFakeKeyEvent(d, down, True, CurrentTime);
+        XTestFakeKeyEvent(d, down, False, CurrentTime);
+        pump();
+    }
+    KeyCode enter = XKeysymToKeycode(d, XK_Return);
+    XTestFakeKeyEvent(d, enter, True, CurrentTime);
+    XTestFakeKeyEvent(d, enter, False, CurrentTime);
+    pump();
+    int killed = 0, hung_status;
+    for (int i = 0; i < 20 && !killed; i++) {
+        if (waitpid(hung_pid, &hung_status, WNOHANG) == hung_pid)
+            killed = 1;
+        else
+            usleep(100000);
+    }
+    check(killed, "window menu force-closes an unresponsive client");
+    /* Sync resize advances the client's frame counter and waits for it. */
+    Window synced = XCreateSimpleWindow(d, root, 700, 200, 260, 180, 0, 0, 0xffff00);
+    XSyncValue initial;
+    XSyncIntToValue(&initial, 0);
+    XSyncCounter counter = XSyncCreateCounter(d, initial);
+    unsigned long counter_id = counter;
+    XChangeProperty(d, synced, atom("_NET_WM_SYNC_REQUEST_COUNTER"), XA_CARDINAL, 32,
+                    PropModeReplace, (unsigned char *)&counter_id, 1);
+    Atom sync_protocols[1] = {atom("_NET_WM_SYNC_REQUEST")};
+    XSetWMProtocols(d, synced, sync_protocols, 1);
+    XStoreName(d, synced, "Sync resize test window");
+    XMapWindow(d, synced);
+    pump();
+    position(synced, &x, &y);
+    XTestFakeMotionEvent(d, DefaultScreen(d), x + 259, y + 90, CurrentTime);
+    send(synced, "_NET_WM_MOVERESIZE", x + 259, y + 90, 3, 1, 2);
+    XTestFakeMotionEvent(d, DefaultScreen(d), x + 319, y + 90, CurrentTime);
+    pump();
+    XSyncValue current;
+    check(XSyncQueryCounter(d, counter, &current) && (XSyncValueLow32(current) & 1) == 1,
+          "sync resize advances the client counter to an odd value");
+    XSyncIntToValue(&current, XSyncValueLow32(current) + 1);
+    XSyncSetCounter(d, counter, current);
+    pump();
+    XTestFakeMotionEvent(d, DefaultScreen(d), x + 349, y + 90, CurrentTime);
+    pump();
+    check(attrs(synced).width == 350, "sync resize applies after acknowledgement");
+    send(synced, "_NET_WM_MOVERESIZE", 0, 0, 11, 0, 0);
+    XSyncDestroyCounter(d, counter);
+    XDestroyWindow(d, synced);
+    pump();
     cleanup();
     pump();
     check(parent(w) == root && attrs(w).map_state == IsViewable,
