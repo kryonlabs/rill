@@ -37,8 +37,13 @@ adapters.
   actions go through logind; logging out asks the session manager to exit.
 - Run dialog (`rill --run-dialog`, bound to Alt+F2 in Rill WM) matching
   installed applications and running typed commands, with recent history.
-- Desktop icons populated from discovered launchers marked
-  `X-Rill-Favorite=true`.
+- Desktop icons from launchers marked `X-Rill-Favorite=true`, entries in the
+  user's Desktop directory, and Home / File System / Trash shortcuts. Icons
+  select on click and open on double-click; Trash opens through the default
+  file handler.
+- Desktop context menu (right-click) with Applications, Terminal, Files,
+  Settings, wallpaper and session entries; middle-click opens a window list
+  that focuses any task; the mouse wheel over the desktop switches workspaces.
 - Kryon app hosts such as ktrem and Shelf can be exposed through `.desktop`
   launchers using `Exec=host:<id>`.
 - Linux X11 window-manager mode with `--wm`.

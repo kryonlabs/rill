@@ -283,6 +283,41 @@ main(int argc, char **argv)
         unlink(probe_path);
         unlink(executable);
     }
+
+    /* Desktop directory entries feed the desktop icon grid. */
+    {
+        char home[512], desktop[512], original_home[512];
+        RillLauncher desktop_launchers[4];
+        const char *saved_home = getenv("HOME");
+
+        snprintf(original_home, sizeof(original_home), "%s",
+                 saved_home != NULL ? saved_home : "");
+        snprintf(home, sizeof(home), "%s/deskhome", root);
+        mkdir(home, 0700);
+        snprintf(desktop, sizeof(desktop), "%s/Desktop", home);
+        mkdir(desktop, 0700);
+        snprintf(app_path, sizeof(app_path), "%s/notes.desktop", desktop);
+        check("write desktop entry",
+              write_file(app_path,
+                         "[Desktop Entry]\n"
+                         "Type=Application\n"
+                         "Name=Desktop Notes\n"
+                         "Exec=touch /tmp/rill-desktop-probe\n"),
+              &failures);
+        setenv("HOME", home, 1);
+        count = platform->list_desktop_files(desktop_launchers, 4);
+        check("desktop entries discovered",
+              platform->list_desktop_files != NULL && count == 1 &&
+              strcmp(desktop_launchers[0].name, "Desktop Notes") == 0,
+              &failures);
+        if(original_home[0] != '\0')
+            setenv("HOME", original_home, 1);
+        else
+            unsetenv("HOME");
+        unlink(app_path);
+        rmdir(desktop);
+        rmdir(home);
+    }
     snprintf(app_path, sizeof(app_path), "%s/user/example.desktop", root);
     unlink(app_path);
     unlink(hidden_path);

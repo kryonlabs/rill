@@ -83,9 +83,14 @@ Linux execution/display bridge, neither of which is implemented here.
    wallpapers from platform directories with an optional slideshow; the panel
    supports top/bottom placement, adjustable height, auto-hide, a clock
    calendar, show-desktop and session action items and per-item width
-   properties. Wallpaper/output settings beyond that and the xfsettingsd-backed
-   inputs remain to be reimplemented. Resource and language items are still
-   decorative; do not interpret their drawings as working services.
+   properties; the desktop carries a right-click menu, a middle-click window
+   list, wheel workspace switching and icons for Desktop-directory entries,
+   favorites and Home / File System / Trash with click selection and
+   double-click activation. Icon dragging/free placement, non-entry desktop
+   files, wallpaper/output settings beyond the picker and the
+   xfsettingsd-backed inputs remain to be reimplemented. Resource and language
+   items are still decorative; do not interpret their drawings as working
+   services.
 6. **Plan 9 integration:** build and launch the whole application against the
    intended Kryon revision in Taiji, verify live rio focus/close behavior, native
    app-host availability, clipboard/plumbing and desktop lifecycle. Decide and

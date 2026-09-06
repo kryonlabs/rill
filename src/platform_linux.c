@@ -1364,6 +1364,50 @@ linux_tray_activate(const char *id, int secondary)
     return 0;
 }
 
+static int
+linux_list_desktop_files(RillLauncher *out, int cap)
+{
+    const char *home = getenv("HOME");
+    char dir[1024];
+    GHashTable *seen;
+    int count;
+
+    if(out == NULL || cap <= 0 || home == NULL || home[0] == '\0')
+        return 0;
+    snprintf(dir, sizeof(dir), "%s/Desktop", home);
+    seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    count = scan_desktop_dir(dir, out, cap, 0, 0, dir, seen);
+    g_hash_table_destroy(seen);
+    return count;
+}
+
+static int
+linux_open_path(const char *path)
+{
+    GError *error = NULL;
+    char *uri;
+    gboolean ok;
+
+    if(path == NULL || path[0] == '\0')
+        return 0;
+    if(strstr(path, "://") != NULL)
+        uri = g_strdup(path);
+    else
+        uri = g_filename_to_uri(path, NULL, NULL);
+    if(uri == NULL)
+        uri = g_strdup(path);
+    ok = g_app_info_launch_default_for_uri(uri, NULL, &error);
+    if(!ok) {
+        if(error != NULL) {
+            fprintf(stderr, "rill: cannot open %s: %s\n", path,
+                    error->message);
+            g_error_free(error);
+        }
+    }
+    g_free(uri);
+    return ok;
+}
+
 static const RillPlatformServices services = {
     "xlibre",
     linux_list_launchers,
@@ -1377,7 +1421,9 @@ static const RillPlatformServices services = {
     linux_session_action,
     linux_show_desktop,
     linux_tray_icons,
-    linux_tray_activate
+    linux_tray_activate,
+    linux_list_desktop_files,
+    linux_open_path
 };
 
 const RillPlatformServices *

@@ -43,6 +43,7 @@ enum {
     RILL_ICON_CACHE_MAX = 32,
     RILL_PANEL_PLUGIN_MAX = 32,
     RILL_WALLPAPER_CHOICES = 24,
+    RILL_DESKTOP_FILE_MAX = 24,
     RILL_TEST_LOWER_TEXT_X = 274,
     RILL_TEST_LOWER_TEXT_Y = 224,
     RILL_TEST_UPPER_X = 250,
@@ -115,6 +116,14 @@ typedef struct RillVisualState {
     int wallpaper_scanned;
     RillTrayEntry tray[8];
     int tray_count;
+    RillLauncher desktop_files[24];
+    int desktop_file_count;
+    int desktop_files_scanned;
+    int desktop_selected;
+    int desktop_last_index;
+    double desktop_last_click;
+    int desktop_menu_x;
+    int desktop_menu_y;
     char run_input[160];
     int run_selected;
 } RillVisualState;
@@ -1117,23 +1126,189 @@ rill_control_poll(RillControlState *control, RillShellState *shell,
 #endif
 }
 
+static int
+launcher_id_installed(const RillShellState *shell,
+                      const RillVisualState *visuals, const char *id)
+{
+    for(int i = 0; i < visuals->desktop_file_count; i++)
+        if(strcmp(visuals->desktop_files[i].id, id) == 0)
+            return 1;
+    (void)shell;
+    return 0;
+}
+
+static void
+open_special_icon(RillShellState *shell, const RillPlatformServices *platform,
+                   const RillLauncher *launcher)
+{
+    const char *target = NULL;
+    const char *home;
+
+    if(strcmp(launcher->id, "desktop-home") == 0) {
+        home = getenv("HOME");
+        target = home != NULL && home[0] != '\0' ? home : "/";
+    } else if(strcmp(launcher->id, "desktop-filesystem") == 0)
+        target = "/";
+    else if(strcmp(launcher->id, "desktop-trash") == 0)
+        target = "trash://";
+    if(target != NULL && platform != NULL && platform->open_path != NULL &&
+       platform->open_path(target))
+        return;
+    open_launcher_id(shell, platform, "files");
+}
+
+static int
+launcher_is_special(const RillLauncher *launcher)
+{
+    return launcher != NULL &&
+           (strcmp(launcher->id, "desktop-home") == 0 ||
+            strcmp(launcher->id, "desktop-filesystem") == 0 ||
+            strcmp(launcher->id, "desktop-trash") == 0);
+}
+
+static void
+open_desktop_launcher(RillShellState *shell,
+                      const RillPlatformServices *platform,
+                      const RillLauncher *launcher)
+{
+    if(launcher_is_special(launcher)) {
+        open_special_icon(shell, platform, launcher);
+        return;
+    }
+    open_launcher_id(shell, platform, launcher->id);
+}
+
 static void
 draw_desktop_icon(RillShellState *shell, const RillPlatformServices *platform,
-                  RillVisualState *visuals, int x, int y,
+                  RillVisualState *visuals, int x, int y, int index,
                   const RillLauncher *launcher, Color accent)
 {
     Rectangle box;
     Rectangle icon;
+    int pressed;
 
     if(launcher == NULL)
         return;
     box = (Rectangle){x, y, 84, 82};
     icon = (Rectangle){x + 22, y + 5, 40, 40};
-    if(icon_hit_button(box, 7000 + x + y))
-        open_launcher_id(shell, platform, launcher->id);
+    pressed = icon_hit_button(box, 7000 + x + y);
+    if(visuals->desktop_selected == index) {
+        DrawRectangleRounded(box, 0.06f, 6, Fade(GetThemeLink(), 0.30f));
+        DrawRectangleRoundedLinesEx(box, 0.06f, 6, 1.0f,
+                                    Fade(GetThemeLink(), 0.60f));
+    }
     draw_launcher_icon(visuals, launcher, icon, accent);
     draw_text_fit_centered(launcher->name, x + 4, y + 52, 76, Text12,
                            GetThemeText());
+    if(pressed) {
+        double now = GetTime();
+        visuals->desktop_selected = index;
+        if(visuals->desktop_last_index == index &&
+           now - visuals->desktop_last_click < 0.45) {
+            open_desktop_launcher(shell, platform, launcher);
+            visuals->desktop_last_index = -1;
+            visuals->desktop_last_click = 0;
+        } else {
+            visuals->desktop_last_index = index;
+            visuals->desktop_last_click = now;
+        }
+    }
+}
+
+static const RillLauncher *
+desktop_special_entry(int index)
+{
+    static RillLauncher entries[3];
+    static int initialized;
+
+    if(!initialized) {
+        initialized = 1;
+        memset(entries, 0, sizeof(entries));
+        snprintf(entries[0].id, sizeof(entries[0].id), "desktop-home");
+        snprintf(entries[0].name, sizeof(entries[0].name), "Home");
+        snprintf(entries[0].command, sizeof(entries[0].command), "internal:home");
+        snprintf(entries[0].category, sizeof(entries[0].category), "files");
+        snprintf(entries[1].id, sizeof(entries[1].id), "desktop-filesystem");
+        snprintf(entries[1].name, sizeof(entries[1].name), "File System");
+        snprintf(entries[1].command, sizeof(entries[1].command), "internal:filesystem");
+        snprintf(entries[1].category, sizeof(entries[1].category), "files");
+        snprintf(entries[2].id, sizeof(entries[2].id), "desktop-trash");
+        snprintf(entries[2].name, sizeof(entries[2].name), "Trash");
+        snprintf(entries[2].command, sizeof(entries[2].command), "internal:trash");
+        snprintf(entries[2].category, sizeof(entries[2].category), "files");
+    }
+    return &entries[index];
+}
+
+static void
+ensure_desktop_files(RillVisualState *visuals,
+                     const RillPlatformServices *platform)
+{
+    if(visuals == NULL || visuals->desktop_files_scanned ||
+       platform == NULL || platform->list_desktop_files == NULL)
+        return;
+    visuals->desktop_file_count =
+        platform->list_desktop_files(visuals->desktop_files,
+                                     RILL_DESKTOP_FILE_MAX);
+    if(visuals->desktop_file_count < 0)
+        visuals->desktop_file_count = 0;
+    visuals->desktop_files_scanned = 1;
+}
+
+static int
+point_on_desktop_icon_grid(const RillShellState *shell,
+                           const RillVisualState *visuals, Vector2 mouse)
+{
+    int top = visuals->panel_bottom ? 0 : rill_panel_visible_height(visuals);
+
+    if(mouse.x < 28 || mouse.y < top + 28)
+        return 0;
+    for(int i = 0; i < shell->app_count; i++) {
+        Rectangle frame = {shell->apps[i].x, shell->apps[i].y,
+                           shell->apps[i].w, shell->apps[i].h};
+        if(CheckCollisionPointRec(mouse, frame))
+            return 0;
+    }
+    return 1;
+}
+
+static void
+process_desktop_mouse(RillShellState *shell,
+                      const RillPlatformServices *platform,
+                      RillVisualState *visuals)
+{
+    Vector2 mouse;
+    float wheel;
+
+    if(shell == NULL || visuals == NULL || platform == NULL)
+        return;
+    if(shell->menu_open != 0)
+        return;
+    mouse = GetMousePosition();
+    if(!point_on_desktop_icon_grid(shell, visuals, mouse))
+        return;
+    wheel = GetMouseWheelMove();
+    if(wheel != 0 && platform->workspace_count != NULL &&
+       platform->current_workspace != NULL &&
+       platform->switch_workspace != NULL) {
+        int count = platform->workspace_count();
+        int current = platform->current_workspace();
+        if(count > 0 && current >= 0)
+            platform->switch_workspace(
+                (current + (wheel > 0 ? count - 1 : 1)) % count);
+    }
+    if(IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+        shell->menu_open = 4;
+        visuals->desktop_menu_x = (int)mouse.x;
+        visuals->desktop_menu_y = (int)mouse.y;
+    } else if(IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE)) {
+        shell->menu_open = 5;
+        visuals->desktop_menu_x = (int)mouse.x;
+        visuals->desktop_menu_y = (int)mouse.y;
+    } else if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        visuals->desktop_selected = -1;
+        visuals->desktop_last_index = -1;
+    }
 }
 
 static void
@@ -1142,22 +1317,29 @@ draw_desktop(RillShellState *shell, const RillPlatformServices *platform,
 {
     int shown = 0;
     int top = visuals->panel_bottom ? 0 : rill_panel_visible_height(visuals);
+    const RillLauncher *entries[3 + RILL_MAX_LAUNCHERS];
+    int entry_count = 0;
 
     if(shell == NULL)
         return;
-    for(int i = 0; i < shell->launcher_count; i++) {
-        int col;
-        int row;
-
-        if(!shell->launchers[i].favorite)
-            continue;
-        col = shown / 6;
-        row = shown % 6;
+    ensure_desktop_files(visuals, platform);
+    for(int i = 0; i < 3 && entry_count < RILL_DESKTOP_FILE_MAX + 3; i++)
+        entries[entry_count++] = desktop_special_entry(i);
+    for(int i = 0; i < visuals->desktop_file_count &&
+                  entry_count < RILL_DESKTOP_FILE_MAX + 3; i++)
+        entries[entry_count++] = &visuals->desktop_files[i];
+    for(int i = 0; i < shell->launcher_count &&
+                  entry_count < RILL_DESKTOP_FILE_MAX + 3; i++) {
+        if(shell->launchers[i].favorite &&
+           !launcher_id_installed(shell, visuals, shell->launchers[i].id))
+            entries[entry_count++] = &shell->launchers[i];
+    }
+    for(int i = 0; i < entry_count; i++) {
+        int col = shown / 6;
+        int row = shown % 6;
         draw_desktop_icon(shell, platform, visuals, 28 + col * 94,
-                          top + 28 + row * 94, &shell->launchers[i],
-                          shown == 0 ? GetThemeLink() :
-                          (shown == 1 ? GetThemeButtonHover() :
-                           GetThemeIcon()));
+                          top + 28 + row * 94, i, entries[i],
+                          i < 3 ? GetThemeLink() : GetThemeIcon());
         shown++;
         if(top + 28 + shown * 94 > GetScreenHeight() + 94)
             break;
@@ -2273,6 +2455,122 @@ draw_system_menu(RillShellState *shell, const RillPlatformServices *platform,
 }
 
 static void
+clamp_menu_origin(RillVisualState *visuals, int *x, int *y, int width,
+                  int height)
+{
+    if(*x + width > GetScreenWidth())
+        *x = GetScreenWidth() - width;
+    if(*y + height > GetScreenHeight())
+        *y = GetScreenHeight() - height;
+    if(visuals != NULL && !visuals->panel_bottom &&
+       *y < rill_panel_visible_height(visuals) + 2)
+        *y = rill_panel_visible_height(visuals) + 2;
+    if(*x < 2)
+        *x = 2;
+    if(*y < 2)
+        *y = 2;
+}
+
+static void
+draw_desktop_context_menu(RillShellState *shell,
+                          const RillPlatformServices *platform,
+                          RillVisualState *visuals)
+{
+    Rectangle menu;
+    int x;
+    int y;
+
+    if(shell->menu_open != 4)
+        return;
+    x = visuals->desktop_menu_x;
+    y = visuals->desktop_menu_y;
+    clamp_menu_origin(visuals, &x, &y, 210, 212);
+    menu = (Rectangle){(float)x, (float)y, 210, 212};
+    draw_menu_panel(menu);
+    if(draw_menu_row((Rectangle){x + 6, (float)y + 6, 198, 28},
+                     "Applications", "all")) {
+        shell->menu_open = 1;
+        shell->app_menu_search_active = 1;
+    }
+    if(draw_menu_row((Rectangle){x + 6, (float)y + 38, 198, 28},
+                     "Terminal", "terminal")) {
+        open_launcher_id(shell, platform, "terminal");
+        shell->menu_open = 0;
+    }
+    if(draw_menu_row((Rectangle){x + 6, (float)y + 70, 198, 28},
+                     "Files", "files")) {
+        open_launcher_id(shell, platform, "files");
+        shell->menu_open = 0;
+    }
+    if(draw_menu_row((Rectangle){x + 6, (float)y + 102, 198, 28},
+                     "Settings", "settings")) {
+        open_launcher_id(shell, platform, "settings");
+        shell->menu_open = 0;
+    }
+    if(draw_menu_row((Rectangle){x + 6, (float)y + 134, 198, 28},
+                     "Change Wallpaper", "favorite")) {
+        open_launcher_id(shell, platform, "settings");
+        shell->menu_open = 0;
+    }
+    if(draw_menu_row((Rectangle){x + 6, (float)y + 166, 198, 28},
+                     "Log Out", "power")) {
+        shell->menu_open = 0;
+        visuals->logout_open = 1;
+    }
+    if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+       !CheckCollisionPointRec(GetMousePosition(), menu))
+        shell->menu_open = 0;
+}
+
+static void
+draw_window_list_menu(RillShellState *shell,
+                      const RillPlatformServices *platform,
+                      RillVisualState *visuals)
+{
+    Rectangle menu;
+    int x;
+    int y;
+    int rows;
+    int i;
+
+    if(shell->menu_open != 5)
+        return;
+    rows = shell->task_count > 8 ? 8 : (shell->task_count > 0 ?
+                                        shell->task_count : 1);
+    x = visuals->desktop_menu_x;
+    y = visuals->desktop_menu_y;
+    clamp_menu_origin(visuals, &x, &y, 250, rows * 30 + 14);
+    menu = (Rectangle){(float)x, (float)y, 250, (float)(rows * 30 + 14)};
+    draw_menu_panel(menu);
+    if(shell->task_count == 0) {
+        draw_text_fit("No windows", x + 12, y + 10, 226, Text12,
+                      GetThemeIcon());
+        return;
+    }
+    for(i = 0; i < rows; i++) {
+        Rectangle row = {x + 6, (float)(y + 6 + i * 30), 238, 28};
+        int task_index = i;
+        if(CheckCollisionPointRec(GetMousePosition(), row))
+            DrawRectangleRec(row, panel_item_hover_color());
+        draw_task_icon(visuals, shell, &shell->tasks[task_index],
+                       (Rectangle){row.x + 4, row.y + 5, 16, 16});
+        draw_text_fit(shell->tasks[task_index].title, (int)row.x + 26,
+                      (int)row.y + 8, (int)row.width - 34, Text12,
+                      shell->tasks[task_index].focused ?
+                      GetThemeText() : Fade(GetThemeText(), 0.72f));
+        if(CheckCollisionPointRec(GetMousePosition(), row) &&
+           IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            RillShellSelectTask(shell, task_index);
+            RillShellFocusSelectedTask(shell, platform);
+            shell->menu_open = 0;
+        }
+    }
+    if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+       !CheckCollisionPointRec(GetMousePosition(), menu))
+        shell->menu_open = 0;
+}
+
+static void
 draw_panel_properties(RillShellState *shell, RillVisualState *visuals)
 {
     RillPanelPlugin *plugins;
@@ -3223,6 +3521,8 @@ main(int argc, char **argv)
         if(!test_scene_active(&test))
             process_window_mouse(&shell);
         if(!test_scene_active(&test))
+            process_desktop_mouse(&shell, platform, &visuals);
+        if(!test_scene_active(&test))
             rill_control_poll(&control, &shell, platform);
 
         BeginDrawing();
@@ -3247,6 +3547,8 @@ main(int argc, char **argv)
             draw_applications_menu(&shell, platform, &visuals);
             draw_places_menu(&shell, platform, &visuals);
             draw_system_menu(&shell, platform, &visuals);
+            draw_desktop_context_menu(&shell, platform, &visuals);
+            draw_window_list_menu(&shell, platform, &visuals);
             draw_panel_context_menu(&shell, &visuals, platform);
             draw_calendar_popup(&visuals);
             draw_panel_properties(&shell, &visuals);

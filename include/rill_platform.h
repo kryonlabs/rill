@@ -55,6 +55,10 @@ typedef struct RillPlatformServices {
     int (*tray_icons)(RillTrayIcon *out, int cap);
     /* Activate (secondary=0) or secondary-activate (secondary=1) an icon. */
     int (*tray_activate)(const char *id, int secondary);
+    /* Desktop entries from the user's desktop directory. */
+    int (*list_desktop_files)(RillLauncher *out, int cap);
+    /* Open a file path or URI (for example trash://) with the default app. */
+    int (*open_path)(const char *path);
 } RillPlatformServices;
 
 int RillSettingsEnsureDirectory(const char *path);
