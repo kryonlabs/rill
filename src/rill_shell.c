@@ -207,8 +207,8 @@ RillShellOpenLauncher(RillShellState *shell, const RillLauncher *launcher)
     snprintf(app->title, sizeof(app->title), "%s", launcher->name);
     app->x = 150 + offset;
     app->y = 86 + offset;
-    app->w = app->kind == RILL_APP_SETTINGS ? 460 : 560;
-    app->h = app->kind == RILL_APP_SETTINGS ? 330 : 380;
+    app->w = app->kind == RILL_APP_SETTINGS ? 500 : 560;
+    app->h = app->kind == RILL_APP_SETTINGS ? 420 : 380;
     focus_app_index(shell, shell->app_count - 1);
     snprintf(shell->status, sizeof(shell->status), "Opened %s", launcher->name);
     return 1;

@@ -62,6 +62,7 @@ Default controls; every one of them can be rebound through the key file below.
 | Switcher: Left/Right/Up/Down | Move the selection |
 | Switcher: Escape | Cancel without switching |
 | Alt+F4 / Alt+F9 / Alt+F10 / Alt+F11 | Close / minimize / maximize / fullscreen |
+| Alt+F2 | Open the Rill run dialog |
 | Alt+F7 / Alt+F8 | Move / resize using keyboard or pointer |
 | Alt+Space, or title right-click | Window menu |
 | Alt+left/right drag | Move / resize |
@@ -86,9 +87,9 @@ workspace-next = Ctrl+Alt+j
 
 Modifiers are `Ctrl`, `Shift`, `Alt` and `Super`. The action names are `close`,
 `minimize`, `maximize`, `fullscreen`, `move`, `resize`, `cycle`, `cycle-back`,
-`window-menu`, `workspace-prev`, `workspace-next`, `window-workspace-prev`,
-`window-workspace-next`, `tile-left`, `tile-right`, `tile-up`, `tile-down` and
-`show-desktop`.
+`window-menu`, `run-dialog`, `workspace-prev`, `workspace-next`,
+`window-workspace-prev`, `window-workspace-next`, `tile-left`, `tile-right`,
+`tile-up`, `tile-down` and `show-desktop`.
 
 ## Running and testing
 

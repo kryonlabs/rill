@@ -57,9 +57,12 @@ Linux execution/display bridge, neither of which is implemented here.
 
 1. **Session lifecycle:** X11 now has a display-manager entry and an Xfce-backed
    session with desktop XSMP registration. Startup, crash restart and logout
-   have passed integration tests. Saved-session restoration, power actions and
-   cancellation with unsaved applications still need end-to-end validation.
-   Native Wayland and Plan 9 session lifecycles remain to be implemented.
+   have passed integration tests. The Rill end-session dialog performs log out
+   through the session manager and restart/shutdown/suspend through logind;
+   these power actions still need validation on real hardware. Saved-session
+   restoration and cancellation with unsaved applications still need
+   end-to-end validation. Native Wayland and Plan 9 session lifecycles remain
+   to be implemented.
 2. **Complete X11 window management:** ICCCM focus protocols, transient/modal
    relationships, size hints, interactive resize, minimize/maximize/fullscreen,
    stacking rules, Alt-Tab, struts/workareas, multi-monitor layout and hotplug.
@@ -75,7 +78,11 @@ Linux execution/display bridge, neither of which is implemented here.
 5. **Desktop and panel UX:** wallpaper/output configuration, icon placement,
    drag/drop, context actions, file operations, panel preferences, plugin
    properties, multiple panels, auto-hide, per-output positioning and migration
-   from existing Xfce configuration. Resource/tray/language items are still
+   from existing Xfce configuration. Rill's settings app already picks
+   wallpapers from platform directories with an optional slideshow and
+   configures clock formats and panel height; wallpaper/output settings beyond
+   that and the xfsettingsd-backed inputs remain to be reimplemented.
+   Resource/tray/language items are still
    incomplete; do not interpret their current drawings as working services.
 6. **Plan 9 integration:** build and launch the whole application against the
    intended Kryon revision in Taiji, verify live rio focus/close behavior, native

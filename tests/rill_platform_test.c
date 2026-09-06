@@ -44,6 +44,31 @@ int main(void)
     assert(nl == 0 && nr == 0);
     unlink(path);
 
+    /* Settings store round-trip. */
+    {
+        RillSettings settings, loaded;
+        snprintf(path, sizeof(path), "%s/settings", root);
+        RillSettingsInit(&settings);
+        RillSettingsSet(&settings, "clock-format", "%a %H:%M");
+        RillSettingsSetInteger(&settings, "panel-height", 32);
+        RillSettingsSet(&settings, "clock-format", "%H:%M");
+        assert(settings.count == 2);
+        assert(RillSettingsSave(&settings, path));
+        assert(RillSettingsLoad(&loaded, path));
+        assert(loaded.count == 2);
+        assert(strcmp(RillSettingsGet(&loaded, "clock-format", "bad"),
+                      "%H:%M") == 0);
+        assert(RillSettingsGetInteger(&loaded, "panel-height", 0) == 32);
+        put(path, "wallpaper = /tmp/photo with spaces.png\n# comment\n\nnoise-without-equals\n");
+        assert(RillSettingsLoad(&loaded, path));
+        assert(loaded.count == 1);
+        assert(strcmp(RillSettingsGet(&loaded, "wallpaper", "none"),
+                      "/tmp/photo with spaces.png") == 0);
+        assert(strcmp(RillSettingsGet(&loaded, "missing", "fallback"),
+                      "fallback") == 0);
+        unlink(path);
+    }
+
     setenv("RILL_WSYS_DIR", root, 1);
     snprintf(window, sizeof(window), "%s/7", root);
     assert(RillSettingsEnsureDirectory(window));

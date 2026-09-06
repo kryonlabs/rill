@@ -1404,6 +1404,7 @@ enum {
     KeyCycle,
     KeyCycleBack,
     KeyWindowMenu,
+    KeyRunDialog,
     KeyWorkspacePrev,
     KeyWorkspaceNext,
     KeyWindowWorkspacePrev,
@@ -1435,6 +1436,7 @@ static const struct {
     {KeyCycle, "cycle", XK_Tab, Mod1Mask},
     {KeyCycleBack, "cycle-back", XK_Tab, Mod1Mask | ShiftMask},
     {KeyWindowMenu, "window-menu", XK_space, Mod1Mask},
+    {KeyRunDialog, "run-dialog", XK_F2, Mod1Mask},
     {KeyWorkspacePrev, "workspace-prev", XK_Left, ControlMask | Mod1Mask},
     {KeyWorkspaceNext, "workspace-next", XK_Right, ControlMask | Mod1Mask},
     {KeyWindowWorkspacePrev, "window-workspace-prev", XK_Left, ControlMask | Mod1Mask | ShiftMask},
@@ -1555,6 +1557,14 @@ static void toggle_fullscreen(Client *c)
     state(c);
     restack();
 }
+static void spawn_run_dialog(void)
+{
+    if (fork() == 0) {
+        /* The child must not touch the inherited X connection. */
+        execlp("rill", "rill", "--run-dialog", (char *)NULL);
+        _exit(127);
+    }
+}
 static void key(XKeyEvent *e)
 {
     KeySym k = XLookupKeysym(e, 0);
@@ -1635,6 +1645,9 @@ static void key(XKeyEvent *e)
     case KeyWindowMenu:
         if (focused)
             menu_open(focused, focused->geometry.x, focused->geometry.y, e->time);
+        break;
+    case KeyRunDialog:
+        spawn_run_dialog();
         break;
     case KeyWorkspacePrev:
         switch_workspace(-1);

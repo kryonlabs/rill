@@ -985,6 +985,101 @@ static int linux_switch_workspace(int index)
     return result != 0;
 }
 
+static int
+linux_wallpaper_dir(char (*paths)[512], int cap, int count, const char *dir)
+{
+    DIR *directory;
+    struct dirent *entry;
+
+    if(count >= cap || dir == NULL || dir[0] == '\0')
+        return count;
+    directory = opendir(dir);
+    if(directory == NULL)
+        return count;
+    while(count < cap && (entry = readdir(directory)) != NULL) {
+        const char *name = entry->d_name;
+        const char *dot = strrchr(name, '.');
+        if(name[0] == '.' || dot == NULL)
+            continue;
+        dot++;
+        if(strcasecmp(dot, "png") != 0 && strcasecmp(dot, "jpg") != 0 &&
+           strcasecmp(dot, "jpeg") != 0)
+            continue;
+        snprintf(paths[count], 512, "%s/%s", dir, name);
+        count++;
+    }
+    closedir(directory);
+    return count;
+}
+
+static int
+linux_list_wallpapers(char (*paths)[512], int cap)
+{
+    const char *home = getenv("HOME");
+    char dir[1024];
+    int count = 0;
+
+    if(paths == NULL || cap <= 0)
+        return 0;
+    if(home != NULL && home[0] != '\0') {
+        snprintf(dir, sizeof(dir), "%s/Pictures", home);
+        count = linux_wallpaper_dir(paths, cap, count, dir);
+        snprintf(dir, sizeof(dir), "%s/.local/share/backgrounds", home);
+        count = linux_wallpaper_dir(paths, cap, count, dir);
+    }
+    count = linux_wallpaper_dir(paths, cap, count, "/usr/share/backgrounds");
+    return count;
+}
+
+static int
+linux_session_action(const char *action)
+{
+    const char *record = getenv("RILL_SESSION_ACTION_FILE");
+    GDBusConnection *bus;
+    GError *error = NULL;
+    const char *method = NULL;
+    gboolean ok;
+
+    if(action == NULL)
+        return 0;
+    if(strcmp(action, "restart") == 0)
+        method = "Reboot";
+    else if(strcmp(action, "shutdown") == 0)
+        method = "PowerOff";
+    else if(strcmp(action, "suspend") == 0)
+        method = "Suspend";
+    else if(strcmp(action, "logout") != 0)
+        return 0;
+    if(record != NULL && record[0] != '\0') {
+        FILE *file = fopen(record, "a");
+        if(file == NULL)
+            return 0;
+        fprintf(file, "%s\n", action);
+        fclose(file);
+        return 1;
+    }
+    if(method == NULL)
+        return g_spawn_command_line_async("xfce4-session-logout", NULL);
+    bus = g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, NULL);
+    if(bus == NULL) {
+        fprintf(stderr, "rill: cannot reach the system bus for %s\n", action);
+        return 0;
+    }
+    ok = g_dbus_connection_call_sync(bus, "org.freedesktop.login1",
+                                     "/org/freedesktop/login1",
+                                     "org.freedesktop.login1.Manager", method,
+                                     g_variant_new("(b)", TRUE), NULL,
+                                     G_DBUS_CALL_FLAGS_NONE, -1, NULL,
+                                     &error) != NULL;
+    if(error != NULL) {
+        fprintf(stderr, "rill: session action %s failed: %s\n", action,
+                error->message);
+        g_error_free(error);
+    }
+    g_object_unref(bus);
+    return ok;
+}
+
 static const RillPlatformServices services = {
     "xlibre",
     linux_list_launchers,
@@ -993,7 +1088,9 @@ static const RillPlatformServices services = {
     linux_focus_task,
     linux_close_task,
     linux_settings_root,
-    linux_workspace_count, linux_current_workspace, linux_switch_workspace
+    linux_workspace_count, linux_current_workspace, linux_switch_workspace,
+    linux_list_wallpapers,
+    linux_session_action
 };
 
 const RillPlatformServices *

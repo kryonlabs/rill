@@ -19,6 +19,15 @@ adapters.
 - Configurable Rill panel with Applications, task buttons, workspace pager and clock.
 - Optional Wayland task discovery/focus/close through wlr foreign-toplevel management.
 - Persistent panel layouts, including native Plan 9 save recovery.
+- Persistent shell settings (wallpaper, wallpaper slideshow, clock format,
+  panel height, recently used applications, run history) in
+  `$XDG_CONFIG_HOME/rill/settings`.
+- Interactive settings app with a wallpaper picker fed by the platform's
+  background directories, clock formats and a panel height preference.
+- End-session dialog with log out, restart, shut down and suspend. Power
+  actions go through logind; logging out asks the session manager to exit.
+- Run dialog (`rill --run-dialog`, bound to Alt+F2 in Rill WM) matching
+  installed applications and running typed commands, with recent history.
 - Desktop icons populated from discovered launchers marked
   `X-Rill-Favorite=true`.
 - Kryon app hosts such as ktrem and Shelf can be exposed through `.desktop`

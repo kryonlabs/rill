@@ -45,6 +45,7 @@ main(int argc, char **argv)
     char terminal_path[512];
     char system_dir[512], system_apps[512], override_path[512];
     char probe_path[512], probe_result[512], probe_text[4096], executable[1024];
+    char walls[2][512];
     RillLauncher launchers[8];
     const RillPlatformServices *platform;
     int count;
@@ -166,6 +167,31 @@ main(int argc, char **argv)
     setenv("XDG_CONFIG_HOME", root, 1);
     snprintf(app_path, sizeof(app_path), "%s/rill", root);
     check("settings in Rill subdirectory", strcmp(platform->settings_root(), app_path) == 0, &failures);
+
+    /* Session actions are recorded for tests instead of reaching login1. */
+    snprintf(app_path, sizeof(app_path), "%s/session-actions", root);
+    setenv("RILL_SESSION_ACTION_FILE", app_path, 1);
+    check("logout records an action", platform->session_action != NULL &&
+          platform->session_action("logout"), &failures);
+    check("suspend records an action", platform->session_action("suspend"),
+          &failures);
+    check("unknown action rejected", !platform->session_action("moon"),
+          &failures);
+    {
+        FILE *record = fopen(app_path, "r");
+        char log[128] = "";
+        if(record != NULL) {
+            size_t n = fread(log, 1, sizeof(log) - 1, record);
+            log[n] = '\0';
+            fclose(record);
+        }
+        check("session actions logged", strcmp(log, "logout\nsuspend\n") == 0,
+              &failures);
+    }
+    unsetenv("RILL_SESSION_ACTION_FILE");
+    unlink(app_path);
+    check("wallpaper listing is bounded", platform->list_wallpapers != NULL &&
+          platform->list_wallpapers(walls, 2) <= 2, &failures);
     snprintf(app_path, sizeof(app_path), "%s/user/example.desktop", root);
     unlink(app_path);
     unlink(hidden_path);

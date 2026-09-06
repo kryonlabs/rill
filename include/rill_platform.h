@@ -35,9 +35,34 @@ typedef struct RillPlatformServices {
     int (*workspace_count)(void);
     int (*current_workspace)(void);
     int (*switch_workspace)(int index);
+    /* Wallpaper candidates for the settings app; paths are 512-byte buffers. */
+    int (*list_wallpapers)(char (*paths)[512], int cap);
+    /* Session actions: "logout", "restart", "shutdown", "suspend". */
+    int (*session_action)(const char *action);
 } RillPlatformServices;
 
 int RillSettingsEnsureDirectory(const char *path);
+
+/* Small persisted key/value store ("key = value" lines) for shell settings. */
+#define RILL_SETTINGS_MAX 32
+#define RILL_SETTINGS_KEY 48
+#define RILL_SETTINGS_VALUE 256
+
+typedef struct RillSettings {
+    char keys[RILL_SETTINGS_MAX][RILL_SETTINGS_KEY];
+    char values[RILL_SETTINGS_MAX][RILL_SETTINGS_VALUE];
+    int count;
+} RillSettings;
+
+void RillSettingsInit(RillSettings *settings);
+int RillSettingsLoad(RillSettings *settings, const char *path);
+const char *RillSettingsGet(const RillSettings *settings, const char *key,
+                            const char *fallback);
+int RillSettingsGetInteger(const RillSettings *settings, const char *key,
+                           int fallback);
+void RillSettingsSet(RillSettings *settings, const char *key, const char *value);
+void RillSettingsSetInteger(RillSettings *settings, const char *key, int value);
+int RillSettingsSave(const RillSettings *settings, const char *path);
 
 const RillPlatformServices *RillPlatformCurrent(void);
 const RillPlatformServices *RillPlatformStub(void);

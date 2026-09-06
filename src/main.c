@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <time.h>
 
 #ifdef KRYON_NATIVE_PLAN9
@@ -41,6 +42,7 @@ enum {
     RILL_HOST_CACHE_MAX = 8,
     RILL_ICON_CACHE_MAX = 32,
     RILL_PANEL_PLUGIN_MAX = 32,
+    RILL_WALLPAPER_CHOICES = 24,
     RILL_TEST_LOWER_TEXT_X = 274,
     RILL_TEST_LOWER_TEXT_Y = 224,
     RILL_TEST_UPPER_X = 250,
@@ -88,7 +90,20 @@ typedef struct RillVisualState {
     int panel_context_index;
     int panel_context_x;
     int panel_context_y;
+    char clock_format[64];
+    int panel_height;
+    int logout_open;
+    int wallpaper_slideshow;
+    double wallpaper_next_swap;
+    char wallpaper_paths[24][512];
+    int wallpaper_count;
+    int wallpaper_scanned;
+    char run_input[160];
+    int run_selected;
 } RillVisualState;
+
+static RillSettings rill_settings;
+static char rill_settings_path[1024];
 
 typedef struct RillTestState {
     const char *scene;
@@ -108,7 +123,8 @@ typedef enum RillRunMode {
     RILL_MODE_SHELL,
     RILL_MODE_DESKTOP,
     RILL_MODE_WM,
-    RILL_MODE_WINDOWED
+    RILL_MODE_WINDOWED,
+    RILL_MODE_RUN
 } RillRunMode;
 
 typedef struct RillRuntimeOptions {
@@ -288,12 +304,17 @@ parse_runtime_options(int argc, char **argv, RillRuntimeOptions *options)
             options->mode = RILL_MODE_WINDOWED;
             continue;
         }
+        if(strcmp(argv[i], "--run-dialog") == 0) {
+            options->mode = RILL_MODE_RUN;
+            continue;
+        }
         if(strcmp(argv[i], "--") == 0) {
             collect_command = 1;
             continue;
         }
         if(options->mode == RILL_MODE_WM ||
-           options->mode == RILL_MODE_WINDOWED)
+           options->mode == RILL_MODE_WINDOWED ||
+           options->mode == RILL_MODE_RUN)
             runtime_append_arg(options, argv[i]);
     }
 }
@@ -363,6 +384,87 @@ configure_system_look(RillVisualState *visuals, const RillTestState *test)
             visuals->wallpaper_ready = 1;
             snprintf(visuals->wallpaper_path, sizeof(visuals->wallpaper_path),
                      "%s", wallpaper);
+        }
+    }
+}
+
+static void
+rill_settings_persist(const RillShellState *shell)
+{
+    char recents[64 * RILL_MAX_RECENT_LAUNCHERS];
+    int length = 0;
+
+    if(rill_settings_path[0] == '\0')
+        return;
+    if(shell != NULL) {
+        recents[0] = '\0';
+        for(int i = 0; i < shell->recent_launcher_count && i < RILL_MAX_RECENT_LAUNCHERS; i++) {
+            int written = snprintf(recents + length, sizeof(recents) - (size_t)length,
+                                   "%s%s", i > 0 ? "|" : "",
+                                   shell->recent_launcher_ids[i]);
+            if(written < 0 || (size_t)written >= sizeof(recents) - (size_t)length)
+                break;
+            length += written;
+        }
+        RillSettingsSet(&rill_settings, "recents", recents);
+    }
+    RillSettingsSave(&rill_settings, rill_settings_path);
+}
+
+static void
+apply_wallpaper(RillShellState *shell, RillVisualState *visuals,
+                const char *path, int persist)
+{
+    Texture2D texture;
+
+    if(path == NULL || path[0] == '\0')
+        return;
+    texture = LoadTexture(path);
+    if(texture.id == 0) {
+        RillShellSetStatus(shell, "Could not load the selected wallpaper");
+        return;
+    }
+    if(visuals->wallpaper_ready)
+        UnloadTexture(visuals->wallpaper);
+    visuals->wallpaper = texture;
+    visuals->wallpaper_ready = 1;
+    snprintf(visuals->wallpaper_path, sizeof(visuals->wallpaper_path), "%s", path);
+    if(persist) {
+        RillSettingsSet(&rill_settings, "wallpaper", path);
+        rill_settings_persist(shell);
+        RillShellSetStatus(shell, "Wallpaper updated");
+    }
+}
+
+static void
+apply_saved_settings(RillShellState *shell, RillVisualState *visuals)
+{
+    const char *wallpaper;
+    const char *recents;
+    int height;
+
+    snprintf(visuals->clock_format, sizeof(visuals->clock_format), "%s",
+             RillSettingsGet(&rill_settings, "clock-format", "%H:%M"));
+    height = RillSettingsGetInteger(&rill_settings, "panel-height", PANEL_H);
+    visuals->panel_height = height < 20 ? 20 : (height > 48 ? 48 : height);
+    visuals->wallpaper_slideshow =
+        RillSettingsGetInteger(&rill_settings, "wallpaper-slideshow", 0) != 0;
+    wallpaper = RillSettingsGet(&rill_settings, "wallpaper", NULL);
+    if(wallpaper != NULL && wallpaper[0] != '\0')
+        apply_wallpaper(shell, visuals, wallpaper, 0);
+    recents = RillSettingsGet(&rill_settings, "recents", NULL);
+    if(recents != NULL && recents[0] != '\0') {
+        char copy[64 * RILL_MAX_RECENT_LAUNCHERS];
+        char *item;
+
+        snprintf(copy, sizeof(copy), "%s", recents);
+        item = strtok(copy, "|");
+        while(item != NULL &&
+              shell->recent_launcher_count < RILL_MAX_RECENT_LAUNCHERS) {
+            snprintf(shell->recent_launcher_ids[shell->recent_launcher_count],
+                     sizeof(shell->recent_launcher_ids[0]), "%s", item);
+            shell->recent_launcher_count++;
+            item = strtok(NULL, "|");
         }
     }
 }
@@ -1403,7 +1505,7 @@ draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
     now = time(NULL);
     local = localtime(&now);
     if(local != NULL)
-        strftime(clock_text, sizeof(clock_text), "%H:%M", local);
+        strftime(clock_text, sizeof(clock_text), visuals->clock_format, local);
     else
         snprintf(clock_text, sizeof(clock_text), "--:--");
 
@@ -1595,10 +1697,13 @@ draw_search_mark(Rectangle r, Color color)
 }
 
 static void
-draw_whisker_header(Rectangle menu, RillShellState *shell)
+draw_whisker_header(Rectangle menu, RillShellState *shell,
+                    const RillPlatformServices *platform,
+                    RillVisualState *visuals)
 {
     Rectangle user_icon = {menu.x + 12, menu.y + 11, 30, 30};
     Rectangle search = {menu.x + 10, menu.y + 50, menu.width - 20, 30};
+    Vector2 mouse = GetMousePosition();
     int hover;
 
     DrawCircle((int)(user_icon.x + 15), (int)(user_icon.y + 15), 15,
@@ -1616,6 +1721,22 @@ draw_whisker_header(Rectangle menu, RillShellState *shell)
                                  22, 22}, "power", GetThemeLink());
     draw_symbol_icon((Rectangle){menu.x + menu.width - 25, menu.y + 14,
                                  20, 20}, "about", GetThemeIcon());
+    if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        if(CheckCollisionPointRec(mouse, (Rectangle){menu.x + menu.width - 88,
+                                                     menu.y + 12, 26, 26})) {
+            open_launcher_id(shell, platform, "settings");
+            shell->menu_open = 0;
+        } else if(CheckCollisionPointRec(mouse, (Rectangle){menu.x + menu.width - 56,
+                                                            menu.y + 12, 26, 26})) {
+            shell->menu_open = 0;
+            if(visuals != NULL)
+                visuals->logout_open = 1;
+        } else if(CheckCollisionPointRec(mouse, (Rectangle){menu.x + menu.width - 28,
+                                                            menu.y + 12, 24, 24})) {
+            open_launcher_id(shell, platform, "about");
+            shell->menu_open = 0;
+        }
+    }
 
     hover = CheckCollisionPointRec(GetMousePosition(), search);
     DrawRectangleRounded(search, 0.04f, 5, Fade(BLACK, 0.20f));
@@ -1743,7 +1864,7 @@ draw_applications_menu(RillShellState *shell,
     menu = (Rectangle){4, PANEL_H + 2, menu_w, menu_h};
     draw_menu_panel(menu);
 
-    draw_whisker_header(menu, shell);
+    draw_whisker_header(menu, shell, platform, visuals);
 
     category_area = (Rectangle){menu.x + menu.width - category_w - 6,
                                 menu.y + 88, category_w,
@@ -1864,8 +1985,11 @@ draw_places_menu(RillShellState *shell, const RillPlatformServices *platform)
     }
 }
 
+static int draw_settings_button(Rectangle bounds, const char *label, int active);
+
 static void
-draw_system_menu(RillShellState *shell, const RillPlatformServices *platform)
+draw_system_menu(RillShellState *shell, const RillPlatformServices *platform,
+                 RillVisualState *visuals)
 {
     Rectangle menu;
 
@@ -1885,9 +2009,52 @@ draw_system_menu(RillShellState *shell, const RillPlatformServices *platform)
     }
     if(draw_menu_row((Rectangle){188, PANEL_H + 72, 178, 28}, "Log Out",
                      "power")) {
-        RillShellSetStatus(shell, "Log out");
         shell->menu_open = 0;
+        if(visuals != NULL)
+            visuals->logout_open = 1;
     }
+}
+
+static void
+draw_logout_dialog(RillShellState *shell, RillVisualState *visuals,
+                   const RillPlatformServices *platform)
+{
+    const char *labels[5] = {"Log out", "Restart", "Shut down", "Suspend",
+                             "Cancel"};
+    const char *actions[4] = {"logout", "restart", "shutdown", "suspend"};
+    Rectangle full = {0, 0, (float)GetScreenWidth(), (float)GetScreenHeight()};
+    Rectangle panel;
+    int screen_w = GetScreenWidth();
+    int screen_h = GetScreenHeight();
+    int i;
+
+    if(visuals == NULL || !visuals->logout_open)
+        return;
+    panel = (Rectangle){(screen_w - 280) / 2.0f, (screen_h - 214) / 2.0f,
+                        280, 214};
+    DrawRectangleRec(full, Fade(BLACK, 0.38f));
+    DrawRectangleRounded(panel, 0.03f, 8, opaque_color(GetThemeSurface()));
+    DrawRectangleRoundedLinesEx(panel, 0.03f, 8, 2.0f, GetThemeLink());
+    DrawText("End session", (int)panel.x + 16, (int)panel.y + 14, Text18,
+             GetThemeText());
+    for(i = 0; i < 5; i++) {
+        Rectangle button = {panel.x + 16, panel.y + 46 + i * 32,
+                            panel.width - 32, 28};
+        if(draw_settings_button(button, labels[i], 0)) {
+            if(i < 4) {
+                if(platform != NULL && platform->session_action != NULL &&
+                   platform->session_action(actions[i]))
+                    RillShellSetStatus(shell, labels[i]);
+                else
+                    RillShellSetStatus(shell, "Session action unavailable");
+            }
+            visuals->logout_open = 0;
+            return;
+        }
+    }
+    if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+       !CheckCollisionPointRec(GetMousePosition(), panel))
+        visuals->logout_open = 0;
 }
 
 static int
@@ -2011,23 +2178,132 @@ draw_host_app(RillAppWindow *app, Rectangle content, RillVisualState *visuals)
     EndKryonInputOverride();
 }
 
-static void
-draw_settings_app(Rectangle content, const RillVisualState *visuals)
+static int
+draw_settings_button(Rectangle bounds, const char *label, int active)
 {
-    DrawText("Appearance", (int)content.x + 16, (int)content.y + 14, Text18,
+    int hover = CheckCollisionPointRec(GetMousePosition(), bounds);
+
+    DrawRectangleRounded(bounds, 0.06f, 4,
+                         active ? panel_active_color() :
+                         hover ? panel_item_hover_color() : panel_item_color());
+    DrawRectangleRoundedLinesEx(bounds, 0.06f, 4, 1.0f,
+                                Fade(GetThemeText(), 0.30f));
+    draw_text_fit(label, (int)bounds.x + 8, (int)bounds.y + 5,
+                  (int)bounds.width - 16, Text12,
+                  active ? WHITE : GetThemeText());
+    return hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+}
+
+static const char *
+wallpaper_basename(const char *path)
+{
+    const char *slash = strrchr(path, '/');
+    return slash != NULL && slash[1] != '\0' ? slash + 1 : path;
+}
+
+static void
+draw_settings_app(RillShellState *shell, Rectangle content,
+                  RillVisualState *visuals,
+                  const RillPlatformServices *platform)
+{
+    const char *clock_choices[3] = {"%H:%M", "%H:%M:%S", "%a %d %b %H:%M"};
+    char sample[64];
+    time_t now;
+    int y;
+    int i;
+
+    DrawText("Appearance", (int)content.x + 16, (int)content.y + 12, Text18,
          GetThemeText());
     draw_text_fit(visuals->system_theme_name, (int)content.x + 16,
-                  (int)content.y + 48, (int)content.width - 32, Text14,
-                  GetThemeText());
-    draw_text_fit(visuals->system_font_name, (int)content.x + 16,
-                  (int)content.y + 74, (int)content.width - 32, Text14,
+                  (int)content.y + 40, (int)content.width - 32, Text12,
                   GetThemeIcon());
-    draw_text_fit(visuals->wallpaper_ready ? visuals->wallpaper_path :
-                                             "Desktop background unavailable",
-                  (int)content.x + 16, (int)content.y + 100,
-                  (int)content.width - 32, Text12, GetThemeIcon());
-    DrawText("Rill settings", (int)content.x + 16, (int)content.y + 132,
-         Text14, GetThemeText());
+    draw_text_fit(visuals->system_font_name, (int)content.x + 16,
+                  (int)content.y + 60, (int)content.width - 32, Text12,
+                  GetThemeIcon());
+
+    DrawText("Wallpaper", (int)content.x + 16, (int)content.y + 86, Text14,
+         GetThemeText());
+    if(!visuals->wallpaper_scanned && platform != NULL &&
+       platform->list_wallpapers != NULL) {
+        visuals->wallpaper_count =
+            platform->list_wallpapers(visuals->wallpaper_paths,
+                                      RILL_WALLPAPER_CHOICES);
+        visuals->wallpaper_scanned = 1;
+    }
+    BeginScissorMode((int)content.x, (int)content.y + 104, (int)content.width, 108);
+    y = (int)content.y + 104;
+    if(visuals->wallpaper_count <= 0)
+        draw_text_fit("No wallpapers found in Pictures or system backgrounds",
+                      (int)content.x + 16, y + 6, (int)content.width - 32,
+                      Text12, GetThemeIcon());
+    for(i = 0; i < visuals->wallpaper_count && i < RILL_WALLPAPER_CHOICES; i++) {
+        const char *path = visuals->wallpaper_paths[i];
+        if(draw_settings_button((Rectangle){content.x + 12, y + 2,
+                                            content.width - 24, 22},
+                                wallpaper_basename(path),
+                                strcmp(path, visuals->wallpaper_path) == 0))
+            apply_wallpaper(shell, visuals, path, 1);
+        y += 26;
+    }
+    EndScissorMode();
+    y = (int)content.y + 216;
+    if(draw_settings_button((Rectangle){content.x + 12, y, 150, 26},
+                            "System background", 0)) {
+        char wallpaper[512];
+        if(GetSystemDesktopBackground(wallpaper, sizeof(wallpaper))) {
+            apply_wallpaper(shell, visuals, wallpaper, 1);
+            RillSettingsSet(&rill_settings, "wallpaper", "");
+            rill_settings_persist(shell);
+        } else
+            RillShellSetStatus(shell, "No system background configured");
+    }
+    if(draw_settings_button((Rectangle){content.x + 172, y, 150, 26},
+                            visuals->wallpaper_slideshow ?
+                            "Slideshow: 5 min" : "Slideshow: off",
+                            visuals->wallpaper_slideshow)) {
+        visuals->wallpaper_slideshow = !visuals->wallpaper_slideshow;
+        RillSettingsSetInteger(&rill_settings, "wallpaper-slideshow",
+                               visuals->wallpaper_slideshow);
+        rill_settings_persist(shell);
+    }
+
+    y = (int)content.y + 252;
+    DrawText("Clock", (int)content.x + 16, y, Text14, GetThemeText());
+    now = time(NULL);
+    for(i = 0; i < 3; i++) {
+        strftime(sample, sizeof(sample), clock_choices[i], localtime(&now));
+        if(draw_settings_button((Rectangle){content.x + 12 + i * 148, y + 20,
+                                            140, 24},
+                                sample,
+                                strcmp(visuals->clock_format,
+                                       clock_choices[i]) == 0)) {
+            snprintf(visuals->clock_format, sizeof(visuals->clock_format),
+                     "%s", clock_choices[i]);
+            RillSettingsSet(&rill_settings, "clock-format",
+                            visuals->clock_format);
+            rill_settings_persist(shell);
+        }
+    }
+
+    y = (int)content.y + 292;
+    DrawText("Panel height (next start)", (int)content.x + 16, y + 4, Text12,
+         GetThemeIcon());
+    if(draw_settings_button((Rectangle){content.x + 240, y, 26, 24}, "-", 0) &&
+       visuals->panel_height > 20) {
+        visuals->panel_height--;
+        RillSettingsSetInteger(&rill_settings, "panel-height",
+                               visuals->panel_height);
+        rill_settings_persist(shell);
+    }
+    snprintf(sample, sizeof(sample), "%d", visuals->panel_height);
+    draw_text_fit(sample, (int)content.x + 272, y + 4, 34, Text14, GetThemeText());
+    if(draw_settings_button((Rectangle){content.x + 310, y, 26, 24}, "+", 0) &&
+       visuals->panel_height < 48) {
+        visuals->panel_height++;
+        RillSettingsSetInteger(&rill_settings, "panel-height",
+                               visuals->panel_height);
+        rill_settings_persist(shell);
+    }
 }
 
 static void
@@ -2039,9 +2315,207 @@ draw_about_app(Rectangle content)
          (int)content.x + 16, (int)content.y + 54, Text14, GetThemeText());
 }
 
+static int
+rill_case_prefix(const char *text, const char *prefix)
+{
+    while(*prefix != '\0') {
+        if(*text == '\0' ||
+           tolower((unsigned char)*text) != tolower((unsigned char)*prefix))
+            return 0;
+        text++;
+        prefix++;
+    }
+    return 1;
+}
+
+static const RillLauncher *
+run_match_launcher(const RillShellState *shell, const char *text, int index)
+{
+    int found = 0;
+    size_t length;
+
+    if(shell == NULL || text == NULL)
+        return NULL;
+    length = strlen(text);
+    if(length == 0)
+        return NULL;
+    for(int i = 0; i < shell->launcher_count; i++) {
+        const RillLauncher *launcher = &shell->launchers[i];
+        if(rill_case_prefix(launcher->name, text) ||
+           rill_case_prefix(launcher->id, text)) {
+            if(found == index)
+                return launcher;
+            found++;
+        }
+    }
+    return NULL;
+}
+
+static void
+run_record_history(const char *text)
+{
+    const char *previous = RillSettingsGet(&rill_settings, "run-history", "");
+    char history[512];
+    int length;
+    int count = 1;
+
+    length = snprintf(history, sizeof(history), "%s", text);
+    for(const char *cursor = previous; *cursor != '\0' && count < 8; ) {
+        const char *end = strchr(cursor, '|');
+        size_t size = end != NULL ? (size_t)(end - cursor) : strlen(cursor);
+        if(size != strlen(text) || strncmp(cursor, text, size) != 0) {
+            int written = snprintf(history + length,
+                                   sizeof(history) - (size_t)length,
+                                   "|%.*s", (int)size, cursor);
+            if(written < 0 || (size_t)written >= sizeof(history) - (size_t)length)
+                break;
+            length += written;
+            count++;
+        }
+        if(end == NULL)
+            break;
+        cursor = end + 1;
+    }
+    RillSettingsSet(&rill_settings, "run-history", history);
+    rill_settings_persist(NULL);
+}
+
+static int
+run_execute(RillShellState *shell, const RillPlatformServices *platform,
+            const RillLauncher *match, const char *text)
+{
+    RillLauncher command;
+    const RillLauncher *target = match;
+    int ok;
+
+    if(text == NULL || text[0] == '\0')
+        return 0;
+    if(target == NULL) {
+        memset(&command, 0, sizeof(command));
+        snprintf(command.name, sizeof(command.name), "%s", text);
+        snprintf(command.command, sizeof(command.command), "%s", text);
+        target = &command;
+    }
+    ok = platform != NULL && platform->launch != NULL && platform->launch(target);
+    if(ok)
+        run_record_history(match != NULL ? match->name : text);
+    else
+        RillShellSetStatus(shell, "Could not run the command");
+    return ok;
+}
+
+static void
+update_run_dialog_input(RillVisualState *visuals)
+{
+    size_t length;
+    int c;
+
+    while((c = GetCharPressed()) > 0) {
+        length = strlen(visuals->run_input);
+        if(c >= 32 && c < 127 && length < sizeof(visuals->run_input) - 1) {
+            visuals->run_input[length] = (char)c;
+            visuals->run_input[length + 1] = '\0';
+            visuals->run_selected = 0;
+        }
+    }
+    if(IsKeyPressed(KEY_BACKSPACE)) {
+        length = strlen(visuals->run_input);
+        if(length > 0) {
+            visuals->run_input[length - 1] = '\0';
+            visuals->run_selected = 0;
+        }
+    }
+    if(IsKeyPressed(KEY_ESCAPE))
+        rill_stop_requested = 1;
+}
+
+static void
+draw_run_dialog(RillShellState *shell, RillVisualState *visuals,
+                const RillPlatformServices *platform)
+{
+    const char *history;
+    const RillLauncher *match;
+    char item[128];
+    int width = GetScreenWidth();
+    int matches = 0;
+    int y = 86;
+    int i;
+
+    update_run_dialog_input(visuals);
+
+    DrawRectangleRounded((Rectangle){0, 0, (float)width, 30}, 0.02f, 4,
+                         panel_color());
+    DrawText("Run program", 10, 8, Text14, GetThemeText());
+    DrawRectangleRounded((Rectangle){8, 40, (float)width - 16, 32}, 0.05f, 4,
+                         Fade(BLACK, 0.22f));
+    DrawRectangleRoundedLinesEx((Rectangle){8, 40, (float)width - 16, 32},
+                                0.05f, 4, 1.0f, GetThemeLink());
+    if(visuals->run_input[0] != '\0')
+        draw_text_fit(visuals->run_input, 16, 48, width - 32, Text14,
+                      GetThemeText());
+    else
+        draw_text_fit("Type a command or application name", 16, 48, width - 32,
+                      Text12, GetThemeIcon());
+
+    if(visuals->run_input[0] != '\0') {
+        for(i = 0; i < 6; i++) {
+            match = run_match_launcher(shell, visuals->run_input, i);
+            if(match == NULL)
+                break;
+            if(draw_settings_button((Rectangle){8, (float)y,
+                                                (float)width - 16, 26},
+                                    match->name, 0)) {
+                if(run_execute(shell, platform, match, match->name))
+                    rill_stop_requested = 1;
+                return;
+            }
+            draw_text_fit(match->description, 200, y + 5, width - 220, Text12,
+                          GetThemeIcon());
+            matches++;
+            y += 30;
+        }
+        if(matches == 0)
+            draw_text_fit("Press Enter to run the typed command", 16, y + 2,
+                          width - 32, Text12, GetThemeIcon());
+        if(IsKeyPressed(KEY_ENTER)) {
+            match = run_match_launcher(shell, visuals->run_input, 0);
+            if(run_execute(shell, platform, match, visuals->run_input))
+                rill_stop_requested = 1;
+        }
+        return;
+    }
+
+    history = RillSettingsGet(&rill_settings, "run-history", "");
+    if(history[0] == '\0') {
+        draw_text_fit("Recent commands appear here", 16, 90, width - 32,
+                      Text12, GetThemeIcon());
+        return;
+    }
+    for(i = 0; i < 4; i++) {
+        const char *end = strchr(history, '|');
+        size_t size = end != NULL ? (size_t)(end - history) : strlen(history);
+        if(size == 0)
+            break;
+        if(size > sizeof(item) - 1)
+            size = sizeof(item) - 1;
+        memcpy(item, history, size);
+        item[size] = '\0';
+        if(draw_settings_button((Rectangle){8, (float)y, (float)width - 16, 26},
+                                item, 0)) {
+            if(run_execute(shell, platform, NULL, item))
+                rill_stop_requested = 1;
+            return;
+        }
+        y += 30;
+        if(end == NULL)
+            break;
+        history = end + 1;
+    }
+}
+
 static void
 draw_app_window(RillShellState *shell, RillAppWindow *app,
-                RillVisualState *visuals)
+                RillVisualState *visuals, const RillPlatformServices *platform)
 {
     Rectangle frame;
     Rectangle title;
@@ -2074,23 +2548,24 @@ draw_app_window(RillShellState *shell, RillAppWindow *app,
     if(app->kind == RILL_APP_TERMINAL || app->kind == RILL_APP_FILES)
         draw_host_app(app, content, visuals);
     else if(app->kind == RILL_APP_SETTINGS)
-        draw_settings_app(content, visuals);
+        draw_settings_app(shell, content, visuals, platform);
     else
         draw_about_app(content);
     EndScissorMode();
 }
 
 static void
-draw_apps(RillShellState *shell, RillVisualState *visuals)
+draw_apps(RillShellState *shell, RillVisualState *visuals,
+          const RillPlatformServices *platform)
 {
     int i;
 
     for(i = 0; i < shell->app_count; i++)
         if(!shell->apps[i].focused)
-            draw_app_window(shell, &shell->apps[i], visuals);
+            draw_app_window(shell, &shell->apps[i], visuals, platform);
     for(i = 0; i < shell->app_count; i++)
         if(shell->apps[i].focused)
-            draw_app_window(shell, &shell->apps[i], visuals);
+            draw_app_window(shell, &shell->apps[i], visuals, platform);
 }
 
 static void
@@ -2249,7 +2724,10 @@ main(int argc, char **argv)
     rill_control_init(&control);
 
     SetSingleInstance(0);
-    InitWindow(RILL_WIDTH, RILL_HEIGHT, window_title);
+    if(options.mode == RILL_MODE_RUN)
+        InitWindow(480, 240, "Rill run dialog");
+    else
+        InitWindow(RILL_WIDTH, RILL_HEIGHT, window_title);
     if(!IsWindowReady()) {
         fprintf(stderr, "rill: failed to open Kryon window\n");
 #if RILL_HAS_X11
@@ -2273,6 +2751,8 @@ main(int argc, char **argv)
     SetUIDefaultFontAutoLoad(1);
     configure_system_look(&visuals, &test);
     init_panel_plugins(&visuals);
+    snprintf(visuals.clock_format, sizeof(visuals.clock_format), "%%H:%%M");
+    visuals.panel_height = PANEL_H;
     if(!test_scene_active(&test)) {
         const char *root = platform->settings_root();
         if(root != NULL && RillSettingsEnsureDirectory(root)) {
@@ -2281,7 +2761,28 @@ main(int argc, char **argv)
             RillPanelLoad(visuals.panel_config_path, visuals.left_panel,
                           &visuals.left_panel_count, visuals.right_panel,
                           &visuals.right_panel_count, RILL_PANEL_PLUGIN_MAX);
+            snprintf(rill_settings_path, sizeof(rill_settings_path),
+                     "%s/settings", root);
         }
+    }
+    if(rill_settings_path[0] != '\0')
+        RillSettingsLoad(&rill_settings, rill_settings_path);
+    if(options.mode != RILL_MODE_RUN)
+        apply_saved_settings(&shell, &visuals);
+    if(options.mode == RILL_MODE_RUN) {
+        /* A command argument runs immediately; otherwise the dialog opens. */
+        if(options.launch_command[0] != '\0') {
+            RillShellSetStatus(&shell, run_execute(&shell, platform, NULL,
+                                                   options.launch_command) ?
+                               "Ran command" : "Could not run the command");
+            rill_stop_requested = 1;
+        }
+    } else if(visuals.wallpaper_slideshow && !visuals.wallpaper_scanned &&
+              platform != NULL && platform->list_wallpapers != NULL) {
+        visuals.wallpaper_count =
+            platform->list_wallpapers(visuals.wallpaper_paths,
+                                      RILL_WALLPAPER_CHOICES);
+        visuals.wallpaper_scanned = 1;
     }
 
 #if RILL_HAS_X11
@@ -2352,18 +2853,34 @@ main(int argc, char **argv)
         if(test_scene_active(&test)) {
             if(!draw_test_scene(&test))
                 RillShellSetStatus(&shell, "Unknown visual test scene");
+        } else if(options.mode == RILL_MODE_RUN) {
+            draw_run_dialog(&shell, &visuals, platform);
         } else {
             draw_wallpaper(&visuals);
             draw_desktop(&shell, platform, &visuals);
-            draw_apps(&shell, &visuals);
+            draw_apps(&shell, &visuals, platform);
 #if RILL_HAS_X11
             RillX11Draw(&x11);
 #endif
             if(!options.xfce_panel) draw_top_panel(&shell, platform, &visuals);
             draw_applications_menu(&shell, platform, &visuals);
             draw_places_menu(&shell, platform);
-            draw_system_menu(&shell, platform);
+            draw_system_menu(&shell, platform, &visuals);
             draw_panel_context_menu(&shell, &visuals, platform);
+            draw_logout_dialog(&shell, &visuals, platform);
+            if(visuals.wallpaper_slideshow && visuals.wallpaper_count > 1 &&
+               GetTime() >= visuals.wallpaper_next_swap) {
+                int current = -1;
+                visuals.wallpaper_next_swap = GetTime() + 300.0;
+                for(int i = 0; i < visuals.wallpaper_count; i++)
+                    if(strcmp(visuals.wallpaper_paths[i],
+                              visuals.wallpaper_path) == 0)
+                        current = i;
+                apply_wallpaper(&shell, &visuals,
+                                visuals.wallpaper_paths[(current + 1) %
+                                                        visuals.wallpaper_count],
+                                0);
+            }
         }
 
         if(visuals.panel_dirty) {
@@ -2399,6 +2916,7 @@ main(int argc, char **argv)
             UnloadTexture(visuals.icons[i].texture);
     if(visuals.wallpaper_ready)
         UnloadTexture(visuals.wallpaper);
+    rill_settings_persist(&shell);
     rill_control_close(&control);
 #if RILL_HAS_X11
     RillX11Shutdown(&x11);
