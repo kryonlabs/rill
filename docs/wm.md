@@ -35,8 +35,11 @@ xfce4-session and Thunar. Their code and APIs have not been reimplemented.
 - ICCCM delete/take-focus messages, EWMH state/move/resize requests, Motif
   undecorated hints at startup, shaped windows and ARGB frame visuals.
 - XComposite/XDamage/XFixes/XRender compositing, window opacity and
-  override-redirect menus. Compositing disables itself if required extensions
-  are unavailable or another compositor owns the selection.
+  override-redirect menus. Repaints are batched into the accumulated damage
+  region instead of redrawing the whole screen, and framed windows, menus and
+  popups cast layered drop shadows (`RILL_WM_SHADOWS=0` disables them; docks
+  and desktop surfaces stay flat). Compositing disables itself if required
+  extensions are unavailable or another compositor owns the selection.
 - XSMP registration, session restart support and graceful exit that returns
   live application windows to the root window.
 
@@ -88,6 +91,7 @@ README remain required.
 make
 scripts/rill-window --size 1280x800
 RILL_WM_COMPOSITE=0 scripts/rill-window     # disable compositing
+RILL_WM_SHADOWS=0 scripts/rill-window       # disable drop shadows
 RILL_WM=xfwm4 scripts/rill-window          # previous WM as a fallback
 make wm-test
 make session-smoke
@@ -121,8 +125,8 @@ Rill WM is not yet a 1:1 xfwm4 replacement. These gaps remain explicit:
   application-specific compatibility.
 - Comprehensive session geometry restoration after a WM crash, dynamic
   decoration changes and full input-shape handling.
-- Compositor shadows, vsync/frame pacing, efficient damage-region rendering,
-  GPU/fullscreen bypass and performance certification under sustained load.
+- Compositor smooth frame pacing/vsync, GPU/fullscreen bypass and performance
+  certification under sustained load.
 - Full multi-monitor/hotplug, mixed-DPI and multi-seat validation, accessibility
   coverage and a broad application/game regression suite.
 - Native Wayland compositor and native Plan 9 WM parity. This executable speaks

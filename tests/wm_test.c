@@ -318,6 +318,12 @@ int main(int argc, char **argv)
           "compositor paints client content");
     if (shot)
         XDestroyImage(shot);
+    /* The drop shadow darkens the background band around the frame. */
+    shot = XGetImage(d, overlay, x - 7, y - 35, 1, 1, AllPlanes, ZPixmap);
+    check(shot && (XGetPixel(shot, 0, 0) & 0xff) < 0x2c && (XGetPixel(shot, 0, 0) & 0xff) > 4,
+          "compositor draws a shadow around frames");
+    if (shot)
+        XDestroyImage(shot);
     XSetWindowAttributes popup_attrs = {0};
     popup_attrs.override_redirect = True;
     popup_attrs.background_pixel = 0x0000ff;

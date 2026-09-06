@@ -8,21 +8,65 @@
 #include <X11/extensions/shape.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+
+/* Shadows are layered translucent frames; each ring darkens toward the window. */
+enum { ShadowExtent = 12, ShadowLayers = 4 };
 
 typedef struct Surface {
     struct Surface *next;
     Window window;
     Damage damage;
-    int seen;
+    int seen, shadow;
+    int x, y, w, h;
 } Surface;
 static Display *connection;
 static Window root_window, overlay, owner_window;
-static Atom selection, opacity_atom;
+static Atom selection, opacity_atom, type_atom;
 static Surface *surfaces;
 static Picture output, buffer_picture;
 static Pixmap buffer;
 static int damage_event, width, height, dirty;
+static XserverRegion damage_region;
+static int shadows = 1;
 
+static void damage_add_rectangle(int x, int y, int w, int h)
+{
+    if (w <= 0 || h <= 0)
+        return;
+    if (!damage_region)
+        damage_region = XFixesCreateRegion(connection, NULL, 0);
+    XRectangle rectangle = {(short)x, (short)y, (unsigned short)w, (unsigned short)h};
+    XserverRegion part = XFixesCreateRegion(connection, &rectangle, 1);
+    XFixesUnionRegion(connection, damage_region, damage_region, part);
+    XFixesDestroyRegion(connection, part);
+    dirty = 1;
+}
+static void damage_add_surface(Surface *s)
+{
+    int extent = shadows ? ShadowExtent : 0;
+    damage_add_rectangle(s->x - extent, s->y - extent, s->w + 2 * extent, s->h + 2 * extent);
+}
+static void damage_discard(void)
+{
+    if (damage_region) {
+        XFixesDestroyRegion(connection, damage_region);
+        damage_region = None;
+    }
+    dirty = 0;
+}
+static void draw_shadow(int x, int y, int w, int h)
+{
+    /* Extent 12 pixels in four rings; the innermost band is darkest. */
+    static const unsigned short alphas[ShadowLayers] = {0x0600, 0x0a00, 0x0e00, 0x1200};
+    for (int i = 0; i < ShadowLayers; i++) {
+        XRenderColor color = {0, 0, 0, alphas[i]};
+        int inset = ShadowExtent - (i + 1) * (ShadowExtent / ShadowLayers);
+        XRenderFillRectangle(connection, PictOpOver, buffer_picture, &color,
+                             x - ShadowExtent + inset, y - ShadowExtent + inset,
+                             w + 2 * (ShadowExtent - inset), h + 2 * (ShadowExtent - inset));
+    }
+}
 static void watch(Window window)
 {
     for (Surface *s = surfaces; s; s = s->next)
@@ -38,9 +82,30 @@ static void watch(Window window)
         return;
     s->window = window;
     s->seen = 1;
+    s->shadow = 1;
+    s->x = a.x;
+    s->y = a.y;
+    s->w = a.width + 2 * a.border_width;
+    s->h = a.height + 2 * a.border_width;
     s->damage = XDamageCreate(connection, window, XDamageReportNonEmpty);
     s->next = surfaces;
     surfaces = s;
+    /* Docks and desktop surfaces sit flat against the screen edge. */
+    Atom actual;
+    int format;
+    unsigned long count, after;
+    unsigned char *data = NULL;
+    if (XGetWindowProperty(connection, window, type_atom, 0, 64, False, XA_ATOM, &actual, &format,
+                           &count, &after, &data) == Success &&
+        data && format == 32) {
+        Atom dock = XInternAtom(connection, "_NET_WM_WINDOW_TYPE_DOCK", False),
+             desk = XInternAtom(connection, "_NET_WM_WINDOW_TYPE_DESKTOP", False);
+        for (unsigned long i = 0; i < count; i++)
+            if (((Atom *)data)[i] == dock || ((Atom *)data)[i] == desk)
+                s->shadow = 0;
+    }
+    if (data)
+        XFree(data);
     XSelectInput(connection, window, a.your_event_mask | StructureNotifyMask | PropertyChangeMask);
 }
 int CompositorStart(Display *display, Window root, Window owner)
@@ -61,6 +126,10 @@ int CompositorStart(Display *display, Window root, Window owner)
     root_window = root;
     owner_window = owner;
     opacity_atom = XInternAtom(display, "_NET_WM_WINDOW_OPACITY", False);
+    type_atom = XInternAtom(display, "_NET_WM_WINDOW_TYPE", False);
+    const char *shadow_setting = getenv("RILL_WM_SHADOWS");
+    if (shadow_setting && strcmp(shadow_setting, "0") == 0)
+        shadows = 0;
     XSetSelectionOwner(display, selection, owner, CurrentTime);
     if (XGetSelectionOwner(display, selection) != owner) {
         connection = NULL;
@@ -96,22 +165,89 @@ void CompositorEvent(XEvent *event)
     }
     if (event->type == damage_event + XDamageNotify) {
         XDamageNotifyEvent *damage = (XDamageNotifyEvent *)event;
-        XDamageSubtract(connection, damage->damage, None, None);
+        if (!damage_region)
+            damage_region = XFixesCreateRegion(connection, NULL, 0);
+        /* Damage rectangles are window-relative; the notify carries the root
+           geometry of the window at damage time. */
+        XserverRegion part = XFixesCreateRegion(connection, NULL, 0);
+        XDamageSubtract(connection, damage->damage, None, part);
+        XFixesTranslateRegion(connection, part, damage->geometry.x, damage->geometry.y);
+        XFixesUnionRegion(connection, damage_region, damage_region, part);
+        XFixesDestroyRegion(connection, part);
         dirty = 1;
-    } else if (event->type == MapNotify || event->type == UnmapNotify ||
-               event->type == DestroyNotify || event->type == ConfigureNotify ||
-               event->type == CirculateNotify || event->type == PropertyNotify ||
-               event->type == Expose)
-        dirty = 1;
+        return;
+    }
+    /* Structure events arrive both directly on watched windows and through the
+       root substructure mask; the child window is the target either way. */
+    Window window = event->xany.window;
+    switch (event->type) {
+    case MapNotify:
+        window = event->xmap.window;
+        break;
+    case UnmapNotify:
+        window = event->xunmap.window;
+        break;
+    case DestroyNotify:
+        window = event->xdestroywindow.window;
+        break;
+    case ConfigureNotify:
+        window = event->xconfigure.window;
+        break;
+    case CirculateNotify:
+        window = event->xcirculate.window;
+        break;
+    default:
+        break;
+    }
+    Surface *s = NULL;
+    for (Surface *scan = surfaces; scan; scan = scan->next)
+        if (scan->window == window) {
+            s = scan;
+            break;
+        }
+    if (event->type == Expose) {
+        /* Expose rectangles are window-relative; damage is in root space. */
+        int x = s ? s->x : 0, y = s ? s->y : 0;
+        damage_add_rectangle(x + event->xexpose.x, y + event->xexpose.y, event->xexpose.width,
+                             event->xexpose.height);
+        return;
+    }
+    if (!s) {
+        /* Newly mapped windows are not watched yet; paint where they appeared. */
+        if (event->type == MapNotify && window != owner_window && window != overlay) {
+            XWindowAttributes a;
+            if (XGetWindowAttributes(connection, window, &a) && a.map_state != IsUnmapped &&
+                a.class != InputOnly) {
+                int extent = shadows ? ShadowExtent : 0;
+                damage_add_rectangle(a.x - a.border_width - extent, a.y - a.border_width - extent,
+                                     a.width + 2 * a.border_width + 2 * extent,
+                                     a.height + 2 * a.border_width + 2 * extent);
+            }
+        }
+        return;
+    }
+    if (event->type == MapNotify || event->type == CirculateNotify)
+        damage_add_surface(s);
+    else if (event->type == UnmapNotify || event->type == DestroyNotify)
+        damage_add_surface(s);
+    else if (event->type == ConfigureNotify) {
+        damage_add_surface(s);
+        s->x = event->xconfigure.x;
+        s->y = event->xconfigure.y;
+        s->w = event->xconfigure.width + 2 * event->xconfigure.border_width;
+        s->h = event->xconfigure.height + 2 * event->xconfigure.border_width;
+        damage_add_surface(s);
+    } else if (event->type == PropertyNotify)
+        damage_add_surface(s);
 }
 void CompositorPaint(void)
 {
     if (!connection || !dirty)
         return;
-    dirty = 0;
     XWindowAttributes root_attr;
     if (!XGetWindowAttributes(connection, root_window, &root_attr))
         return;
+    int full = !damage_region;
     if (width != root_attr.width || height != root_attr.height || !buffer) {
         if (buffer_picture)
             XRenderFreePicture(connection, buffer_picture);
@@ -122,7 +258,12 @@ void CompositorPaint(void)
         buffer = XCreatePixmap(connection, root_window, width, height, root_attr.depth);
         buffer_picture = XRenderCreatePicture(
             connection, buffer, XRenderFindVisualFormat(connection, root_attr.visual), 0, NULL);
+        full = 1;
     }
+    if (full)
+        damage_discard();
+    else
+        XFixesSetPictureClipRegion(connection, buffer_picture, 0, 0, damage_region);
     XRenderColor background = {0x2020, 0x2424, 0x2c2c, 0xffff};
     XRenderFillRectangle(connection, PictOpSrc, buffer_picture, &background, 0, 0, width, height);
     Window r, p, *children = NULL;
@@ -142,6 +283,17 @@ void CompositorPaint(void)
             XRenderPictFormat *format = XRenderFindVisualFormat(connection, a.visual);
             if (!format)
                 continue;
+            if (shadows) {
+                Surface *s = NULL;
+                for (Surface *scan = surfaces; scan; scan = scan->next)
+                    if (scan->window == window) {
+                        s = scan;
+                        break;
+                    }
+                if (s && s->shadow)
+                    draw_shadow(a.x - a.border_width, a.y - a.border_width,
+                                a.width + 2 * a.border_width, a.height + 2 * a.border_width);
+            }
             Pixmap pixmap = XCompositeNameWindowPixmap(connection, window);
             Picture picture = XRenderCreatePicture(connection, pixmap, format, 0, NULL),
                     mask = None;
@@ -181,11 +333,26 @@ void CompositorPaint(void)
             *link = s->next;
             XDamageDestroy(connection, s->damage);
             free(s);
-        } else
+        } else {
+            XWindowAttributes a;
+            if (XGetWindowAttributes(connection, s->window, &a)) {
+                s->x = a.x;
+                s->y = a.y;
+                s->w = a.width + 2 * a.border_width;
+                s->h = a.height + 2 * a.border_width;
+            }
             link = &s->next;
+        }
     }
+    if (!full)
+        XFixesSetPictureClipRegion(connection, output, 0, 0, damage_region);
     XRenderComposite(connection, PictOpSrc, buffer_picture, None, output, 0, 0, 0, 0, 0, 0, width,
                      height);
+    if (!full) {
+        XFixesSetPictureClipRegion(connection, output, 0, 0, None);
+        XFixesSetPictureClipRegion(connection, buffer_picture, 0, 0, None);
+    }
+    damage_discard();
 }
 void CompositorStop(void)
 {
@@ -207,6 +374,7 @@ void CompositorStop(void)
     XCompositeReleaseOverlayWindow(connection, root_window);
     if (XGetSelectionOwner(connection, selection) == owner_window)
         XSetSelectionOwner(connection, selection, None, CurrentTime);
+    damage_discard();
     connection = NULL;
     buffer_picture = output = buffer = 0;
     width = height = 0;
