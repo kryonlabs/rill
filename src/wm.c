@@ -60,6 +60,7 @@ static void menu_close(void);
 static void menu_paint(void);
 static void menu_open(Client *client, int x, int y, Time time);
 static void menu_activate(void);
+static void switcher_drop(Client *c);
 
 enum { Border = 3, Title = 28, Button = 25 };
 static Atom atom(const char *name) { return XInternAtom(display, name, False); }
@@ -780,6 +781,7 @@ static void unmanage(Client *c, int destroyed)
         return;
     if (menu_client == c)
         menu_close();
+    switcher_drop(c);
     if (dragged == c)
         finish_drag(0);
     int had_focus = focused == c;
@@ -906,20 +908,269 @@ static void motion(int x, int y)
     dragged->normal = g;
     configure(dragged);
 }
-static void cycle(int backwards)
+/* MRU Alt+Tab switcher: a centered override-redirect panel painted in software
+   (background and icons through one XImage, titles through Xft) that commits
+   focus when Alt is released. */
+enum { SwitcherTileW = 96, SwitcherTileH = 84, SwitcherIcon = 36, SwitcherColumns = 8 };
+#define SwitcherMax 64
+static Window switcher_window;
+static XftDraw *switcher_draw;
+static XImage *switcher_image;
+static Client *switcher_items[SwitcherMax];
+static int switcher_count, switcher_index, switcher_active;
+static KeyCode alt_keys[16];
+static int alt_key_count;
+
+static void switcher_paint(void);
+static int switcher_collect(Client **items, int max)
 {
-    Client *first = NULL, *last = NULL, *previous = NULL, *next = NULL;
-    for (Client *c = clients; c; c = c->next)
-        if (!c->special && !c->skip_taskbar && on_desktop(c)) {
-            if (!first)
-                first = c;
-            if (last == focused)
-                next = c;
-            if (c == focused)
-                previous = last;
-            last = c;
+    int n = 0;
+    for (Client *c = clients; c && n < max; c = c->next) {
+        if (c->special || c->skip_taskbar || !on_desktop(c))
+            continue;
+        int i = n++;
+        while (i > 0 && c->focus_order > items[i - 1]->focus_order) {
+            items[i] = items[i - 1];
+            i--;
         }
-    focus(backwards ? (previous ? previous : last) : (next ? next : first), last_time);
+        items[i] = c;
+    }
+    return n;
+}
+static unsigned long *icon_data(Window w, unsigned long *count)
+{
+    Atom actual;
+    int format;
+    unsigned long remaining;
+    unsigned char *data = NULL;
+    *count = 0;
+    long length = 4096;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (XGetWindowProperty(display, w, atom("_NET_WM_ICON"), 0, length, False, XA_CARDINAL,
+                               &actual, &format, count, &remaining, &data) != Success ||
+            actual != XA_CARDINAL || format != 32) {
+            if (data)
+                XFree(data);
+            *count = 0;
+            return NULL;
+        }
+        if (!remaining)
+            return (unsigned long *)data;
+        XFree(data);
+        data = NULL;
+        length = 262160; /* 256x256 ARGB icons fit after the cheap first read. */
+    }
+    *count = 0;
+    return NULL;
+}
+static const unsigned long *icon_best(const unsigned long *data, unsigned long count, int size,
+                                      unsigned long *icon_w, unsigned long *icon_h)
+{
+    const unsigned long *best = NULL;
+    unsigned long best_score = ~0UL, i = 0;
+    while (i + 1 < count) {
+        unsigned long w = data[i], h = data[i + 1];
+        if (w == 0 || h == 0 || w > 512 || h > 512 || w * h > count - i - 2)
+            break;
+        unsigned long score = w >= (unsigned)size && h >= (unsigned)size
+                                  ? (w - (unsigned)size) + (h - (unsigned)size)
+                                  : ((unsigned)size - w) + ((unsigned)size - h) + (1UL << 20);
+        if (score < best_score) {
+            best_score = score;
+            *icon_w = w;
+            *icon_h = h;
+            best = data + i;
+        }
+        i += 2 + w * h;
+    }
+    return best;
+}
+static unsigned long blend(unsigned long pixel, unsigned long argb)
+{
+    unsigned a = (argb >> 24) & 0xff;
+    if (a == 0)
+        return pixel;
+    unsigned r = (argb >> 16) & 0xff, g = (argb >> 8) & 0xff, b = argb & 0xff;
+    unsigned pr = (pixel >> 16) & 0xff, pg = (pixel >> 8) & 0xff, pb = pixel & 0xff;
+    r = (r * a + pr * (255 - a) + 127) / 255;
+    g = (g * a + pg * (255 - a) + 127) / 255;
+    b = (b * a + pb * (255 - a) + 127) / 255;
+    return (r << 16) | (g << 8) | b;
+}
+static void switcher_paint(void)
+{
+    if (!switcher_active || !switcher_window)
+        return;
+    int cols = min(max(1, switcher_count), SwitcherColumns);
+    int rows = max(1, (switcher_count + cols - 1) / cols);
+    int w = cols * SwitcherTileW + 16, h = rows * SwitcherTileH + 16;
+    if (!switcher_image || switcher_image->width != w || switcher_image->height != h) {
+        if (switcher_image)
+            XDestroyImage(switcher_image);
+        char *buffer = calloc((size_t)w * h, 4);
+        if (!buffer)
+            return;
+        switcher_image = XCreateImage(display, DefaultVisual(display, screen_number),
+                                      DefaultDepth(display, screen_number), ZPixmap, 0, buffer, w, h,
+                                      32, 0);
+        if (!switcher_image) {
+            free(buffer);
+            return;
+        }
+    }
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+            XPutPixel(switcher_image, x, y, 0x26292f);
+    for (int i = 0; i < switcher_count; i++) {
+        int tx = 8 + (i % cols) * SwitcherTileW, ty = 8 + (i / cols) * SwitcherTileH;
+        unsigned long tile = i == switcher_index ? 0x344c6b : 0x30343c;
+        for (int y = 0; y < SwitcherTileH; y++)
+            for (int x = 0; x < SwitcherTileW; x++)
+                XPutPixel(switcher_image, tx + x, ty + y, tile);
+        unsigned long count, iw = 0, ih = 0;
+        unsigned long *icons = icon_data(switcher_items[i]->window, &count);
+        const unsigned long *best = icons ? icon_best(icons, count, SwitcherIcon, &iw, &ih) : NULL;
+        int ix = tx + (SwitcherTileW - SwitcherIcon) / 2, iy = ty + 8;
+        for (int y = 0; y < SwitcherIcon; y++)
+            for (int x = 0; x < SwitcherIcon; x++) {
+                unsigned long argb = 0;
+                if (best)
+                    argb = best[2 + (unsigned long)(y * ih / SwitcherIcon) * iw +
+                                (unsigned long)x * iw / SwitcherIcon];
+                XPutPixel(switcher_image, ix + x, iy + y,
+                          blend(tile, best ? argb : 0));
+            }
+        if (!best) {
+            /* Generic window glyph for clients without an icon. */
+            for (int x = 0; x < 26; x++) {
+                XPutPixel(switcher_image, ix + 5 + x, iy + 6, blend(tile, 0xffb8bcc8));
+                XPutPixel(switcher_image, ix + 5 + x, iy + 30, blend(tile, 0xffb8bcc8));
+            }
+            for (int y = 0; y < 25; y++) {
+                XPutPixel(switcher_image, ix + 5, iy + 6 + y, blend(tile, 0xffb8bcc8));
+                XPutPixel(switcher_image, ix + 30, iy + 6 + y, blend(tile, 0xffb8bcc8));
+            }
+            for (int x = 0; x < 19; x++)
+                XPutPixel(switcher_image, ix + 8 + x, iy + 10, blend(tile, 0xffb8bcc8));
+        }
+        if (icons)
+            XFree(icons);
+    }
+    XPutImage(display, switcher_window, gc, switcher_image, 0, 0, 0, 0, w, h);
+    if (!switcher_draw || !font)
+        return;
+    for (int i = 0; i < switcher_count; i++) {
+        int tx = 8 + (i % cols) * SwitcherTileW, ty = 8 + (i / cols) * SwitcherTileH;
+        const char *name = switcher_items[i]->name;
+        int length = (int)strlen(name);
+        while (length > 1) {
+            XGlyphInfo extents;
+            XftTextExtentsUtf8(display, font, (const FcChar8 *)name, length, &extents);
+            if (extents.xOff <= SwitcherTileW - 10)
+                break;
+            length--;
+        }
+        XRectangle clip = {(short)(tx + 2), (short)(ty + SwitcherTileH - 20),
+                           (unsigned short)(SwitcherTileW - 4), 16};
+        XftDrawSetClipRectangles(switcher_draw, 0, 0, &clip, 1);
+        XftDrawStringUtf8(switcher_draw, &text_color, font, tx + 5, ty + SwitcherTileH - 8,
+                          (const FcChar8 *)name, length);
+        XftDrawSetClip(switcher_draw, NULL);
+    }
+}
+static void switcher_close_overlay(void)
+{
+    if (!switcher_active)
+        return;
+    switcher_active = 0;
+    XUnmapWindow(display, switcher_window);
+    XUngrabKeyboard(display, CurrentTime);
+}
+static void switcher_step(int delta)
+{
+    if (!switcher_active || switcher_count < 2)
+        return;
+    switcher_index = ((switcher_index + delta) % switcher_count + switcher_count) % switcher_count;
+    switcher_paint();
+}
+static void switcher_activate(void)
+{
+    Client *target = switcher_items[switcher_index];
+    switcher_close_overlay();
+    if (target)
+        focus(target, last_time);
+}
+static void switcher_cancel(void)
+{
+    switcher_close_overlay();
+}
+static void switcher_drop(Client *c)
+{
+    if (!switcher_active)
+        return;
+    int shift = 0;
+    for (int i = 0; i < switcher_count; i++) {
+        if (switcher_items[i] == c)
+            shift = 1;
+        else if (shift)
+            switcher_items[i - 1] = switcher_items[i];
+    }
+    if (!shift)
+        return;
+    switcher_count--;
+    if (!switcher_count)
+        switcher_cancel();
+    else {
+        if (switcher_index >= switcher_count)
+            switcher_index = switcher_count - 1;
+        switcher_paint();
+    }
+}
+static void switcher_open(int backwards, Time time)
+{
+    if (switcher_active) {
+        switcher_step(backwards ? -1 : 1);
+        return;
+    }
+    switcher_count = switcher_collect(switcher_items, SwitcherMax);
+    if (!switcher_count)
+        return;
+    switcher_index = switcher_count == 1 ? 0 : (backwards ? switcher_count - 1 : 1);
+    if (!switcher_window) {
+        XSetWindowAttributes a = {0};
+        a.override_redirect = True;
+        a.background_pixel = 0x26292f;
+        a.event_mask = ExposureMask;
+        switcher_window = XCreateWindow(display, root, 0, 0, 1, 1, 0, CopyFromParent, InputOutput,
+                                        CopyFromParent, CWOverrideRedirect | CWBackPixel | CWEventMask,
+                                        &a);
+        switcher_draw = XftDrawCreate(display, switcher_window, DefaultVisual(display, screen_number),
+                                      DefaultColormap(display, screen_number));
+    }
+    switcher_active = 1;
+    int cols = min(max(1, switcher_count), SwitcherColumns);
+    int rows = max(1, (switcher_count + cols - 1) / cols);
+    int w = cols * SwitcherTileW + 16, h = rows * SwitcherTileH + 16;
+    Geometry a = focused && !focused->special ? area(focused, 0) : area(NULL, 0);
+    XMoveResizeWindow(display, switcher_window, a.x + (a.w - w) / 2, a.y + (a.h - h) / 2, w, h);
+    XMapRaised(display, switcher_window);
+    XGrabKeyboard(display, root, False, GrabModeAsync, GrabModeAsync, time);
+    switcher_paint();
+}
+static void switcher_key(KeySym k, unsigned m)
+{
+    if (k == XK_Tab && (m & Mod1Mask)) {
+        switcher_step((m & ShiftMask) ? -1 : 1);
+        return;
+    }
+    if (k == XK_Left || k == XK_Up)
+        switcher_step(-1);
+    else if (k == XK_Right || k == XK_Down)
+        switcher_step(1);
+    else if (k == XK_Return || k == XK_space)
+        switcher_activate();
+    else if (k == XK_Escape)
+        switcher_cancel();
 }
 static void tile(Client *c, KeySym key)
 {
@@ -942,11 +1193,180 @@ static void tile(Client *c, KeySym key)
     configure(c);
     state(c);
 }
+/* Key bindings: "action = modifiers+key" lines in $XDG_CONFIG_HOME/rill/wm-keys
+   (or RILL_WM_KEYS) override the defaults; unlisted actions keep theirs. */
+enum {
+    KeyClose,
+    KeyMinimize,
+    KeyMaximize,
+    KeyFullscreen,
+    KeyMove,
+    KeyResize,
+    KeyCycle,
+    KeyCycleBack,
+    KeyWindowMenu,
+    KeyWorkspacePrev,
+    KeyWorkspaceNext,
+    KeyWindowWorkspacePrev,
+    KeyWindowWorkspaceNext,
+    KeyTileLeft,
+    KeyTileRight,
+    KeyTileUp,
+    KeyTileDown,
+    KeyShowDesktop,
+    KeyActionCount
+};
+typedef struct {
+    int action;
+    KeySym keysym;
+    unsigned modifiers;
+} Binding;
+static const struct {
+    int action;
+    const char *name;
+    KeySym keysym;
+    unsigned modifiers;
+} default_bindings[] = {
+    {KeyClose, "close", XK_F4, Mod1Mask},
+    {KeyMinimize, "minimize", XK_F9, Mod1Mask},
+    {KeyMaximize, "maximize", XK_F10, Mod1Mask},
+    {KeyFullscreen, "fullscreen", XK_F11, Mod1Mask},
+    {KeyMove, "move", XK_F7, Mod1Mask},
+    {KeyResize, "resize", XK_F8, Mod1Mask},
+    {KeyCycle, "cycle", XK_Tab, Mod1Mask},
+    {KeyCycleBack, "cycle-back", XK_Tab, Mod1Mask | ShiftMask},
+    {KeyWindowMenu, "window-menu", XK_space, Mod1Mask},
+    {KeyWorkspacePrev, "workspace-prev", XK_Left, ControlMask | Mod1Mask},
+    {KeyWorkspaceNext, "workspace-next", XK_Right, ControlMask | Mod1Mask},
+    {KeyWindowWorkspacePrev, "window-workspace-prev", XK_Left, ControlMask | Mod1Mask | ShiftMask},
+    {KeyWindowWorkspaceNext, "window-workspace-next", XK_Right, ControlMask | Mod1Mask | ShiftMask},
+    {KeyTileLeft, "tile-left", XK_Left, Mod4Mask},
+    {KeyTileRight, "tile-right", XK_Right, Mod4Mask},
+    {KeyTileUp, "tile-up", XK_Up, Mod4Mask},
+    {KeyTileDown, "tile-down", XK_Down, Mod4Mask},
+    {KeyShowDesktop, "show-desktop", XK_d, Mod4Mask},
+    {KeyShowDesktop, "show-desktop", XK_d, ControlMask | Mod1Mask},
+};
+static Binding bindings[sizeof(default_bindings) / sizeof(default_bindings[0])];
+static int binding_count;
+static char *trim(char *text)
+{
+    while (*text == ' ' || *text == '\t')
+        text++;
+    char *end = text + strlen(text);
+    while (end > text && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n' ||
+                          end[-1] == '\r'))
+        *--end = 0;
+    return text;
+}
+static int parse_binding(char *line, Binding *out)
+{
+    char *equals = strchr(line, '=');
+    if (!equals)
+        return 0;
+    *equals = 0;
+    char *name = trim(line), *combo = trim(equals + 1);
+    for (unsigned i = 0; i < sizeof(default_bindings) / sizeof(default_bindings[0]); i++)
+        if (strcmp(default_bindings[i].name, name) == 0)
+            out->action = default_bindings[i].action;
+    if (out->action < 0)
+        return 0;
+    out->modifiers = 0;
+    out->keysym = NoSymbol;
+    char *save = NULL;
+    for (char *token = strtok_r(combo, "+", &save); token; token = strtok_r(NULL, "+", &save)) {
+        char *part = trim(token);
+        if (strcasecmp(part, "ctrl") == 0 || strcasecmp(part, "control") == 0)
+            out->modifiers |= ControlMask;
+        else if (strcasecmp(part, "shift") == 0)
+            out->modifiers |= ShiftMask;
+        else if (strcasecmp(part, "alt") == 0 || strcasecmp(part, "meta") == 0)
+            out->modifiers |= Mod1Mask;
+        else if (strcasecmp(part, "super") == 0 || strcasecmp(part, "mod4") == 0)
+            out->modifiers |= Mod4Mask;
+        else {
+            KeySym symbol = XStringToKeysym(part);
+            if (symbol == NoSymbol)
+                return 0;
+            out->keysym = symbol;
+        }
+    }
+    return out->keysym != NoSymbol;
+}
+static void load_bindings(const char *path)
+{
+    binding_count = 0;
+    for (unsigned i = 0; i < sizeof(default_bindings) / sizeof(default_bindings[0]); i++) {
+        bindings[binding_count].action = default_bindings[i].action;
+        bindings[binding_count].keysym = default_bindings[i].keysym;
+        bindings[binding_count].modifiers = default_bindings[i].modifiers;
+        binding_count++;
+    }
+    FILE *file = fopen(path, "r");
+    if (!file)
+        return;
+    char line[256];
+    while (fgets(line, sizeof(line), file)) {
+        char *comment = strchr(line, '#');
+        if (comment)
+            *comment = 0;
+        Binding parsed = {-1, NoSymbol, 0};
+        if (!parse_binding(line, &parsed))
+            continue;
+        int replaced = 0;
+        for (int i = 0; i < binding_count && !replaced; i++)
+            if (bindings[i].action == parsed.action &&
+                bindings[i].modifiers == parsed.modifiers) {
+                bindings[i].keysym = parsed.keysym;
+                replaced = 1;
+            }
+        if (!replaced)
+            for (int i = 0; i < binding_count && !replaced; i++)
+                if (bindings[i].action == parsed.action) {
+                    bindings[i].keysym = parsed.keysym;
+                    bindings[i].modifiers = parsed.modifiers;
+                    replaced = 1;
+                }
+    }
+    fclose(file);
+}
+static int binding_for(KeySym keysym, unsigned modifiers)
+{
+    for (int i = 0; i < binding_count; i++)
+        if (bindings[i].keysym == keysym && bindings[i].modifiers == modifiers)
+            return bindings[i].action;
+    return -1;
+}
+static void switch_workspace(int direction)
+{
+    switch_desktop((desktop + (direction > 0 ? 1 : desktops - 1)) % desktops);
+}
+static void move_and_switch_workspace(Client *c, int direction)
+{
+    int d = (desktop + (direction > 0 ? 1 : desktops - 1)) % desktops;
+    move_desktop(c, d);
+    switch_desktop(d);
+}
+static void toggle_fullscreen(Client *c)
+{
+    if (!c || c->special)
+        return;
+    c->fullscreen = !c->fullscreen;
+    configure(c);
+    state(c);
+    restack();
+}
 static void key(XKeyEvent *e)
 {
     KeySym k = XLookupKeysym(e, 0);
-    unsigned m = e->state & ~(LockMask | numlock_mask);
+    unsigned m = e->state &
+                 ~(LockMask | numlock_mask | Button1Mask | Button2Mask | Button3Mask |
+                   Button4Mask | Button5Mask);
     last_time = e->time;
+    if (switcher_active) {
+        switcher_key(k, m);
+        return;
+    }
     if (menu_client) {
         if (k == XK_Escape)
             menu_close();
@@ -956,11 +1376,6 @@ static void key(XKeyEvent *e)
             menu_item = (menu_item + (k == XK_Down ? 1 : 8)) % 9;
             menu_paint();
         }
-        return;
-    }
-    if ((m & Mod1Mask) && k == XK_space) {
-        if (focused)
-            menu_open(focused, focused->geometry.x, focused->geometry.y, e->time);
         return;
     }
     if (dragged) {
@@ -992,67 +1407,87 @@ static void key(XKeyEvent *e)
         configure(dragged);
         return;
     }
-    if ((m & Mod1Mask) && k == XK_Tab)
-        cycle((m & ShiftMask) != 0);
-    else if ((m & Mod1Mask) && k == XK_F4)
+    switch (binding_for(k, m)) {
+    case KeyCycle:
+        switcher_open(0, e->time);
+        break;
+    case KeyCycleBack:
+        switcher_open(1, e->time);
+        break;
+    case KeyClose:
         close_client(focused, e->time);
-    else if ((m & Mod1Mask) && k == XK_F9)
+        break;
+    case KeyMinimize:
         minimize(focused);
-    else if ((m & Mod1Mask) && k == XK_F10)
+        break;
+    case KeyMaximize:
         maximize(focused);
-    else if ((m & Mod1Mask) && (k == XK_F7 || k == XK_F8))
-        begin_drag(focused, k == XK_F7 ? 10 : 9, e->x_root, e->y_root, e->time);
-    else if ((m & (ControlMask | Mod1Mask)) == (ControlMask | Mod1Mask) &&
-             (k == XK_Left || k == XK_Right)) {
-        int d = (desktop + (k == XK_Right ? 1 : desktops - 1)) % desktops;
-        if (m & ShiftMask)
-            move_desktop(focused, d);
-        switch_desktop(d);
-    } else if ((m & Mod4Mask) && k >= XK_Left && k <= XK_Down)
-        tile(focused, k);
-    else if (((m & Mod4Mask) || ((m & (ControlMask | Mod1Mask)) == (ControlMask | Mod1Mask))) &&
-             k == XK_d)
+        break;
+    case KeyFullscreen:
+        toggle_fullscreen(focused);
+        break;
+    case KeyMove:
+        begin_drag(focused, 10, e->x_root, e->y_root, e->time);
+        break;
+    case KeyResize:
+        begin_drag(focused, 9, e->x_root, e->y_root, e->time);
+        break;
+    case KeyWindowMenu:
+        if (focused)
+            menu_open(focused, focused->geometry.x, focused->geometry.y, e->time);
+        break;
+    case KeyWorkspacePrev:
+        switch_workspace(-1);
+        break;
+    case KeyWorkspaceNext:
+        switch_workspace(1);
+        break;
+    case KeyWindowWorkspacePrev:
+        move_and_switch_workspace(focused, -1);
+        break;
+    case KeyWindowWorkspaceNext:
+        move_and_switch_workspace(focused, 1);
+        break;
+    case KeyTileLeft:
+        tile(focused, XK_Left);
+        break;
+    case KeyTileRight:
+        tile(focused, XK_Right);
+        break;
+    case KeyTileUp:
+        tile(focused, XK_Up);
+        break;
+    case KeyTileDown:
+        tile(focused, XK_Down);
+        break;
+    case KeyShowDesktop:
         show_desktop(!showing_desktop);
+        break;
+    }
 }
 static void grab_keys(void)
 {
     XUngrabKey(display, AnyKey, AnyModifier, root);
     XModifierKeymap *map = XGetModifierMapping(display);
     numlock_mask = 0;
+    alt_key_count = 0;
     KeyCode num = XKeysymToKeycode(display, XK_Num_Lock);
     if (map) {
         for (int i = 0; i < 8; i++)
-            for (int j = 0; j < map->max_keypermod; j++)
-                if (map->modifiermap[i * map->max_keypermod + j] == num)
+            for (int j = 0; j < map->max_keypermod; j++) {
+                KeyCode code = map->modifiermap[i * map->max_keypermod + j];
+                if (code == num)
                     numlock_mask = 1u << i;
+                if (i == 3 && code && alt_key_count < (int)(sizeof(alt_keys) / sizeof(alt_keys[0])))
+                    alt_keys[alt_key_count++] = code;
+            }
         XFreeModifiermap(map);
     }
-    struct Binding {
-        KeySym key;
-        unsigned mod;
-    } bindings[] = {{XK_space, Mod1Mask},
-                    {XK_Tab, Mod1Mask},
-                    {XK_Tab, Mod1Mask | ShiftMask},
-                    {XK_F4, Mod1Mask},
-                    {XK_F7, Mod1Mask},
-                    {XK_F8, Mod1Mask},
-                    {XK_F9, Mod1Mask},
-                    {XK_F10, Mod1Mask},
-                    {XK_Left, ControlMask | Mod1Mask},
-                    {XK_Right, ControlMask | Mod1Mask},
-                    {XK_Left, ControlMask | Mod1Mask | ShiftMask},
-                    {XK_Right, ControlMask | Mod1Mask | ShiftMask},
-                    {XK_Left, Mod4Mask},
-                    {XK_Right, Mod4Mask},
-                    {XK_Up, Mod4Mask},
-                    {XK_Down, Mod4Mask},
-                    {XK_d, Mod4Mask},
-                    {XK_d, ControlMask | Mod1Mask}};
     unsigned locks[] = {0, LockMask, numlock_mask, LockMask | numlock_mask};
-    for (unsigned i = 0; i < sizeof(bindings) / sizeof(bindings[0]); i++)
+    for (int i = 0; i < binding_count; i++)
         for (unsigned j = 0; j < 4; j++)
-            XGrabKey(display, XKeysymToKeycode(display, bindings[i].key),
-                     bindings[i].mod | locks[j], root, True, GrabModeAsync, GrabModeAsync);
+            XGrabKey(display, XKeysymToKeycode(display, bindings[i].keysym),
+                     bindings[i].modifiers | locks[j], root, True, GrabModeAsync, GrabModeAsync);
 }
 static void button(XButtonEvent *e)
 {
@@ -1376,6 +1811,10 @@ static void event(XEvent *e)
         }
         break;
     case Expose:
+        if (e->xexpose.window == switcher_window) {
+            switcher_paint();
+            break;
+        }
         if (e->xexpose.window == menu_window) {
             menu_paint();
             break;
@@ -1384,6 +1823,10 @@ static void event(XEvent *e)
             draw_frame(c);
         break;
     case ButtonPress:
+        if (switcher_active) {
+            switcher_cancel();
+            break;
+        }
         button(&e->xbutton);
         break;
     case ButtonRelease:
@@ -1404,6 +1847,14 @@ static void event(XEvent *e)
         break;
     case KeyPress:
         key(&e->xkey);
+        break;
+    case KeyRelease:
+        if (switcher_active)
+            for (int i = 0; i < alt_key_count; i++)
+                if (e->xkey.keycode == alt_keys[i]) {
+                    switcher_activate();
+                    break;
+                }
         break;
     case MappingNotify:
         XRefreshKeyboardMapping(&e->xmapping);
@@ -1483,7 +1934,7 @@ static int initialize(void)
     claiming = 1;
     XSelectInput(display, root,
                  SubstructureRedirectMask | SubstructureNotifyMask | StructureNotifyMask |
-                     PropertyChangeMask | KeyPressMask);
+                     PropertyChangeMask | KeyPressMask | KeyReleaseMask);
     XSync(display, False);
     claiming = 0;
     if (claim_failed) {
@@ -1578,6 +2029,21 @@ static int initialize(void)
                       DefaultColormap(display, screen_number), "#eeeeee", &text_color);
     move_cursor = XCreateFontCursor(display, XC_fleur);
     resize_cursor = XCreateFontCursor(display, XC_bottom_right_corner);
+    char keys_path[512];
+    const char *keys_override = getenv("RILL_WM_KEYS");
+    if (keys_override && *keys_override)
+        snprintf(keys_path, sizeof(keys_path), "%s", keys_override);
+    else {
+        const char *base = getenv("XDG_CONFIG_HOME");
+        if (base && *base)
+            snprintf(keys_path, sizeof(keys_path), "%s/rill/wm-keys", base);
+        else if ((base = getenv("HOME")) && *base)
+            snprintf(keys_path, sizeof(keys_path), "%s/.config/rill/wm-keys", base);
+        else
+            keys_path[0] = 0;
+    }
+    if (keys_path[0])
+        load_bindings(keys_path);
     grab_keys();
     Window rr, pp, *children = NULL;
     unsigned n;
@@ -1640,6 +2106,13 @@ int main(int argc, char **argv)
             break;
     }
     stopping = 1;
+    switcher_cancel();
+    if (switcher_draw)
+        XftDrawDestroy(switcher_draw);
+    if (switcher_image)
+        XDestroyImage(switcher_image);
+    if (switcher_window)
+        XDestroyWindow(display, switcher_window);
     menu_close();
     if (menu_draw)
         XftDrawDestroy(menu_draw);

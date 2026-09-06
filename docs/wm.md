@@ -17,6 +17,10 @@ xfce4-session and Thunar. Their code and APIs have not been reimplemented.
   stacking, sticky windows and show-desktop.
 - Configurable workspace count through EWMH, workspace switching and moving
   windows between workspaces; client lists for task buttons and pagers.
+- MRU Alt+Tab switcher overlay with window icons and keyboard navigation; the
+  selection is applied when Alt is released.
+- Keyboard shortcuts loaded from a user configuration file with xfwm4-style
+  defaults.
 - Transient/modal dialogs, parent minimize/restore, panel struts/work areas,
   basic monitor-aware maximization/fullscreen and display resize handling.
 - ICCCM delete/take-focus messages, EWMH state/move/resize requests, Motif
@@ -29,10 +33,14 @@ xfce4-session and Thunar. Their code and APIs have not been reimplemented.
 
 ## Controls
 
+Default controls; every one of them can be rebound through the key file below.
+
 | Input | Action |
-|---|---|
-| Alt+Tab / Alt+Shift+Tab | Cycle windows |
-| Alt+F4 / Alt+F9 / Alt+F10 | Close / minimize / maximize |
+| --- | --- |
+| Alt+Tab / Alt+Shift+Tab | Open the switcher; step forward/back, hold Alt and release to activate |
+| Switcher: Left/Right/Up/Down | Move the selection |
+| Switcher: Escape | Cancel without switching |
+| Alt+F4 / Alt+F9 / Alt+F10 / Alt+F11 | Close / minimize / maximize / fullscreen |
 | Alt+F7 / Alt+F8 | Move / resize using keyboard or pointer |
 | Alt+Space, or title right-click | Window menu |
 | Alt+left/right drag | Move / resize |
@@ -42,6 +50,24 @@ xfce4-session and Thunar. Their code and APIs have not been reimplemented.
 | Super+arrows | Tile window |
 | Super+D / Ctrl+Alt+D | Show desktop |
 | Escape during move/resize | Restore previous geometry |
+
+## Key configuration
+
+Bindings load at startup from `$XDG_CONFIG_HOME/rill/wm-keys` (or
+`$HOME/.config/rill/wm-keys`; `RILL_WM_KEYS` points somewhere else). Each line
+binds one action; comments start with `#`, invalid lines are ignored, and
+unlisted actions keep their defaults:
+
+```ini
+close = Ctrl+Alt+q
+workspace-next = Ctrl+Alt+j
+```
+
+Modifiers are `Ctrl`, `Shift`, `Alt` and `Super`. The action names are `close`,
+`minimize`, `maximize`, `fullscreen`, `move`, `resize`, `cycle`, `cycle-back`,
+`window-menu`, `workspace-prev`, `workspace-next`, `window-workspace-prev`,
+`window-workspace-next`, `tile-left`, `tile-right`, `tile-up`, `tile-down` and
+`show-desktop`.
 
 ## Running and testing
 
@@ -80,9 +106,10 @@ network or privileged functionality.
 Rill WM is not yet a 1:1 xfwm4 replacement. These gaps remain explicit:
 
 - xfwm4 theme parsing, matching decoration appearance, xfconf preference
-  compatibility and its complete shortcut/settings interfaces.
-- MRU switcher UI, detailed placement and focus-stealing policies, full
-  transient/group stacking behavior and application-specific compatibility.
+  compatibility and a graphical shortcut/settings interface (shortcuts are
+  configurable through the key file today).
+- Detailed placement and focus-stealing policies, full transient/group stacking
+  behavior and application-specific compatibility.
 - Sync-resize/ping protocols, comprehensive session geometry restoration after
   a WM crash, dynamic decoration changes and full input-shape handling.
 - Compositor shadows, vsync/frame pacing, efficient damage-region rendering,

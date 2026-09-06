@@ -257,6 +257,38 @@ int main(int argc, char **argv)
     check(value(root, "_NET_CURRENT_DESKTOP", XA_CARDINAL, 0) == 2 &&
               value(w, "_NET_WM_DESKTOP", XA_CARDINAL, 0) == 2 && attrs(w).map_state == IsViewable,
           "workspace removal relocates clients and active workspace");
+    /* Alt+Tab opens the MRU switcher overlay; releasing Alt commits the focus. */
+    Window second = XCreateSimpleWindow(d, root, 400, 300, 240, 160, 0, 0, 0x0000ff);
+    XStoreName(d, second, "Second test window");
+    XMapWindow(d, second);
+    pump();
+    check(value(root, "_NET_ACTIVE_WINDOW", XA_WINDOW, 0) == second, "new window takes focus");
+    KeyCode alt = XKeysymToKeycode(d, XK_Alt_L);
+    KeyCode tab = XKeysymToKeycode(d, XK_Tab);
+    XTestFakeKeyEvent(d, alt, True, CurrentTime);
+    XTestFakeKeyEvent(d, tab, True, CurrentTime);
+    XTestFakeKeyEvent(d, tab, False, CurrentTime);
+    pump();
+    Window switcher_overlay = XCompositeGetOverlayWindow(d, root);
+    int highlighted = 0;
+    XImage *switcher_shot = XGetImage(d, switcher_overlay, 480, 300, 320, 200, AllPlanes, ZPixmap);
+    if (switcher_shot) {
+        for (int py = 0; py < switcher_shot->height && !highlighted; py++)
+            for (int px = 0; px < switcher_shot->width; px++)
+                if ((XGetPixel(switcher_shot, px, py) & 0xffffff) == 0x344c6b) {
+                    highlighted = 1;
+                    break;
+                }
+        XDestroyImage(switcher_shot);
+    }
+    XCompositeReleaseOverlayWindow(d, root);
+    check(highlighted, "switcher overlay paints a highlighted tile");
+    XTestFakeKeyEvent(d, alt, False, CurrentTime);
+    pump();
+    check(value(root, "_NET_ACTIVE_WINDOW", XA_WINDOW, 0) == w,
+          "Alt-Tab selects the previously focused window");
+    XDestroyWindow(d, second);
+    pump();
     /* Moving through EWMH must use native pointer input, not UI emulation. */
     position(w, &x, &y);
     original_x = x;
@@ -361,8 +393,49 @@ int main(int argc, char **argv)
     pump();
     check(parent(w) == root && attrs(w).map_state == IsViewable,
           "graceful WM exit reparents live apps");
+    FILE *keys = fopen("/tmp/rill-wm-test-keys", "w");
+    check(keys != NULL, "write key configuration");
+    if (keys) {
+        fputs("# rill test bindings\nnot a binding\nclose = Ctrl+Alt+q\ncycle = Alt+Tab\n", keys);
+        fclose(keys);
+    }
+    setenv("RILL_WM_KEYS", "/tmp/rill-wm-test-keys", 1);
     start(argv[1]);
     check(parent(w) != root, "new WM adopts live app");
+    /* The adopted app lives on workspace 3; activate it so key bindings have a target. */
+    send(w, "_NET_ACTIVE_WINDOW", 2, 0, 0, 0, 0);
+    while (XPending(d)) {
+        XEvent discard;
+        XNextEvent(d, &discard);
+    }
+    key(XK_Alt_L, XK_F4);
+    int default_close = 0;
+    while (XPending(d)) {
+        XEvent e;
+        XNextEvent(d, &e);
+        if (e.type == ClientMessage && e.xclient.message_type == atom("WM_PROTOCOLS") &&
+            (Atom)e.xclient.data.l[0] == atom("WM_DELETE_WINDOW"))
+            default_close = 1;
+    }
+    check(!default_close, "rebound close stops firing on Alt-F4");
+    KeyCode ctrl = XKeysymToKeycode(d, XK_Control_L);
+    KeyCode q = XKeysymToKeycode(d, XK_q);
+    XTestFakeKeyEvent(d, ctrl, True, CurrentTime);
+    XTestFakeKeyEvent(d, alt, True, CurrentTime);
+    XTestFakeKeyEvent(d, q, True, CurrentTime);
+    XTestFakeKeyEvent(d, q, False, CurrentTime);
+    XTestFakeKeyEvent(d, alt, False, CurrentTime);
+    XTestFakeKeyEvent(d, ctrl, False, CurrentTime);
+    pump();
+    int configured_close = 0;
+    while (XPending(d)) {
+        XEvent e;
+        XNextEvent(d, &e);
+        if (e.type == ClientMessage && e.xclient.message_type == atom("WM_PROTOCOLS") &&
+            (Atom)e.xclient.data.l[0] == atom("WM_DELETE_WINDOW"))
+            configured_close = 1;
+    }
+    check(configured_close, "configured Ctrl-Alt-q closes the focused window");
     XDestroyWindow(d, w);
     XDestroyWindow(d, dock);
     pump();
