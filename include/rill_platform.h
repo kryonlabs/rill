@@ -34,6 +34,15 @@ typedef struct RillTrayIcon {
     unsigned int *argb;
 } RillTrayIcon;
 
+/* A desktop notification snapshot; expired entries drop out on the next
+   poll. */
+typedef struct RillNotification {
+    unsigned int id;
+    char app_name[96];
+    char summary[160];
+    char body[256];
+} RillNotification;
+
 typedef struct RillPlatformServices {
     const char *name;
     int (*list_launchers)(RillLauncher *out, int cap);
@@ -47,7 +56,7 @@ typedef struct RillPlatformServices {
     int (*switch_workspace)(int index);
     /* Wallpaper candidates for the settings app; paths are 512-byte buffers. */
     int (*list_wallpapers)(char (*paths)[512], int cap);
-    /* Session actions: "logout", "restart", "shutdown", "suspend". */
+    /* Session actions: "lock", "logout", "restart", "shutdown", "suspend". */
     int (*session_action)(const char *action);
     /* Toggle the WM's show-desktop state (EWMH _NET_SHOWING_DESKTOP). */
     int (*show_desktop)(int show);
@@ -59,6 +68,12 @@ typedef struct RillPlatformServices {
     int (*list_desktop_files)(RillLauncher *out, int cap);
     /* Open a file path or URI (for example trash://) with the default app. */
     int (*open_path)(const char *path);
+    /* Active notifications; returns the count copied into out. */
+    int (*notifications_poll)(RillNotification *out, int cap);
+    /* Invoke the default action (dismiss=0) or close (dismiss=1) a toast. */
+    int (*notification_action)(unsigned int id, int dismiss);
+    /* Battery charge percent and charging state; 0 when unavailable. */
+    int (*battery_state)(int *percent, int *charging);
 } RillPlatformServices;
 
 int RillSettingsEnsureDirectory(const char *path);

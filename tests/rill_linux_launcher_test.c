@@ -7,6 +7,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
+#include <dirent.h>
 
 static int
 write_file(const char *path, const char *text)
@@ -29,9 +31,15 @@ check(const char *name, int ok, int *failures)
     }
 }
 
+
 int
 main(int argc, char **argv)
 {
+    struct rlimit limits;
+
+    getrlimit(RLIMIT_NOFILE, &limits);
+    limits.rlim_cur = limits.rlim_max;
+    setrlimit(RLIMIT_NOFILE, &limits);
     if(argc > 2 && strcmp(argv[1], "--probe") == 0) {
         FILE *file = fopen(argv[2], "w");
         char cwd[1024];
@@ -177,33 +185,40 @@ main(int argc, char **argv)
           platform->session_action("logout"), &failures);
     check("suspend records an action", platform->session_action("suspend"),
           &failures);
+    check("lock records an action", platform->session_action("lock"),
+          &failures);
     check("unknown action rejected", !platform->session_action("moon"),
           &failures);
     {
         FILE *record = fopen(app_path, "r");
-        char log[128] = "";
+        char log[160] = "";
         if(record != NULL) {
             size_t n = fread(log, 1, sizeof(log) - 1, record);
             log[n] = '\0';
             fclose(record);
         }
-        check("session actions logged", strcmp(log, "logout\nsuspend\n") == 0,
-              &failures);
+        check("session actions logged",
+              strcmp(log, "logout\nsuspend\nlock\n") == 0, &failures);
     }
     unsetenv("RILL_SESSION_ACTION_FILE");
     unlink(app_path);
     check("wallpaper listing is bounded", platform->list_wallpapers != NULL &&
           platform->list_wallpapers(walls, 2) <= 2, &failures);
 
-    /* StatusNotifier tray hosting, end to end against a mock item. */
+    /* Tray hosting and notification server, end to end on one private bus. */
     {
         char command[2048];
+        char socket_path[512];
+        char conf_path[512];
         char address[256] = "";
-        char log_text[128] = "";
+        char log_text[160] = "";
         const char *previous_bus = getenv("DBUS_SESSION_BUS_ADDRESS");
         char saved_bus[256];
         RillTrayIcon icons[4];
+        RillNotification notes[4];
         int tray_count = 0;
+        int note_count = 0;
+        unsigned int first_id = 0;
         pid_t mock_pid = 0;
         FILE *record;
 
@@ -211,16 +226,39 @@ main(int argc, char **argv)
             snprintf(saved_bus, sizeof(saved_bus), "%s", previous_bus);
         else
             saved_bus[0] = '\0';
-        snprintf(app_path, sizeof(app_path), "%s/bus-address", root);
-        snprintf(probe_result, sizeof(probe_result), "%s/tray-ready", root);
-        snprintf(probe_path, sizeof(probe_path), "%s/tray-activated", root);
-        snprintf(executable, sizeof(executable), "%s/tray-pid", root);
+        /* A config without servicedirs keeps the installed xfce4-notifyd from
+           activating and winning the notification name; the concrete listen
+           path makes teardown by socket possible. */
+        snprintf(socket_path, sizeof(socket_path), "%s/mock-bus", root);
+        snprintf(conf_path, sizeof(conf_path), "%s/mock-dbus.conf", root);
         snprintf(command, sizeof(command),
-                 "sh -c 'echo $$ > %s; exec dbus-run-session -- sh -c "
+                 "<busconfig>\n"
+                 "  <type>session</type>\n"
+                 "  <listen>unix:path=%s</listen>\n"
+                 "  <auth>EXTERNAL</auth>\n"
+                 "  <policy context=\"default\">\n"
+                 "    <allow send_destination=\"*\"/>\n"
+                 "    <allow receive_sender=\"*\"/>\n"
+                 "    <allow own=\"*\"/>\n"
+                 "  </policy>\n"
+                 "</busconfig>\n",
+                 socket_path);
+        check("write mock bus config", write_file(conf_path, command),
+              &failures);
+        snprintf(app_path, sizeof(app_path), "%s/mock-address", root);
+        snprintf(probe_result, sizeof(probe_result), "%s/mock-ready", root);
+        snprintf(probe_path, sizeof(probe_path), "%s/mock-activated", root);
+        snprintf(executable, sizeof(executable), "%s/mock-pid", root);
+        snprintf(log_text, sizeof(log_text), "%s", probe_path);
+        snprintf(command, sizeof(command),
+                 "setsid sh -c 'echo $$ > %s; exec dbus-run-session "
+                 "--config-file=%s -- sh -c "
                  "\"echo \\$DBUS_SESSION_BUS_ADDRESS > %s; "
-                 "exec python3 " RILL_SNI_MOCK " %s %s\"' >/dev/null 2>&1 &",
-                 executable, app_path, probe_result, probe_path);
-        check("start mock tray item", system(command) == 0, &failures);
+                 "exec python3 " RILL_DBUS_MOCK " %s %s %s\"' "
+                 ">/dev/null 2>&1 &",
+                 executable, conf_path, app_path, probe_result, probe_path,
+                 log_text);
+        check("start dbus mock", system(command) == 0, &failures);
         for(int i = 0; i < 100; i++) {
             FILE *file = fopen(app_path, "r");
             if(file != NULL && fgets(address, sizeof(address), file) != NULL) {
@@ -229,14 +267,18 @@ main(int argc, char **argv)
                     setenv("DBUS_SESSION_BUS_ADDRESS", address, 1);
             } else if(file != NULL)
                 fclose(file);
-            /* Pumping the tray host helps its watcher name land early. */
+            /* Give the young daemon time to accept before pumping; connecting
+               during its startup can stall the synchronous handshake. */
+            usleep(300000);
+            /* Pump both hosts: the mock waits for the tray watcher and the
+               notification server before it reports readiness. */
             platform->tray_icons(NULL, 0);
+            platform->notifications_poll(NULL, 0);
             file = fopen(probe_result, "r");
             if(file != NULL) {
                 fclose(file);
                 break;
             }
-            usleep(100000);
         }
         record = fopen(executable, "r");
         if(record != NULL) {
@@ -244,8 +286,8 @@ main(int argc, char **argv)
                 mock_pid = 0;
             fclose(record);
         }
-        check("mock tray session started", address[0] != '\0', &failures);
-        setenv("DBUS_SESSION_BUS_ADDRESS", address, 1);
+        check("mock session started", address[0] != '\0', &failures);
+
         for(int i = 0; i < 50 && tray_count == 0; i++) {
             tray_count = platform->tray_icons(icons, 4);
             if(tray_count == 0)
@@ -272,16 +314,83 @@ main(int argc, char **argv)
               strstr(log_text, "SecondaryActivate") != NULL, &failures);
         for(int i = 0; i < tray_count; i++)
             free(icons[i].argb);
+
+        for(int i = 0; i < 50 && note_count == 0; i++) {
+            note_count = platform->notifications_poll(notes, 4);
+            if(note_count == 0)
+                usleep(200000);
+        }
+        check("notification banner delivered", note_count >= 1 &&
+              strcmp(notes[0].summary, "Rill note one") == 0 &&
+              strcmp(notes[0].body, "Banner body text") == 0, &failures);
+        first_id = note_count >= 1 ? notes[0].id : 0;
+        /* The default action must reach the client, which then notifies again. */
+        check("default action invoked", first_id != 0 &&
+              platform->notification_action(first_id, 0), &failures);
+        note_count = 0;
+        for(int i = 0; i < 50 && note_count == 0; i++) {
+            note_count = platform->notifications_poll(notes, 4);
+            if(note_count == 0)
+                usleep(200000);
+        }
+        check("action triggers the follow-up notification", note_count >= 1 &&
+              strcmp(notes[0].summary, "Rill note two") == 0, &failures);
+        if(note_count >= 1) {
+            platform->notification_action(notes[0].id, 1);
+            check("dismissed notification disappears",
+                  platform->notifications_poll(notes, 4) == 0, &failures);
+        }
+
+        /* setsid groups the wrapper, mock and daemon; the daemon additionally
+           carries this run's unique config path and socket. */
         if(mock_pid > 0)
-            kill(mock_pid, SIGTERM);
+            kill(-mock_pid, SIGKILL);
+        snprintf(command, sizeof(command),
+                 "pkill -f 'dbus-run-session --config-file=%s' 2>/dev/null; "
+                 "pkill -f 'dbus-daemon .*%s' 2>/dev/null; "
+                 "fuser -k '%s' 2>/dev/null",
+                 conf_path, conf_path, socket_path);
+        system(command);
         if(saved_bus[0] != '\0')
             setenv("DBUS_SESSION_BUS_ADDRESS", saved_bus, 1);
         else
             unsetenv("DBUS_SESSION_BUS_ADDRESS");
+        unlink(conf_path);
         unlink(app_path);
         unlink(probe_result);
         unlink(probe_path);
         unlink(executable);
+    }
+
+    /* Battery state reads the platform power-supply directory. */
+    {
+        int percent = 0;
+        int charging = 0;
+        char battery[512];
+
+        snprintf(battery, sizeof(battery), "%s/power/BAT0", root);
+        snprintf(app_path, sizeof(app_path), "%s/power", root);
+        mkdir(app_path, 0700);
+        mkdir(battery, 0700);
+        snprintf(app_path, sizeof(app_path), "%s/power/BAT0/capacity", root);
+        check("write battery capacity", write_file(app_path, "87\n"),
+              &failures);
+        snprintf(app_path, sizeof(app_path), "%s/power/BAT0/status", root);
+        check("write battery status", write_file(app_path, "Charging\n"),
+              &failures);
+        snprintf(app_path, sizeof(app_path), "%s/power", root);
+        setenv("RILL_BATTERY_DIR", app_path, 1);
+        check("battery state discovered", platform->battery_state != NULL &&
+              platform->battery_state(&percent, &charging) &&
+              percent == 87 && charging, &failures);
+        unsetenv("RILL_BATTERY_DIR");
+        snprintf(app_path, sizeof(app_path), "%s/power/BAT0/capacity", root);
+        unlink(app_path);
+        snprintf(app_path, sizeof(app_path), "%s/power/BAT0/status", root);
+        unlink(app_path);
+        rmdir(battery);
+        snprintf(app_path, sizeof(app_path), "%s/power", root);
+        rmdir(app_path);
     }
 
     /* Desktop directory entries feed the desktop icon grid. */

@@ -1048,7 +1048,20 @@ linux_session_action(const char *action)
         method = "PowerOff";
     else if(strcmp(action, "suspend") == 0)
         method = "Suspend";
-    else if(strcmp(action, "logout") != 0)
+    else if(strcmp(action, "logout") == 0 || strcmp(action, "lock") == 0) {
+        if(record != NULL && record[0] != '\0') {
+            FILE *file = fopen(record, "a");
+            if(file == NULL)
+                return 0;
+            fprintf(file, "%s\n", action);
+            fclose(file);
+            return 1;
+        }
+        if(strcmp(action, "lock") == 0)
+            return g_spawn_command_line_async("xflock4", NULL) ||
+                   g_spawn_command_line_async("loginctl lock-session", NULL);
+        return g_spawn_command_line_async("xfce4-session-logout", NULL);
+    } else
         return 0;
     if(record != NULL && record[0] != '\0') {
         FILE *file = fopen(record, "a");
@@ -1058,8 +1071,6 @@ linux_session_action(const char *action)
         fclose(file);
         return 1;
     }
-    if(method == NULL)
-        return g_spawn_command_line_async("xfce4-session-logout", NULL);
     bus = g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, NULL);
     if(bus == NULL) {
         fprintf(stderr, "rill: cannot reach the system bus for %s\n", action);
@@ -1116,6 +1127,9 @@ static int tray_registration_count;
 static GDBusConnection *tray_connection;
 static guint tray_owner_id;
 static int tray_started;
+static int notify_started;
+static int notify_count;
+static char tray_bus_address[256];
 
 static void
 tray_register(const char *sender, const char *service)
@@ -1214,6 +1228,24 @@ tray_start(void)
     GError *error = NULL;
     GDBusNodeInfo *info;
 
+    /* A replaced session bus (for example a private test bus shutting down)
+       closes the connection; re-register everything on the current bus. */
+    const char *bus_address = getenv("DBUS_SESSION_BUS_ADDRESS");
+    if(bus_address == NULL)
+        bus_address = "";
+    if(tray_connection != NULL &&
+       (strcmp(tray_bus_address, bus_address) != 0 ||
+        g_dbus_connection_is_closed(tray_connection))) {
+        /* The session bus address changed (for example a private test bus);
+           drop the old connection and re-register every service. */
+        /* Detach without touching it: the old bus is gone, so its socket is
+           dead and the address change is a rare, test-time event. */
+        tray_connection = NULL;
+        tray_started = 0;
+        notify_started = 0;
+        notify_count = 0;
+        tray_registration_count = 0;
+    }
     if(tray_started)
         return;
     /* Connecting may legitimately fail before a session bus exists; retry on
@@ -1221,6 +1253,7 @@ tray_start(void)
     tray_connection = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL);
     if(tray_connection == NULL)
         return;
+    snprintf(tray_bus_address, sizeof(tray_bus_address), "%s", bus_address);
     tray_started = 1;
     info = g_dbus_node_info_new_for_xml(tray_watcher_xml, &error);
     if(info == NULL) {
@@ -1239,6 +1272,322 @@ tray_start(void)
     tray_owner_id = g_bus_own_name_on_connection(
         tray_connection, "org.kde.StatusNotifierWatcher",
         G_BUS_NAME_OWNER_FLAGS_DO_NOT_QUEUE, NULL, NULL, NULL, NULL);
+}
+
+/* Desktop notification server (org.freedesktop.Notifications). Like the tray
+   watcher, the name is only taken when no other server already owns it. */
+#define RILL_NOTIFY_MAX 6
+
+typedef struct {
+    unsigned int id;
+    char app_name[96];
+    char summary[160];
+    char body[256];
+    char sender[96];
+    long deadline_ms;
+    int sticky;
+} NotifyEntry;
+
+static NotifyEntry notify_entries[RILL_NOTIFY_MAX];
+static unsigned int notify_next_id = 1;
+
+static long
+notify_now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+}
+
+static NotifyEntry *
+notify_find(unsigned int id)
+{
+    for(int i = 0; i < notify_count; i++)
+        if(notify_entries[i].id == id)
+            return &notify_entries[i];
+    return NULL;
+}
+
+static void
+notify_remove(NotifyEntry *entry, unsigned int reason)
+{
+    if(entry == NULL)
+        return;
+    g_dbus_connection_emit_signal(tray_connection, NULL,
+                                  "/org/freedesktop/Notifications",
+                                  "org.freedesktop.Notifications",
+                                  "NotificationClosed",
+                                  g_variant_new("(uu)", entry->id, reason),
+                                  NULL);
+    int index = (int)(entry - notify_entries);
+    memmove(&notify_entries[index], &notify_entries[index + 1],
+            (size_t)(notify_count - index - 1) * sizeof(notify_entries[0]));
+    notify_count--;
+}
+
+static void
+notify_method_call(GDBusConnection *connection, const gchar *sender,
+                   const gchar *object_path, const gchar *interface_name,
+                   const gchar *method, GVariant *parameters,
+                   GDBusMethodInvocation *invocation, gpointer user_data)
+{
+    (void)connection;
+    (void)object_path;
+    (void)interface_name;
+    (void)user_data;
+    if(g_strcmp0(method, "GetCapabilities") == 0) {
+        GVariantBuilder builder;
+        g_variant_builder_init(&builder, G_VARIANT_TYPE("as"));
+        g_variant_builder_add(&builder, "s", "actions");
+        g_variant_builder_add(&builder, "s", "body");
+        g_variant_builder_add(&builder, "s", "icon-static");
+        g_dbus_method_invocation_return_value(invocation,
+                                              g_variant_new("(as)", &builder));
+    } else if(g_strcmp0(method, "GetServerInformation") == 0) {
+        g_dbus_method_invocation_return_value(
+            invocation, g_variant_new("(ssss)", "rill", "Rill", "1.0", "1.2"));
+    } else if(g_strcmp0(method, "CloseNotification") == 0) {
+        guint32 id = 0;
+        g_variant_get(parameters, "(u)", &id);
+        notify_remove(notify_find(id), 3);
+        g_dbus_method_invocation_return_value(invocation, NULL);
+    } else if(g_strcmp0(method, "Notify") == 0) {
+        const gchar *app_name, *app_icon, *summary, *body;
+        guint32 replaces_id = 0;
+        gint32 timeout = 0;
+        gchar **actions = NULL;
+        GVariant *hints = NULL;
+        NotifyEntry *entry;
+        long now = notify_now_ms();
+
+        g_variant_get(parameters, "(&su&s&s&s^as@a{sv}i)", &app_name,
+                      &replaces_id, &app_icon, &summary, &body, &actions,
+                      &hints, &timeout);
+        g_strfreev(actions);
+        if(hints != NULL)
+            g_variant_unref(hints);
+        if(getenv("RILL_TRAY_DEBUG"))
+            fprintf(stderr, "rill: Notify from %s: %s\n", sender, summary);
+        entry = replaces_id != 0 ? notify_find(replaces_id) : NULL;
+        if(entry == NULL) {
+            if(notify_count >= RILL_NOTIFY_MAX)
+                notify_remove(&notify_entries[0], 1);
+            if(notify_count >= RILL_NOTIFY_MAX) {
+                g_dbus_method_invocation_return_value(
+                    invocation, g_variant_new("(u)", 0));
+                return;
+            }
+            entry = &notify_entries[notify_count++];
+            memset(entry, 0, sizeof(*entry));
+            entry->id = notify_next_id++;
+            if(notify_next_id == 0)
+                notify_next_id = 1;
+        }
+        snprintf(entry->app_name, sizeof(entry->app_name), "%s", app_name);
+        snprintf(entry->summary, sizeof(entry->summary), "%s", summary);
+        snprintf(entry->body, sizeof(entry->body), "%s",
+                 body != NULL ? body : "");
+        snprintf(entry->sender, sizeof(entry->sender), "%s", sender);
+        entry->sticky = timeout == -1;
+        entry->deadline_ms = now + (timeout > 0 ? timeout : 5000);
+        g_dbus_method_invocation_return_value(invocation,
+                                              g_variant_new("(u)", entry->id));
+    } else
+        g_dbus_method_invocation_return_error(invocation, G_DBUS_ERROR,
+                                              G_DBUS_ERROR_UNKNOWN_METHOD,
+                                              "Unknown method %s", method);
+}
+
+static const gchar notify_xml[] =
+    "<node>"
+    " <interface name='org.freedesktop.Notifications'>"
+    "  <method name='Notify'>"
+    "   <arg type='s' direction='in'/>"
+    "   <arg type='u' direction='in'/>"
+    "   <arg type='s' direction='in'/>"
+    "   <arg type='s' direction='in'/>"
+    "   <arg type='s' direction='in'/>"
+    "   <arg type='as' direction='in'/>"
+    "   <arg type='a{sv}' direction='in'/>"
+    "   <arg type='i' direction='in'/>"
+    "   <arg type='u' direction='out'/>"
+    "  </method>"
+    "  <method name='CloseNotification'>"
+    "   <arg type='u' direction='in'/>"
+    "  </method>"
+    "  <method name='GetCapabilities'>"
+    "   <arg type='as' direction='out'/>"
+    "  </method>"
+    "  <method name='GetServerInformation'>"
+    "   <arg type='s' direction='out'/><arg type='s' direction='out'/>"
+    "   <arg type='s' direction='out'/><arg type='s' direction='out'/>"
+    "  </method>"
+    " </interface>"
+    "</node>";
+
+static const GDBusInterfaceVTable notify_vtable = {
+    notify_method_call, NULL, NULL, {0}
+};
+
+static void
+notify_name_acquired(GDBusConnection *connection, const gchar *name,
+                     gpointer user_data)
+{
+    (void)connection;
+    (void)user_data;
+    if(getenv("RILL_TRAY_DEBUG"))
+        fprintf(stderr, "rill: acquired %s on %p (%s)\n", name,
+                (void *)connection, tray_bus_address);
+}
+
+static void
+notify_name_lost(GDBusConnection *connection, const gchar *name,
+                 gpointer user_data)
+{
+    (void)connection;
+    (void)user_data;
+    if(getenv("RILL_TRAY_DEBUG"))
+        fprintf(stderr, "rill: lost %s\n", name);
+}
+
+static void
+notify_start(void)
+{
+    GError *error = NULL;
+    GDBusNodeInfo *info;
+
+    /* tray_start also clears notify_started when the session bus was
+       replaced, so registration repeats on the new connection. */
+    tray_start();
+    if(notify_started || tray_connection == NULL)
+        return;
+    info = g_dbus_node_info_new_for_xml(notify_xml, &error);
+    if(info == NULL) {
+        if(error != NULL)
+            g_error_free(error);
+        return;
+    }
+    g_dbus_connection_register_object(tray_connection,
+                                      "/org/freedesktop/Notifications",
+                                      info->interfaces[0], &notify_vtable,
+                                      NULL, NULL, &error);
+    g_dbus_node_info_unref(info);
+    if(error != NULL)
+        g_error_free(error);
+    g_bus_own_name_on_connection(tray_connection,
+                                 "org.freedesktop.Notifications",
+                                 G_BUS_NAME_OWNER_FLAGS_DO_NOT_QUEUE,
+                                 NULL, notify_name_acquired, notify_name_lost,
+                                 NULL);
+    notify_started = 1;
+    if(getenv("RILL_TRAY_DEBUG"))
+        fprintf(stderr, "rill: notification server registered on %p (%s)\n",
+                (void *)tray_connection, tray_bus_address);
+}
+
+static int
+linux_notifications_poll(RillNotification *out, int cap)
+{
+    int count = 0;
+    long now = notify_now_ms();
+
+    notify_start();
+    for(int i = 0; i < 4; i++)
+        g_main_context_iteration(NULL, FALSE);
+    if(out == NULL || cap <= 0)
+        return 0;
+    for(int i = notify_count - 1; i >= 0; i--) {
+        if(!notify_entries[i].sticky && now >= notify_entries[i].deadline_ms) {
+            notify_remove(&notify_entries[i], 1);
+            continue;
+        }
+        if(count < cap) {
+            out[count].id = notify_entries[i].id;
+            snprintf(out[count].app_name, sizeof(out[count].app_name), "%s",
+                     notify_entries[i].app_name);
+            snprintf(out[count].summary, sizeof(out[count].summary), "%s",
+                     notify_entries[i].summary);
+            snprintf(out[count].body, sizeof(out[count].body), "%s",
+                     notify_entries[i].body);
+            count++;
+        }
+    }
+    return count;
+}
+
+static int
+linux_notification_action(unsigned int id, int dismiss)
+{
+    NotifyEntry *entry = notify_find(id);
+    GError *error = NULL;
+
+    if(getenv("RILL_TRAY_DEBUG"))
+        fprintf(stderr, "rill: notify action id=%u dismiss=%d found=%d count=%d\n",
+                id, dismiss, entry != NULL, notify_count);
+    if(entry == NULL)
+        return 0;
+    if(!dismiss && tray_connection != NULL && entry->sender[0] != '\0') {
+        /* The spec broadcasts ActionInvoked; a unicast call would deadlock
+           against clients that answer from their own main loop. */
+        g_dbus_connection_emit_signal(tray_connection, entry->sender,
+                                      "/org/freedesktop/Notifications",
+                                      "org.freedesktop.Notifications",
+                                      "ActionInvoked",
+                                      g_variant_new("(us)", id, "default"),
+                                      &error);
+        if(error != NULL)
+            g_error_free(error);
+    }
+    notify_remove(entry, dismiss ? 2 : 1);
+    return 1;
+}
+
+static int
+linux_battery_state(int *percent, int *charging)
+{
+    const char *base = getenv("RILL_BATTERY_DIR");
+    DIR *directory;
+    struct dirent *entry;
+
+    if(percent == NULL || charging == NULL)
+        return 0;
+    if(base == NULL || base[0] == '\0')
+        base = "/sys/class/power_supply";
+    directory = opendir(base);
+    if(directory == NULL)
+        return 0;
+    while((entry = readdir(directory)) != NULL) {
+        char path[1024];
+        FILE *file;
+        int value = -1;
+        char status[32] = "";
+
+        if(entry->d_name[0] == '.')
+            continue;
+        snprintf(path, sizeof(path), "%s/%s/capacity", base, entry->d_name);
+        file = fopen(path, "r");
+        if(file == NULL)
+            continue;
+        if(fscanf(file, "%d", &value) != 1)
+            value = -1;
+        fclose(file);
+        if(value < 0 || value > 100)
+            continue;
+        snprintf(path, sizeof(path), "%s/%s/status", base, entry->d_name);
+        file = fopen(path, "r");
+        if(file != NULL) {
+            if(fgets(status, sizeof(status), file) == NULL)
+                status[0] = '\0';
+            fclose(file);
+        }
+        closedir(directory);
+        *percent = value;
+        *charging = strstr(status, "Charging") != NULL ||
+                    strstr(status, "Full") != NULL;
+        return 1;
+    }
+    closedir(directory);
+    return 0;
 }
 
 static int
@@ -1423,7 +1772,10 @@ static const RillPlatformServices services = {
     linux_tray_icons,
     linux_tray_activate,
     linux_list_desktop_files,
-    linux_open_path
+    linux_open_path,
+    linux_notifications_poll,
+    linux_notification_action,
+    linux_battery_state
 };
 
 const RillPlatformServices *

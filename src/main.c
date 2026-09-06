@@ -124,6 +124,11 @@ typedef struct RillVisualState {
     double desktop_last_click;
     int desktop_menu_x;
     int desktop_menu_y;
+    RillNotification notifications[4];
+    int notification_count;
+    int battery_percent;
+    int battery_charging;
+    int battery_available;
     char run_input[160];
     int run_selected;
 } RillVisualState;
@@ -590,6 +595,27 @@ refresh_tray_icons(RillVisualState *visuals,
     }
     for(i = 0; i < count; i++)
         free(polled[i].argb);
+}
+
+static void
+refresh_notifications(RillVisualState *visuals,
+                      const RillPlatformServices *platform)
+{
+    if(visuals == NULL || platform == NULL || platform->notifications_poll == NULL)
+        return;
+    visuals->notification_count = platform->notifications_poll(
+        visuals->notifications, 4);
+    if(visuals->notification_count < 0)
+        visuals->notification_count = 0;
+}
+
+static void
+refresh_battery(RillVisualState *visuals, const RillPlatformServices *platform)
+{
+    if(visuals == NULL || platform == NULL || platform->battery_state == NULL)
+        return;
+    visuals->battery_available = platform->battery_state(
+        &visuals->battery_percent, &visuals->battery_charging);
 }
 
 static void
@@ -1847,12 +1873,26 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
             visuals->calendar_open = !visuals->calendar_open;
         return x + plugin->advance;
     }
-    case RILL_PANEL_RESOURCE:
-        draw_panel_resource(x, plugin->label,
-                            plugin->variant == 0 ?
-                            (Color){104, 190, 255, 255} :
-                            (Color){86, 218, 154, 255}, y, ph);
+    case RILL_PANEL_RESOURCE: {
+        Color color = plugin->variant == 0 ? (Color){104, 190, 255, 255} :
+                       (Color){86, 218, 154, 255};
+        char label[48];
+        int fill;
+        if(visuals->battery_available) {
+            int percent = visuals->battery_percent;
+            Color charge = percent < 20 ? (Color){224, 82, 68, 255} :
+                           percent < 55 ? (Color){222, 160, 62, 255} :
+                           (Color){86, 218, 154, 255};
+            snprintf(label, sizeof(label), "%s%d%%",
+                     visuals->battery_charging ? "+" : "", percent);
+            DrawText(label, x, y + oy + 7, 11, Fade(GetThemeText(), 0.92f));
+            fill = 28 * percent / 100;
+            DrawRectangle(x + 26, y + oy + 18, 28, 3, Fade(BLACK, 0.45f));
+            DrawRectangle(x + 26, y + oy + 18, fill, 3, charge);
+        } else
+            draw_panel_resource(x, plugin->label, color, y, ph);
         return x + plugin->advance;
+    }
     case RILL_PANEL_SHOW_DESKTOP: {
         Rectangle bounds = {x, (float)y + 2, 20, (float)ph - 4};
         int hover = CheckCollisionPointRec(GetMousePosition(), bounds);
@@ -2694,12 +2734,57 @@ draw_calendar_popup(RillVisualState *visuals)
 }
 
 static void
+draw_notifications(RillShellState *shell, RillVisualState *visuals,
+                   const RillPlatformServices *platform)
+{
+    int width = 320;
+    int height = 62;
+    int x;
+    int y;
+    int step;
+    Rectangle banner;
+
+    if(visuals == NULL || visuals->notification_count <= 0)
+        return;
+    x = GetScreenWidth() - width - 10;
+    y = rill_menu_anchor_y(visuals, 0);
+    if(visuals->panel_bottom)
+        y = rill_panel_top(visuals) - 10;
+    step = visuals->panel_bottom ? -(height + 8) : height + 8;
+    for(int i = 0; i < visuals->notification_count && i < 4; i++) {
+        RillNotification *note = &visuals->notifications[i];
+        int clicked;
+
+        banner = (Rectangle){(float)x, (float)(y + i * step), (float)width,
+                             (float)height};
+        DrawRectangleRec(banner, opaque_color(GetThemeSurface()));
+        DrawRectangleRounded(banner, 0.05f, 6, opaque_color(GetThemeSurface()));
+        DrawRectangleRoundedLinesEx(banner, 0.05f, 6, 1.0f,
+                                    Fade(GetThemeLink(), 0.55f));
+        DrawRectangle(x, (int)banner.y + 6, 3, height - 12, GetThemeLink());
+        draw_text_fit(note->summary, x + 12, (int)banner.y + 8, width - 24,
+                      Text14, GetThemeText());
+        draw_text_fit(note->body[0] != '\0' ? note->body : note->app_name,
+                      x + 12, (int)banner.y + 28, width - 24, Text12,
+                      GetThemeIcon());
+        clicked = CheckCollisionPointRec(GetMousePosition(), banner) &&
+                  IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+        if(clicked && platform != NULL &&
+           platform->notification_action != NULL) {
+            platform->notification_action(note->id, 0);
+            RillShellSetStatus(shell, note->summary);
+        }
+    }
+}
+
+static void
 draw_logout_dialog(RillShellState *shell, RillVisualState *visuals,
                    const RillPlatformServices *platform)
 {
-    const char *labels[5] = {"Log out", "Restart", "Shut down", "Suspend",
-                             "Cancel"};
-    const char *actions[4] = {"logout", "restart", "shutdown", "suspend"};
+    const char *labels[6] = {"Lock", "Log out", "Restart", "Shut down",
+                             "Suspend", "Cancel"};
+    const char *actions[5] = {"lock", "logout", "restart", "shutdown",
+                              "suspend"};
     Rectangle full = {0, 0, (float)GetScreenWidth(), (float)GetScreenHeight()};
     Rectangle panel;
     int screen_w = GetScreenWidth();
@@ -2708,18 +2793,18 @@ draw_logout_dialog(RillShellState *shell, RillVisualState *visuals,
 
     if(visuals == NULL || !visuals->logout_open)
         return;
-    panel = (Rectangle){(screen_w - 280) / 2.0f, (screen_h - 214) / 2.0f,
-                        280, 214};
+    panel = (Rectangle){(screen_w - 280) / 2.0f, (screen_h - 246) / 2.0f,
+                        280, 246};
     DrawRectangleRec(full, Fade(BLACK, 0.38f));
     DrawRectangleRounded(panel, 0.03f, 8, opaque_color(GetThemeSurface()));
     DrawRectangleRoundedLinesEx(panel, 0.03f, 8, 2.0f, GetThemeLink());
     DrawText("End session", (int)panel.x + 16, (int)panel.y + 14, Text18,
              GetThemeText());
-    for(i = 0; i < 5; i++) {
+    for(i = 0; i < 6; i++) {
         Rectangle button = {panel.x + 16, panel.y + 46 + i * 32,
                             panel.width - 32, 28};
         if(draw_settings_button(button, labels[i], 0)) {
-            if(i < 4) {
+            if(i < 5) {
                 if(platform != NULL && platform->session_action != NULL &&
                    platform->session_action(actions[i]))
                     RillShellSetStatus(shell, labels[i]);
@@ -3516,6 +3601,8 @@ main(int argc, char **argv)
             RillShellRefresh(&shell, platform);
             load_launcher_icons(&visuals, &shell);
             refresh_tray_icons(&visuals, platform);
+            refresh_notifications(&visuals, platform);
+            refresh_battery(&visuals, platform);
             next_refresh = GetTime() + 1.0;
         }
         if(!test_scene_active(&test))
@@ -3552,6 +3639,7 @@ main(int argc, char **argv)
             draw_panel_context_menu(&shell, &visuals, platform);
             draw_calendar_popup(&visuals);
             draw_panel_properties(&shell, &visuals);
+            draw_notifications(&shell, &visuals, platform);
             draw_logout_dialog(&shell, &visuals, platform);
             if(visuals.wallpaper_slideshow && visuals.wallpaper_count > 1 &&
                GetTime() >= visuals.wallpaper_next_swap) {

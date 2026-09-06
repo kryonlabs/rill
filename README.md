@@ -26,6 +26,13 @@ adapters.
   no other host (such as the real Xfce panel) already registered, renders
   StatusNotifierItem icons in the panel and forwards left/right clicks as
   Activate/SecondaryActivate.
+- Desktop notification server: Rill owns `org.freedesktop.Notifications` when
+  no other server is running, shows banners with summary and body, invokes the
+  default action on clicks, and honors replacement ids and expiry timeouts.
+  Lock, log out, restart, shut down and suspend are available from the
+  end-session dialog (locking uses xflock4 or loginctl). The panel's resource
+  item shows battery charge and charging state from the platform's
+  power-supply data.
 - Optional Wayland task discovery/focus/close through wlr foreign-toplevel management.
 - Persistent panel layouts, including native Plan 9 save recovery.
 - Persistent shell settings (wallpaper, wallpaper slideshow, clock format,
