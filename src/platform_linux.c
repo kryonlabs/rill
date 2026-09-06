@@ -1590,6 +1590,179 @@ linux_battery_state(int *percent, int *charging)
     return 0;
 }
 
+/* Legacy XEmbed system tray host. Docked icons are reparented into an
+   override-redirect window that the shell positions over its panel slot;
+   the X server composites the icons, so no pixel capture is required. */
+#define RILL_XEMBED_MAX 12
+#define RILL_XEMBED_STEP 22
+
+static Display *xembed_display;
+static Window xembed_host;
+static Window xembed_slots[RILL_XEMBED_MAX];
+static int xembed_slot_count;
+static int xembed_started;
+static int xembed_last_x = -1, xembed_last_y, xembed_last_height;
+static int xembed_last_visible = -1;
+
+static void
+xembed_remove_slot(int index)
+{
+    memmove(&xembed_slots[index], &xembed_slots[index + 1],
+            (size_t)(xembed_slot_count - index - 1) * sizeof(xembed_slots[0]));
+    xembed_slot_count--;
+    xembed_last_x = -1; /* force a relayout of the remaining icons */
+}
+
+static void
+xembed_pump_events(void)
+{
+    while(XPending(xembed_display)) {
+        XEvent event;
+        XNextEvent(xembed_display, &event);
+        if(event.type == ClientMessage &&
+           event.xclient.message_type ==
+               XInternAtom(xembed_display, "_NET_SYSTEM_TRAY_MESSAGE", False) &&
+           event.xclient.data.l[0] == 0 &&
+           event.xclient.data.l[1] != None) {
+            Window icon = (Window)event.xclient.data.l[1];
+            XWindowAttributes attributes;
+            XEvent notify;
+
+            if(xembed_slot_count >= RILL_XEMBED_MAX ||
+               !XGetWindowAttributes(xembed_display, icon, &attributes) ||
+               attributes.override_redirect)
+                continue;
+            XSelectInput(xembed_display, icon, StructureNotifyMask);
+            XReparentWindow(xembed_display, icon, xembed_host,
+                            xembed_slot_count * RILL_XEMBED_STEP, 0);
+            XMapWindow(xembed_display, icon);
+            memset(&notify, 0, sizeof(notify));
+            notify.xclient.type = ClientMessage;
+            notify.xclient.window = icon;
+            notify.xclient.message_type = XInternAtom(xembed_display, "_XEMBED",
+                                                      False);
+            notify.xclient.format = 32;
+            notify.xclient.data.l[1] = 0; /* XEMBED_EMBEDDED_NOTIFY */
+            notify.xclient.data.l[2] = xembed_host;
+            notify.xclient.data.l[3] = 0; /* XEMBED protocol version */
+            XSendEvent(xembed_display, icon, False, NoEventMask, &notify);
+            xembed_slots[xembed_slot_count++] = icon;
+            xembed_last_x = -1;
+        } else if(event.type == DestroyNotify || event.type == UnmapNotify) {
+            Window changed = event.type == DestroyNotify ?
+                             event.xdestroywindow.window :
+                             event.xunmap.window;
+            for(int i = 0; i < xembed_slot_count; i++)
+                if(xembed_slots[i] == changed) {
+                    xembed_remove_slot(i);
+                    break;
+                }
+        }
+    }
+}
+
+static int
+xembed_start(void)
+{
+    XSetWindowAttributes attributes;
+    char name[40];
+    Window selection_owner;
+    Atom selection;
+
+    if(xembed_started)
+        return xembed_display != NULL;
+    xembed_started = 1;
+    if(RillWaylandSession())
+        return 0;
+    xembed_display = XOpenDisplay(NULL);
+    if(xembed_display == NULL)
+        return 0;
+    snprintf(name, sizeof(name), "_NET_SYSTEM_TRAY_S%d",
+             DefaultScreen(xembed_display));
+    selection = XInternAtom(xembed_display, name, False);
+    selection_owner = XGetSelectionOwner(xembed_display, selection);
+    if(selection_owner != None) {
+        /* The real Xfce panel or another host already provides the tray. */
+        XCloseDisplay(xembed_display);
+        xembed_display = NULL;
+        return 0;
+    }
+    memset(&attributes, 0, sizeof(attributes));
+    attributes.override_redirect = True;
+    attributes.event_mask = SubstructureNotifyMask | StructureNotifyMask;
+    attributes.background_pixel =
+        BlackPixel(xembed_display, DefaultScreen(xembed_display));
+    xembed_host = XCreateWindow(
+        xembed_display, DefaultRootWindow(xembed_display), -100, -100, 1, 1, 0,
+        CopyFromParent, InputOutput, CopyFromParent,
+        CWOverrideRedirect | CWEventMask | CWBackPixel, &attributes);
+    XSetSelectionOwner(xembed_display, selection, xembed_host, CurrentTime);
+    if(XGetSelectionOwner(xembed_display, selection) != xembed_host) {
+        XCloseDisplay(xembed_display);
+        xembed_display = NULL;
+        return 0;
+    }
+    {
+        XEvent manager;
+        memset(&manager, 0, sizeof(manager));
+        manager.xclient.type = ClientMessage;
+        manager.xclient.window = DefaultRootWindow(xembed_display);
+        manager.xclient.message_type = XInternAtom(xembed_display, "MANAGER",
+                                                   False);
+        manager.xclient.format = 32;
+        manager.xclient.data.l[1] = selection;
+        manager.xclient.data.l[2] = xembed_host;
+        XSendEvent(xembed_display, DefaultRootWindow(xembed_display), False,
+                   StructureNotifyMask, &manager);
+    }
+    XFlush(xembed_display);
+    return 1;
+}
+
+static int
+linux_xembed_tray_count(void)
+{
+    if(!xembed_start())
+        return 0;
+    xembed_pump_events();
+    XFlush(xembed_display);
+    return xembed_slot_count;
+}
+
+static void
+linux_xembed_tray_layout(int x, int y, int height, int visible)
+{
+    int width;
+
+    if(!xembed_start())
+        return;
+    xembed_pump_events();
+    if(xembed_slot_count == 0)
+        return;
+    width = xembed_slot_count * RILL_XEMBED_STEP + 4;
+    if(visible && (x != xembed_last_x || y != xembed_last_y ||
+                   height != xembed_last_height ||
+                   xembed_last_visible != 1)) {
+        XMoveResizeWindow(xembed_display, xembed_host, x, y, width, height);
+        xembed_last_x = x;
+        xembed_last_y = y;
+        xembed_last_height = height;
+        xembed_last_visible = 1;
+    } else if(!visible && xembed_last_visible != 0) {
+        XMoveWindow(xembed_display, xembed_host, -100 - width, -100);
+        xembed_last_visible = 0;
+    }
+    for(int i = 0; i < xembed_slot_count; i++) {
+        int icon_x = i * RILL_XEMBED_STEP + 3;
+        int icon_y = (height - 18) / 2;
+        XWindowAttributes attributes;
+        if(XGetWindowAttributes(xembed_display, xembed_slots[i], &attributes) &&
+           (attributes.x != icon_x || attributes.y != icon_y))
+            XMoveWindow(xembed_display, xembed_slots[i], icon_x, icon_y);
+    }
+    XFlush(xembed_display);
+}
+
 static int
 tray_item_property(const char *bus, const char *path, const char *name,
                    GVariant **out)
@@ -1775,7 +1948,9 @@ static const RillPlatformServices services = {
     linux_open_path,
     linux_notifications_poll,
     linux_notification_action,
-    linux_battery_state
+    linux_battery_state,
+    linux_xembed_tray_count,
+    linux_xembed_tray_layout
 };
 
 const RillPlatformServices *

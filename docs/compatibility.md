@@ -71,16 +71,15 @@ Linux execution/display bridge, neither of which is implemented here.
    panel and background surfaces, output scaling and hotplug, keyboard/input
    routing, workspace protocols, compositor-specific capability reporting and
    real-compositor integration tests. The wlr task adapter alone is insufficient.
-4. **Desktop services:** StatusNotifier tray hosting and a desktop
-   notification server (banner toasts, default-action activation, expiry and
-   replacement) work, deferring to the installed Xfce services when they own
-   the names; session actions cover lock, log out, restart, shutdown and
-   suspend, and the panel resource item shows battery state. Legacy XEmbed
-   tray icons, per-item D-Bus menus, clipboard history/ownership, settings
-   daemon, display/input configuration, power/battery management beyond the
-   charge display, audio, networking, removable media, shortcuts, screen
-   locking itself, authentication agents and accessibility integration
-   remain.
+4. **Desktop services:** StatusNotifier and legacy XEmbed tray hosting, a
+   desktop notification server (banner toasts, default-action activation,
+   expiry and replacement), session lock/log out/restart/shutdown/suspend and
+   a battery charge indicator work, deferring to the installed Xfce services
+   when they own the names or selections. Per-item D-Bus tray menus, clipboard
+   history/ownership, settings daemon, display/input configuration,
+   power/battery management beyond the charge display, audio, networking,
+   removable media, shortcuts, screen locking itself, authentication agents
+   and accessibility integration remain.
 5. **Desktop and panel UX:** wallpaper/output configuration, icon placement,
    drag/drop, context actions, file operations, panel preferences, plugin
    properties, multiple panels, auto-hide, per-output positioning and migration

@@ -74,6 +74,11 @@ typedef struct RillPlatformServices {
     int (*notification_action)(unsigned int id, int dismiss);
     /* Battery charge percent and charging state; 0 when unavailable. */
     int (*battery_state)(int *percent, int *charging);
+    /* Legacy XEmbed system tray: docked icon count (starts hosting). */
+    int (*xembed_tray_count)(void);
+    /* Place the tray host window at the panel's tray slot; visible=0 moves
+       it offscreen. */
+    void (*xembed_tray_layout)(int x, int y, int height, int visible);
 } RillPlatformServices;
 
 int RillSettingsEnsureDirectory(const char *path);

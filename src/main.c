@@ -1849,12 +1849,25 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
             }
             shown++;
         }
+        /* Legacy XEmbed icons live in the platform's host window, which the
+           X server composites over this slot. */
+        if(platform != NULL && platform->xembed_tray_count != NULL &&
+           platform->xembed_tray_layout != NULL) {
+            int embedded = platform->xembed_tray_count();
+            if(embedded > 6)
+                embedded = 6;
+            if(embedded > 0) {
+                platform->xembed_tray_layout(x + 3 + shown * 22, y, ph, 1);
+                shown += embedded;
+            }
+        }
         if(shown == 0)
             draw_tray_indicator(x, plugin->variant,
                                 plugin->variant == 0 ? GetThemeLink() :
                                 (plugin->variant == 1 ? GetThemeIcon() :
                                  GetThemeButtonHover()), y, ph);
-        return x + plugin->advance;
+        return x + (plugin->advance > shown * 22 + 8 ? plugin->advance :
+                    shown * 22 + 8);
     }
     case RILL_PANEL_LANGUAGE:
         DrawText(plugin->label, x, y + oy + 7, Text12,
@@ -1970,8 +1983,13 @@ draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
                   screen_w, 1, Fade(BLACK, 0.72f));
     DrawRectangle(0, visuals->panel_bottom ? panel_y + panel_h - 1 : panel_y,
                   screen_w, 1, Fade(WHITE, 0.10f));
-    if(visuals->panel_hidden)
+    if(visuals->panel_hidden) {
+        /* Docked XEmbed icons are real windows and must leave with the bar. */
+        if(platform != NULL && platform->xembed_tray_layout != NULL &&
+           platform->xembed_tray_count != NULL && platform->xembed_tray_count())
+            platform->xembed_tray_layout(0, 0, panel_h, 0);
         return;
+    }
 
     now = time(NULL);
     local = localtime(&now);

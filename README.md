@@ -25,7 +25,9 @@ adapters.
 - StatusNotifier tray hosting: Rill owns `org.kde.StatusNotifierWatcher` when
   no other host (such as the real Xfce panel) already registered, renders
   StatusNotifierItem icons in the panel and forwards left/right clicks as
-  Activate/SecondaryActivate.
+  Activate/SecondaryActivate. Legacy XEmbed tray icons dock into an
+  override-redirect host window composited over the same panel slot
+  (`_NET_SYSTEM_TRAY_S<n>`), following panel placement and auto-hide.
 - Desktop notification server: Rill owns `org.freedesktop.Notifications` when
   no other server is running, shows banners with summary and body, invokes the
   default action on clicks, and honors replacement ids and expiry timeouts.
