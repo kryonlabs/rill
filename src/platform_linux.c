@@ -1101,6 +1101,269 @@ linux_show_desktop(int show)
     return result != 0;
 }
 
+/* StatusNotifier tray host. The watcher name is owned only when no other host
+   (for example the real Xfce panel) already registered; icons are polled on
+   each tray_icons call so the shell needs no D-Bus main loop of its own. */
+#define RILL_TRAY_MAX 12
+
+typedef struct {
+    char bus[160];
+    char path[200];
+} TrayRegistration;
+
+static TrayRegistration tray_registrations[RILL_TRAY_MAX];
+static int tray_registration_count;
+static GDBusConnection *tray_connection;
+static guint tray_owner_id;
+static int tray_started;
+
+static void
+tray_register(const char *sender, const char *service)
+{
+    const char *bus;
+    const char *path;
+
+    if(service != NULL && service[0] == '/') {
+        bus = sender;
+        path = service;
+    } else {
+        bus = service;
+        path = "/StatusNotifierItem";
+    }
+    if(bus == NULL || bus[0] == '\0' || path[0] == '\0')
+        return;
+    for(int i = 0; i < tray_registration_count; i++)
+        if(strcmp(tray_registrations[i].bus, bus) == 0 &&
+           strcmp(tray_registrations[i].path, path) == 0)
+            return;
+    if(tray_registration_count >= RILL_TRAY_MAX)
+        return;
+    snprintf(tray_registrations[tray_registration_count].bus, 160, "%s", bus);
+    snprintf(tray_registrations[tray_registration_count].path, 200, "%s", path);
+    tray_registration_count++;
+}
+
+static void
+tray_method_call(GDBusConnection *connection, const gchar *sender,
+                 const gchar *object_path, const gchar *interface_name,
+                 const gchar *method, GVariant *parameters,
+                 GDBusMethodInvocation *invocation, gpointer user_data)
+{
+    (void)connection;
+    (void)object_path;
+    (void)interface_name;
+    (void)user_data;
+    if(g_strcmp0(method, "RegisterStatusNotifierItem") == 0) {
+        const gchar *service = NULL;
+        g_variant_get(parameters, "(&s)", &service);
+        tray_register(sender, service);
+        g_dbus_method_invocation_return_value(invocation, NULL);
+    } else
+        g_dbus_method_invocation_return_error(invocation,
+                                              G_DBUS_ERROR, G_DBUS_ERROR_UNKNOWN_METHOD,
+                                              "Unknown method %s", method);
+}
+
+static GVariant *
+tray_get_property(GDBusConnection *connection, const gchar *sender,
+                  const gchar *object_path, const gchar *interface_name,
+                  const gchar *property, GError **error, gpointer user_data)
+{
+    (void)connection;
+    (void)sender;
+    (void)object_path;
+    (void)interface_name;
+    (void)user_data;
+    if(g_strcmp0(property, "IsStatusNotifierHostRegistered") == 0)
+        return g_variant_new_boolean(TRUE);
+    if(g_strcmp0(property, "ProtocolVersion") == 0)
+        return g_variant_new_string("0.2");
+    if(g_strcmp0(property, "RegisteredStatusNotifierItems") == 0) {
+        GVariantBuilder builder;
+        g_variant_builder_init(&builder, G_VARIANT_TYPE("as"));
+        for(int i = 0; i < tray_registration_count; i++)
+            g_variant_builder_add(&builder, "s", tray_registrations[i].bus);
+        return g_variant_builder_end(&builder);
+    }
+    g_set_error(error, G_DBUS_ERROR, G_DBUS_ERROR_UNKNOWN_PROPERTY,
+                "Unknown property %s", property);
+    return NULL;
+}
+
+static const gchar tray_watcher_xml[] =
+    "<node>"
+    " <interface name='org.kde.StatusNotifierWatcher'>"
+    "  <method name='RegisterStatusNotifierItem'>"
+    "   <arg type='s' direction='in'/>"
+    "  </method>"
+    "  <property name='RegisteredStatusNotifierItems' type='as' access='read'/>"
+    "  <property name='IsStatusNotifierHostRegistered' type='b' access='read'/>"
+    "  <property name='ProtocolVersion' type='s' access='read'/>"
+    "  <signal name='StatusNotifierItemRegistered'><arg type='s'/></signal>"
+    "  <signal name='StatusNotifierItemUnregistered'><arg type='s'/></signal>"
+    " </interface>"
+    "</node>";
+
+static const GDBusInterfaceVTable tray_vtable = {
+    tray_method_call, tray_get_property, NULL, {0}
+};
+
+static void
+tray_start(void)
+{
+    GError *error = NULL;
+    GDBusNodeInfo *info;
+
+    if(tray_started)
+        return;
+    /* Connecting may legitimately fail before a session bus exists; retry on
+       the next poll instead of latching the failure. */
+    tray_connection = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL);
+    if(tray_connection == NULL)
+        return;
+    tray_started = 1;
+    info = g_dbus_node_info_new_for_xml(tray_watcher_xml, &error);
+    if(info == NULL) {
+        if(error != NULL)
+            g_error_free(error);
+        return;
+    }
+    g_dbus_connection_register_object(tray_connection,
+                                      "/StatusNotifierWatcher",
+                                      info->interfaces[0], &tray_vtable,
+                                      NULL, NULL, &error);
+    g_dbus_node_info_unref(info);
+    if(error != NULL)
+        g_error_free(error);
+    /* DO_NOT_QUEUE: when the Xfce panel already hosts the tray, Rill defers. */
+    tray_owner_id = g_bus_own_name_on_connection(
+        tray_connection, "org.kde.StatusNotifierWatcher",
+        G_BUS_NAME_OWNER_FLAGS_DO_NOT_QUEUE, NULL, NULL, NULL, NULL);
+}
+
+static int
+tray_item_property(const char *bus, const char *path, const char *name,
+                   GVariant **out)
+{
+    GError *error = NULL;
+    GVariant *value;
+
+    if(tray_connection == NULL)
+        return 0;
+    value = g_dbus_connection_call_sync(tray_connection, bus, path,
+                                        "org.freedesktop.DBus.Properties", "Get",
+                                        g_variant_new("(ss)",
+                                                      "org.kde.StatusNotifierItem",
+                                                      name),
+                                        G_VARIANT_TYPE("(v)"),
+                                        G_DBUS_CALL_FLAGS_NONE, 800, NULL,
+                                        &error);
+    if(value == NULL) {
+        if(error != NULL)
+            g_error_free(error);
+        return 0;
+    }
+    g_variant_get(value, "(v)", out);
+    if(*out != NULL)
+        g_variant_ref(*out);
+    g_variant_unref(value);
+    return *out != NULL;
+}
+
+
+
+static int
+linux_tray_icons(RillTrayIcon *out, int cap)
+{
+    int count = 0;
+
+    tray_start();
+    for(int i = 0; i < 4; i++)
+        g_main_context_iteration(NULL, FALSE);
+    if(out == NULL || cap <= 0)
+        return 0;
+    for(int i = tray_registration_count - 1; i >= 0; i--) {
+        TrayRegistration *item = &tray_registrations[i];
+        GVariant *title = NULL;
+        GVariant *pixmap = NULL;
+        const gchar *text;
+        gint32 width, height;
+        GVariant *pixels;
+        gsize bytes;
+
+        /* Items that vanish from the bus are dropped on the next poll. */
+        if(!tray_item_property(item->bus, item->path, "Title", &title)) {
+            memmove(&tray_registrations[i], &tray_registrations[i + 1],
+                    (size_t)(tray_registration_count - i - 1) *
+                        sizeof(tray_registrations[0]));
+            tray_registration_count--;
+            continue;
+        }
+        if(count >= cap) {
+            g_variant_unref(title);
+            continue;
+        }
+        snprintf(out[count].id, sizeof(out[count].id), "%s", item->bus);
+        text = g_variant_get_string(title, NULL);
+        snprintf(out[count].title, sizeof(out[count].title), "%s",
+                 text != NULL ? text : "");
+        g_variant_unref(title);
+        out[count].width = 0;
+        out[count].height = 0;
+        out[count].argb = NULL;
+        if(tray_item_property(item->bus, item->path, "IconPixmap", &pixmap)) {
+            g_variant_get(pixmap, "(ii@ay)", &width, &height, &pixels);
+            bytes = g_variant_n_children(pixels);
+            if(getenv("RILL_TRAY_DEBUG"))
+                fprintf(stderr, "rill: tray pixmap %dx%d bytes=%lu\n", width,
+                        height, (unsigned long)bytes);
+            if(width > 0 && height > 0 && width <= 256 && height <= 256 &&
+               bytes >= (gsize)width * height * 4) {
+                out[count].argb = malloc((size_t)width * height * 4);
+                if(out[count].argb != NULL) {
+                    memcpy(out[count].argb, g_variant_get_data(pixels),
+                           (size_t)width * height * 4);
+                    out[count].width = width;
+                    out[count].height = height;
+                }
+            }
+            g_variant_unref(pixels);
+            g_variant_unref(pixmap);
+        }
+        count++;
+    }
+    return count;
+}
+
+static int
+linux_tray_activate(const char *id, int secondary)
+{
+    GError *error = NULL;
+    const char *method = secondary ? "SecondaryActivate" : "Activate";
+
+    if(tray_connection == NULL || id == NULL)
+        return 0;
+    for(int i = 0; i < tray_registration_count; i++)
+        if(strcmp(tray_registrations[i].bus, id) == 0) {
+            g_dbus_connection_call_sync(tray_connection,
+                                        tray_registrations[i].bus,
+                                        tray_registrations[i].path,
+                                        "org.kde.StatusNotifierItem", method,
+                                        g_variant_new("(ii)", 0, 0),
+                                        NULL, G_DBUS_CALL_FLAGS_NONE, 800,
+                                        NULL, &error);
+            if(error != NULL) {
+                if(getenv("RILL_TRAY_DEBUG"))
+                    fprintf(stderr, "rill: tray activate %s failed: %s\n", method,
+                            error->message);
+                g_error_free(error);
+                return 0;
+            }
+            return 1;
+        }
+    return 0;
+}
+
 static const RillPlatformServices services = {
     "xlibre",
     linux_list_launchers,
@@ -1112,7 +1375,9 @@ static const RillPlatformServices services = {
     linux_workspace_count, linux_current_workspace, linux_switch_workspace,
     linux_list_wallpapers,
     linux_session_action,
-    linux_show_desktop
+    linux_show_desktop,
+    linux_tray_icons,
+    linux_tray_activate
 };
 
 const RillPlatformServices *

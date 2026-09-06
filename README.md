@@ -22,6 +22,10 @@ adapters.
   opens a month calendar. Show-desktop and session action buttons are available
   as panel items, urgent windows flash in the task list, and item widths are
   editable through the item Properties dialog.
+- StatusNotifier tray hosting: Rill owns `org.kde.StatusNotifierWatcher` when
+  no other host (such as the real Xfce panel) already registered, renders
+  StatusNotifierItem icons in the panel and forwards left/right clicks as
+  Activate/SecondaryActivate.
 - Optional Wayland task discovery/focus/close through wlr foreign-toplevel management.
 - Persistent panel layouts, including native Plan 9 save recovery.
 - Persistent shell settings (wallpaper, wallpaper slideshow, clock format,

@@ -24,6 +24,16 @@ typedef struct RillTask {
     int platform_owned;
 } RillTask;
 
+/* A StatusNotifier-hosted tray icon snapshot; argb is ARGB per pixel and the
+   caller owns the buffer. */
+typedef struct RillTrayIcon {
+    char id[160];
+    char title[128];
+    int width;
+    int height;
+    unsigned int *argb;
+} RillTrayIcon;
+
 typedef struct RillPlatformServices {
     const char *name;
     int (*list_launchers)(RillLauncher *out, int cap);
@@ -41,6 +51,10 @@ typedef struct RillPlatformServices {
     int (*session_action)(const char *action);
     /* Toggle the WM's show-desktop state (EWMH _NET_SHOWING_DESKTOP). */
     int (*show_desktop)(int show);
+    /* Poll tray icons; buffers returned through out must be free()d. */
+    int (*tray_icons)(RillTrayIcon *out, int cap);
+    /* Activate (secondary=0) or secondary-activate (secondary=1) an icon. */
+    int (*tray_activate)(const char *id, int secondary);
 } RillPlatformServices;
 
 int RillSettingsEnsureDirectory(const char *path);

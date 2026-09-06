@@ -71,10 +71,11 @@ Linux execution/display bridge, neither of which is implemented here.
    panel and background surfaces, output scaling and hotplug, keyboard/input
    routing, workspace protocols, compositor-specific capability reporting and
    real-compositor integration tests. The wlr task adapter alone is insufficient.
-4. **Desktop services:** notification server, StatusNotifier and legacy XEmbed
-   tray hosting, clipboard history/ownership, settings daemon, display/input
+4. **Desktop services:** StatusNotifier tray hosting works (see README);
+   legacy XEmbed tray icons, per-item D-Bus menus, a notification server,
+   clipboard history/ownership, settings daemon, display/input
    configuration, power/battery, audio, networking, removable media, shortcuts,
-   screen locking, authentication agents and accessibility integration.
+   screen locking, authentication agents and accessibility integration remain.
 5. **Desktop and panel UX:** wallpaper/output configuration, icon placement,
    drag/drop, context actions, file operations, panel preferences, plugin
    properties, multiple panels, auto-hide, per-output positioning and migration
@@ -83,8 +84,8 @@ Linux execution/display bridge, neither of which is implemented here.
    supports top/bottom placement, adjustable height, auto-hide, a clock
    calendar, show-desktop and session action items and per-item width
    properties. Wallpaper/output settings beyond that and the xfsettingsd-backed
-   inputs remain to be reimplemented. Resource/tray/language items are still
-   incomplete; do not interpret their current drawings as working services.
+   inputs remain to be reimplemented. Resource and language items are still
+   decorative; do not interpret their drawings as working services.
 6. **Plan 9 integration:** build and launch the whole application against the
    intended Kryon revision in Taiji, verify live rio focus/close behavior, native
    app-host availability, clipboard/plumbing and desktop lifecycle. Decide and

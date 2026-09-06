@@ -89,7 +89,7 @@ $(TEST_BIN): $(wildcard include/*.h) $(TEST_SRCS) | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(TEST_SRCS)
 
 $(LINUX_LAUNCHER_TEST_BIN): $(wildcard include/*.h) $(LINUX_LAUNCHER_TEST_SRCS) | $(BUILD_DIR)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(LINUX_LAUNCHER_TEST_SRCS) \
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DRILL_SNI_MOCK='"$(abspath tests/rill_sni_mock.py)"' -o $@ $(LINUX_LAUNCHER_TEST_SRCS) \
 		$(GTK_PKG_LIBS) $(PLATFORM_LDLIBS) $(shell pkg-config --libs wayland-client 2>/dev/null)
 
 ifeq ($(PLATFORM),linux)

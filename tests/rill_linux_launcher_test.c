@@ -1,8 +1,10 @@
 #include "rill_platform.h"
 
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
@@ -192,6 +194,95 @@ main(int argc, char **argv)
     unlink(app_path);
     check("wallpaper listing is bounded", platform->list_wallpapers != NULL &&
           platform->list_wallpapers(walls, 2) <= 2, &failures);
+
+    /* StatusNotifier tray hosting, end to end against a mock item. */
+    {
+        char command[2048];
+        char address[256] = "";
+        char log_text[128] = "";
+        const char *previous_bus = getenv("DBUS_SESSION_BUS_ADDRESS");
+        char saved_bus[256];
+        RillTrayIcon icons[4];
+        int tray_count = 0;
+        pid_t mock_pid = 0;
+        FILE *record;
+
+        if(previous_bus != NULL)
+            snprintf(saved_bus, sizeof(saved_bus), "%s", previous_bus);
+        else
+            saved_bus[0] = '\0';
+        snprintf(app_path, sizeof(app_path), "%s/bus-address", root);
+        snprintf(probe_result, sizeof(probe_result), "%s/tray-ready", root);
+        snprintf(probe_path, sizeof(probe_path), "%s/tray-activated", root);
+        snprintf(executable, sizeof(executable), "%s/tray-pid", root);
+        snprintf(command, sizeof(command),
+                 "sh -c 'echo $$ > %s; exec dbus-run-session -- sh -c "
+                 "\"echo \\$DBUS_SESSION_BUS_ADDRESS > %s; "
+                 "exec python3 " RILL_SNI_MOCK " %s %s\"' >/dev/null 2>&1 &",
+                 executable, app_path, probe_result, probe_path);
+        check("start mock tray item", system(command) == 0, &failures);
+        for(int i = 0; i < 100; i++) {
+            FILE *file = fopen(app_path, "r");
+            if(file != NULL && fgets(address, sizeof(address), file) != NULL) {
+                fclose(file);
+                if(address[0] != '\0')
+                    setenv("DBUS_SESSION_BUS_ADDRESS", address, 1);
+            } else if(file != NULL)
+                fclose(file);
+            /* Pumping the tray host helps its watcher name land early. */
+            platform->tray_icons(NULL, 0);
+            file = fopen(probe_result, "r");
+            if(file != NULL) {
+                fclose(file);
+                break;
+            }
+            usleep(100000);
+        }
+        record = fopen(executable, "r");
+        if(record != NULL) {
+            if(fscanf(record, "%d", &mock_pid) != 1)
+                mock_pid = 0;
+            fclose(record);
+        }
+        check("mock tray session started", address[0] != '\0', &failures);
+        setenv("DBUS_SESSION_BUS_ADDRESS", address, 1);
+        for(int i = 0; i < 50 && tray_count == 0; i++) {
+            tray_count = platform->tray_icons(icons, 4);
+            if(tray_count == 0)
+                usleep(200000);
+        }
+        check("tray host lists the mock item", tray_count >= 1 &&
+              strcmp(icons[0].title, "Rill tray mock") == 0, &failures);
+        check("tray pixmap delivered", tray_count >= 1 && icons[0].width == 8 &&
+              icons[0].height == 8 && icons[0].argb != NULL, &failures);
+        check("tray activation reaches the item", tray_count >= 1 &&
+              platform->tray_activate(icons[0].id, 1), &failures);
+        for(int i = 0; i < 20; i++) {
+            record = fopen(probe_path, "r");
+            if(record != NULL) {
+                size_t n = fread(log_text, 1, sizeof(log_text) - 1, record);
+                log_text[n] = '\0';
+                fclose(record);
+                if(strstr(log_text, "SecondaryActivate") != NULL)
+                    break;
+            }
+            usleep(100000);
+        }
+        check("secondary activation recorded",
+              strstr(log_text, "SecondaryActivate") != NULL, &failures);
+        for(int i = 0; i < tray_count; i++)
+            free(icons[i].argb);
+        if(mock_pid > 0)
+            kill(mock_pid, SIGTERM);
+        if(saved_bus[0] != '\0')
+            setenv("DBUS_SESSION_BUS_ADDRESS", saved_bus, 1);
+        else
+            unsetenv("DBUS_SESSION_BUS_ADDRESS");
+        unlink(app_path);
+        unlink(probe_result);
+        unlink(probe_path);
+        unlink(executable);
+    }
     snprintf(app_path, sizeof(app_path), "%s/user/example.desktop", root);
     unlink(app_path);
     unlink(hidden_path);

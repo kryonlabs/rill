@@ -59,6 +59,13 @@ typedef struct RillIconCacheEntry {
     int ready;
 } RillIconCacheEntry;
 
+typedef struct RillTrayEntry {
+    char id[160];
+    char title[96];
+    Texture2D texture;
+    int ready;
+} RillTrayEntry;
+
 typedef struct RillHostModule {
     char id[64];
     char path[512];
@@ -106,6 +113,8 @@ typedef struct RillVisualState {
     char wallpaper_paths[24][512];
     int wallpaper_count;
     int wallpaper_scanned;
+    RillTrayEntry tray[8];
+    int tray_count;
     char run_input[160];
     int run_selected;
 } RillVisualState;
@@ -511,6 +520,67 @@ apply_saved_settings(RillShellState *shell, RillVisualState *visuals)
             item = strtok(NULL, "|");
         }
     }
+}
+
+static void
+refresh_tray_icons(RillVisualState *visuals,
+                   const RillPlatformServices *platform)
+{
+    RillTrayIcon polled[8];
+    int count;
+    int i;
+
+    if(platform == NULL || platform->tray_icons == NULL)
+        return;
+    count = platform->tray_icons(polled, 8);
+    if(count < 0)
+        count = 0;
+    if(count == visuals->tray_count) {
+        int same = 1;
+        for(i = 0; i < count; i++)
+            if(strcmp(visuals->tray[i].id, polled[i].id) != 0)
+                same = 0;
+        if(same) {
+            for(i = 0; i < count; i++)
+                free(polled[i].argb);
+            return;
+        }
+    }
+    for(i = 0; i < visuals->tray_count; i++)
+        if(visuals->tray[i].ready)
+            UnloadTexture(visuals->tray[i].texture);
+    visuals->tray_count = 0;
+    for(i = 0; i < count && visuals->tray_count < 8; i++) {
+        RillTrayEntry *entry = &visuals->tray[visuals->tray_count];
+        memset(entry, 0, sizeof(*entry));
+        snprintf(entry->id, sizeof(entry->id), "%s", polled[i].id);
+        snprintf(entry->title, sizeof(entry->title), "%s", polled[i].title);
+        if(polled[i].argb != NULL && polled[i].width > 0 && polled[i].height > 0) {
+            unsigned char *rgba = malloc((size_t)polled[i].width *
+                                         (size_t)polled[i].height * 4);
+            if(rgba != NULL) {
+                Image image;
+                for(size_t p = 0; p < (size_t)polled[i].width * polled[i].height; p++) {
+                    unsigned int argb = polled[i].argb[p];
+                    rgba[p * 4] = (unsigned char)((argb >> 16) & 0xff);
+                    rgba[p * 4 + 1] = (unsigned char)((argb >> 8) & 0xff);
+                    rgba[p * 4 + 2] = (unsigned char)(argb & 0xff);
+                    rgba[p * 4 + 3] = (unsigned char)((argb >> 24) & 0xff);
+                }
+                image.data = rgba;
+                image.width = polled[i].width;
+                image.height = polled[i].height;
+                image.mipmaps = 1;
+                image.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+                entry->texture = LoadTextureFromImage(image);
+                entry->ready = entry->texture.id != 0;
+                free(rgba);
+            }
+        }
+        visuals->tray_count++;
+    }
+    for(i = 0; i < count; i++)
+        free(polled[i].argb);
 }
 
 static void
@@ -1544,12 +1614,40 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
     case RILL_PANEL_WORKSPACES:
         draw_workspace_switcher(x, plugin->width, shell, platform, y, ph);
         return x + plugin->advance;
-    case RILL_PANEL_TRAY:
-        draw_tray_indicator(x, plugin->variant,
-                            plugin->variant == 0 ? GetThemeLink() :
-                            (plugin->variant == 1 ? GetThemeIcon() :
-                             GetThemeButtonHover()), y, ph);
+    case RILL_PANEL_TRAY: {
+        int shown = 0;
+        for(int t = 0; t < visuals->tray_count && shown < 6; t++) {
+            RillTrayEntry *entry = &visuals->tray[t];
+            Rectangle icon = {x + 3 + shown * 22,
+                              (float)(y + (ph - 18) / 2), 18, 18};
+            int hover = CheckCollisionPointRec(GetMousePosition(), icon);
+            if(hover)
+                DrawRectangleRec((Rectangle){icon.x - 2, icon.y - 2, 22, 22},
+                                 panel_item_hover_color());
+            if(entry->ready) {
+                DrawTexturePro(entry->texture,
+                               (Rectangle){0, 0, (float)entry->texture.width,
+                                           (float)entry->texture.height},
+                               icon, (Vector2){0, 0}, 0.0f, WHITE);
+            } else
+                DrawCircleLines((int)icon.x + 9, (int)icon.y + 9, 6,
+                                GetThemeLink());
+            if(hover && entry->id[0] != '\0' &&
+               platform != NULL && platform->tray_activate != NULL) {
+                if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+                    platform->tray_activate(entry->id, 0);
+                else if(IsMouseButtonPressed(MOUSE_BUTTON_RIGHT))
+                    platform->tray_activate(entry->id, 1);
+            }
+            shown++;
+        }
+        if(shown == 0)
+            draw_tray_indicator(x, plugin->variant,
+                                plugin->variant == 0 ? GetThemeLink() :
+                                (plugin->variant == 1 ? GetThemeIcon() :
+                                 GetThemeButtonHover()), y, ph);
         return x + plugin->advance;
+    }
     case RILL_PANEL_LANGUAGE:
         DrawText(plugin->label, x, y + oy + 7, Text12,
              (Color){92, 185, 255, 255});
@@ -3119,6 +3217,7 @@ main(int argc, char **argv)
 #endif
             RillShellRefresh(&shell, platform);
             load_launcher_icons(&visuals, &shell);
+            refresh_tray_icons(&visuals, platform);
             next_refresh = GetTime() + 1.0;
         }
         if(!test_scene_active(&test))
@@ -3198,6 +3297,9 @@ main(int argc, char **argv)
     for(int i = 0; i < visuals.icon_count; i++)
         if(visuals.icons[i].ready)
             UnloadTexture(visuals.icons[i].texture);
+    for(int i = 0; i < visuals.tray_count; i++)
+        if(visuals.tray[i].ready)
+            UnloadTexture(visuals.tray[i].texture);
     if(visuals.wallpaper_ready)
         UnloadTexture(visuals.wallpaper);
     rill_settings_persist(&shell);
