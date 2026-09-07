@@ -644,6 +644,56 @@ refresh_volume(RillVisualState *visuals, const RillPlatformServices *platform)
         &visuals->volume_percent, &visuals->volume_muted);
 }
 
+/* Publish XSETTINGS for X11 applications: import whatever the current
+   settings daemon broadcast, then apply the Rill settings overrides. */
+static void
+publish_xsettings(const RillPlatformServices *platform)
+{
+    RillXSetting settings[16];
+    int count;
+    const char *value;
+
+    if(platform == NULL || platform->xsettings_publish == NULL ||
+       platform->xsettings_read == NULL)
+        return;
+    count = platform->xsettings_read(settings, 14);
+    value = RillSettingsGet(&rill_settings, "gtk-theme", NULL);
+    if(value != NULL && value[0] != '\0') {
+        RillXSetting setting = {{0}};
+        snprintf(setting.name, sizeof(setting.name), "Net/ThemeName");
+        setting.type = 1;
+        snprintf(setting.string_value, sizeof(setting.string_value), "%s", value);
+        int replaced = 0;
+        for(int i = 0; i < count && !replaced; i++)
+            if(strcmp(settings[i].name, "Net/ThemeName") == 0) {
+                settings[i] = setting;
+                replaced = 1;
+            }
+        if(!replaced && count < 14)
+            settings[count++] = setting;
+    }
+    value = RillSettingsGet(&rill_settings, "gtk-font", NULL);
+    if(value != NULL && value[0] != '\0') {
+        int replaced = 0;
+        for(int i = 0; i < count && !replaced; i++)
+            if(strcmp(settings[i].name, "Net/FontName") == 0) {
+                snprintf(settings[i].string_value,
+                         sizeof(settings[i].string_value), "%s", value);
+                replaced = 1;
+            }
+        if(!replaced && count < 14) {
+            snprintf(settings[count].name, sizeof(settings[count].name),
+                     "Net/FontName");
+            settings[count].type = 1;
+            snprintf(settings[count].string_value,
+                     sizeof(settings[count].string_value), "%s", value);
+            count++;
+        }
+    }
+    if(count > 0)
+        platform->xsettings_publish(settings, count);
+}
+
 static void
 init_panel_plugins(RillVisualState *visuals)
 {
@@ -3539,6 +3589,7 @@ main(int argc, char **argv)
     char startup_status[160];
     char window_title[80] = "Rill";
     double next_refresh;
+    int first_refresh = 1;
 #if RILL_HAS_X11
     RillX11Manager x11;
 #endif
@@ -3702,6 +3753,10 @@ main(int argc, char **argv)
             refresh_notifications(&visuals, platform);
             refresh_battery(&visuals, platform);
             refresh_volume(&visuals, platform);
+            if(first_refresh) {
+                publish_xsettings(platform);
+                first_refresh = 0;
+            }
             next_refresh = GetTime() + 1.0;
         }
         if(!test_scene_active(&test))

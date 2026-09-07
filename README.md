@@ -64,6 +64,11 @@ adapters.
   (Hidden/TryExec/OnlyShowIn filtering, XFCE entries included), session-body
   supervision and logout coordination through a control fifo. Sessions can
   run without xfce4-session via `RILL_SESSION=rill rill-session`.
+- An XSETTINGS provider (the xfsettingsd core): Rill owns the
+  `_XSETTINGS_S<n>` selection and broadcasts the imported GTK theme/font
+  values (with overrides from the Rill settings file) to every X11
+  application through the root window property, yielding to an already
+  running settings daemon.
 
 ## Linux Launchers
 

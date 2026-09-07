@@ -126,7 +126,11 @@ $(BUILD_DIR)/rill_xembed_test: tests/rill_xembed_test.c src/platform_linux.c src
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ tests/rill_xembed_test.c src/platform_linux.c src/rill_wayland.c $(WAYLAND_SRC) \
 		$(GTK_PKG_LIBS) $(PLATFORM_LDLIBS) $(shell pkg-config --libs wayland-client 2>/dev/null)
 
-.PHONY: platform-test protocol-test xembed-test
+$(BUILD_DIR)/rill_xsettings_test: tests/rill_xsettings_test.c src/platform_linux.c src/rill_wayland.c $(wildcard include/*.h) $(WAYLAND_SRC) | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ tests/rill_xsettings_test.c src/platform_linux.c src/rill_wayland.c $(WAYLAND_SRC) \
+		$(GTK_PKG_LIBS) $(PLATFORM_LDLIBS) $(shell pkg-config --libs wayland-client 2>/dev/null)
+
+.PHONY: platform-test protocol-test xembed-test xsettings-test
 platform-test: $(BUILD_DIR)/rill_platform_test
 	$(BUILD_DIR)/rill_platform_test
 
@@ -136,7 +140,10 @@ protocol-test: $(BUILD_DIR)/rill_x11_protocol_test
 xembed-test: $(BUILD_DIR)/rill_xembed_test
 	xvfb-run -a $(BUILD_DIR)/rill_xembed_test
 
-test: platform-test xembed-test sessiond-test
+xsettings-test: $(BUILD_DIR)/rill_xsettings_test
+	xvfb-run -a $(BUILD_DIR)/rill_xsettings_test
+
+test: platform-test xembed-test xsettings-test sessiond-test
 
 build/protocols/toplevel-client.h: protocols/wlr-foreign-toplevel-management-unstable-v1.xml
 	mkdir -p build/protocols

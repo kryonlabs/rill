@@ -37,8 +37,10 @@ the required execution environment is available.
   workspace switching and icons for Desktop-directory entries, favorites and
   Home / File System / Trash.
 - The compatible session still uses `xfce4-panel` (as a compatibility host and
-  fallback), `xfsettingsd`, Xfconf, `xfce4-session` and Thunar. These have not
-  been reimplemented.
+  fallback), `xfsettingsd`, Xfconf and Thunar; `xfce4-session` has a Rill
+  replacement in `rill-sessiond`, and the XSETTINGS broadcast that xfsettingsd
+  provides is reimplemented (import plus overrides). The remaining
+  xfsettingsd inputs and Thunar itself are not reimplemented.
 - All 37 installed Xfce plugin modules passed loading, panel resizing,
   orientation changes and panel restart in the tested X11 session.
 - Integration tests passed application startup, native terminal keyboard
@@ -55,7 +57,7 @@ or Wayland and Plan 9 compatibility.
 | Window manager | xfwm4 theme/settings pixel compatibility, dynamic decoration changes, full transient/group stacking behavior, complete input-shape handling, crash geometry recovery, a graphical shortcut/settings interface (shortcuts are configurable through the wm-keys file today) and extensive multi-monitor/hotplug testing beyond the fake-monitor suite. |
 | Compositor | Smooth frame pacing/vsync, GPU/fullscreen bypass and performance certification under sustained load. Shadows and damage-region repaints are implemented. |
 | Panel and plugins | Multiple panels, vertical/deskbar modes, per-output positioning, drag reordering and the compatibility host for unchanged Xfce plugins. StatusNotifier and legacy XEmbed tray hosting work; per-item D-Bus menus do not. |
-| Settings | Complete controls for displays, scaling, keyboard, mouse, themes, fonts and accessibility, with compatible preference import. Rill's settings file covers wallpaper/slideshow, clock format and panel placement; session settings still depend on xfsettingsd and Xfconf. |
+| Settings | Complete controls for displays, scaling, keyboard, mouse, themes, fonts and accessibility, with compatible preference import. Rill's settings file covers wallpaper/slideshow, clock format and panel placement, and Rill provides the XSETTINGS broadcast (theme/font import with overrides) that xfsettingsd performed; display/keyboard/mouse inputs still depend on Xfconf. |
 | Session | `rill-sessiond` covers XSMP registration, XDG autostart, body supervision and fifo-coordinated logout. Remaining: saved-session restoration, crash supervision beyond the body process, and cancellation with unsaved applications. Power actions go through logind. |
 | Desktop and files | Icon dragging/free placement, non-entry desktop files, drag-and-drop, file operations and trash/removable-media management. Thunar remains the file manager. |
 | Everyday services | Notification server, clipboard, screen-locking, power/battery, brightness, audio, networking, authentication and accessibility integration. Existing services may be reused, but the complete experience needs validation. Legacy XEmbed tray icons and tray item D-Bus menus remain. |

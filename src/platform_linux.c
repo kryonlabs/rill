@@ -1853,6 +1853,220 @@ linux_volume_set(int percent, int muted)
     return ok;
 }
 
+/* XSETTINGS provider (the xfsettingsd core): own the manager selection and
+   broadcast theme/font/DPI values to every X11 application through the root
+   window property. The wire format is the freedesktop XSETTINGS spec. */
+static Display *xsettings_display;
+static Window xsettings_window;
+static unsigned long xsettings_serial;
+
+static Atom
+xsettings_selection(void)
+{
+    char name[32];
+    snprintf(name, sizeof(name), "_XSETTINGS_S%d", DefaultScreen(xsettings_display));
+    return XInternAtom(xsettings_display, name, False);
+}
+
+static unsigned char *
+xsettings_serialize(const RillXSetting *settings, int count, int *size_out)
+{
+    unsigned char *blob;
+    int offset = 12; /* byte order + serial + setting count */
+    int total = 12;
+
+    for(int i = 0; i < count; i++) {
+        int name_length = (int)strlen(settings[i].name);
+        int value_length = settings[i].type == 1 ?
+                           (int)strlen(settings[i].string_value) : 4;
+        total += 4 + name_length;
+        total = (total + 3) & ~3;
+        total += settings[i].type == 1 ? 4 + value_length : 4;
+        total = (total + 3) & ~3;
+    }
+    blob = calloc((size_t)total, 1);
+    if(blob == NULL)
+        return NULL;
+    xsettings_serial++;
+    blob[0] = 1; /* little endian */
+    blob[1] = 0;
+    blob[2] = 0;
+    blob[3] = 0;
+    blob[4] = xsettings_serial & 0xff;
+    blob[5] = (xsettings_serial >> 8) & 0xff;
+    blob[6] = (xsettings_serial >> 16) & 0xff;
+    blob[7] = (xsettings_serial >> 24) & 0xff;
+    blob[8] = count & 0xff;
+    blob[9] = (count >> 8) & 0xff;
+    blob[10] = (count >> 16) & 0xff;
+    blob[11] = (count >> 24) & 0xff;
+    offset = 12;
+    for(int i = 0; i < count; i++) {
+        int name_length = (int)strlen(settings[i].name);
+        int value_length = settings[i].type == 1 ?
+                           (int)strlen(settings[i].string_value) : 4;
+        blob[offset++] = (unsigned char)settings[i].type;
+        blob[offset++] = 0;
+        blob[offset++] = name_length & 0xff;
+        blob[offset++] = (name_length >> 8) & 0xff;
+        memcpy(blob + offset, settings[i].name, (size_t)name_length);
+        offset += name_length;
+        offset = (offset + 3) & ~3;
+        if(settings[i].type == 1) {
+            blob[offset++] = (unsigned char)(value_length & 0xff);
+            blob[offset++] = (unsigned char)((value_length >> 8) & 0xff);
+            blob[offset++] = (unsigned char)((value_length >> 16) & 0xff);
+            blob[offset++] = (unsigned char)((value_length >> 24) & 0xff);
+            memcpy(blob + offset, settings[i].string_value, (size_t)value_length);
+            offset += value_length;
+        } else {
+            int value = settings[i].integer_value;
+            blob[offset++] = (unsigned char)(value & 0xff);
+            blob[offset++] = (unsigned char)((value >> 8) & 0xff);
+            blob[offset++] = (unsigned char)((value >> 16) & 0xff);
+            blob[offset++] = (unsigned char)((value >> 24) & 0xff);
+        }
+        offset = (offset + 3) & ~3;
+    }
+    *size_out = offset;
+    return blob;
+}
+
+static int
+linux_xsettings_publish(const RillXSetting *settings, int count)
+{
+    unsigned char *blob;
+    int size = 0;
+    XEvent manager;
+
+    if(settings == NULL || count <= 0)
+        return 0;
+    if(xsettings_display == NULL) {
+        if(RillWaylandSession())
+            return 0;
+        xsettings_display = XOpenDisplay(NULL);
+        if(xsettings_display == NULL)
+            return 0;
+        XSetErrorHandler((XErrorHandler)0);
+        if(XGetSelectionOwner(xsettings_display, xsettings_selection()) !=
+           None)
+            return 0; /* a settings daemon (ours or xfsettingsd) owns it */
+        xsettings_window = XCreateSimpleWindow(
+            xsettings_display, DefaultRootWindow(xsettings_display), -1, -1, 1,
+            1, 0, 0, 0);
+        XSetSelectionOwner(xsettings_display, xsettings_selection(),
+                           xsettings_window, CurrentTime);
+        if(XGetSelectionOwner(xsettings_display, xsettings_selection()) !=
+           xsettings_window)
+            return 0;
+    }
+    blob = xsettings_serialize(settings, count, &size);
+    if(blob == NULL)
+        return 0;
+    XChangeProperty(xsettings_display, DefaultRootWindow(xsettings_display),
+                    XInternAtom(xsettings_display, "_XSETTINGS_SETTINGS", False),
+                    XInternAtom(xsettings_display, "_XSETTINGS_SETTINGS", False),
+                    8, PropModeReplace, blob, size);
+    memset(&manager, 0, sizeof(manager));
+    manager.xclient.type = ClientMessage;
+    manager.xclient.window = DefaultRootWindow(xsettings_display);
+    manager.xclient.message_type = XInternAtom(xsettings_display, "MANAGER",
+                                               False);
+    manager.xclient.format = 32;
+    manager.xclient.data.l[0] = CurrentTime;
+    manager.xclient.data.l[1] = xsettings_selection();
+    manager.xclient.data.l[2] = xsettings_window;
+    XSendEvent(xsettings_display, DefaultRootWindow(xsettings_display), False,
+               StructureNotifyMask, &manager);
+    XFlush(xsettings_display);
+    free(blob);
+    return 1;
+}
+
+static int
+linux_xsettings_read(RillXSetting *out, int cap)
+{
+    Display *display = xsettings_display;
+    int owned = 0;
+    Atom type;
+    int format;
+    unsigned long count, remaining;
+    unsigned char *data = NULL;
+    int parsed = 0;
+    int offset;
+    int entries;
+
+    if(display == NULL) {
+        if(RillWaylandSession())
+            return 0;
+        display = XOpenDisplay(NULL);
+        if(display == NULL)
+            return 0;
+        owned = 1;
+    }
+    if(XGetWindowProperty(
+           display, DefaultRootWindow(display),
+           XInternAtom(display, "_XSETTINGS_SETTINGS", False), 0, 1 << 18,
+           False, XInternAtom(display, "_XSETTINGS_SETTINGS", False), &type,
+           &format, &count, &remaining, &data) != Success ||
+       data == NULL || count < 12) {
+        if(data != NULL)
+            XFree(data);
+        if(owned)
+            XCloseDisplay(display);
+        return 0;
+    }
+    if(data[0] != 1) { /* only little endian is produced on this host */
+        XFree(data);
+        if(owned)
+            XCloseDisplay(display);
+        return 0;
+    }
+    entries = data[8] | (data[9] << 8) | (data[10] << 16) | (data[11] << 24);
+    offset = 12;
+    for(int i = 0; i < entries && parsed < cap; i++) {
+        int name_length, value_length;
+        RillXSetting setting;
+        if(offset + 4 > (int)count)
+            break;
+        memset(&setting, 0, sizeof(setting));
+        setting.type = data[offset];
+        name_length = data[offset + 2] | (data[offset + 3] << 8);
+        offset += 4;
+        if(offset + name_length > (int)count)
+            break;
+        if(name_length >= RILL_XSETTING_NAME)
+            name_length = RILL_XSETTING_NAME - 1;
+        memcpy(setting.name, data + offset, (size_t)name_length);
+        offset = (offset + name_length + 3) & ~3;
+        if(setting.type == 1) {
+            if(offset + 4 > (int)count)
+                break;
+            value_length = data[offset] | (data[offset + 1] << 8) |
+                           (data[offset + 2] << 16) | (data[offset + 3] << 24);
+            offset += 4;
+            if(offset + value_length > (int)count)
+                break;
+            if(value_length >= RILL_XSETTING_STRING)
+                value_length = RILL_XSETTING_STRING - 1;
+            memcpy(setting.string_value, data + offset, (size_t)value_length);
+            offset = (offset + value_length + 3) & ~3;
+        } else {
+            if(offset + 4 > (int)count)
+                break;
+            setting.integer_value = data[offset] | (data[offset + 1] << 8) |
+                                    (data[offset + 2] << 16) |
+                                    (data[offset + 3] << 24);
+            offset += 4;
+        }
+        out[parsed++] = setting;
+    }
+    XFree(data);
+    if(owned)
+        XCloseDisplay(display);
+    return parsed;
+}
+
 static int
 tray_item_property(const char *bus, const char *path, const char *name,
                    GVariant **out)
@@ -2042,7 +2256,9 @@ static const RillPlatformServices services = {
     linux_xembed_tray_count,
     linux_xembed_tray_layout,
     linux_volume_state,
-    linux_volume_set
+    linux_volume_set,
+    linux_xsettings_publish,
+    linux_xsettings_read
 };
 
 const RillPlatformServices *

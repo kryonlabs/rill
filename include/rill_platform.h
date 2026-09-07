@@ -43,6 +43,17 @@ typedef struct RillNotification {
     char body[256];
 } RillNotification;
 
+/* One XSETTINGS value published to X11 applications. */
+#define RILL_XSETTING_NAME 64
+#define RILL_XSETTING_STRING 160
+
+typedef struct RillXSetting {
+    char name[RILL_XSETTING_NAME];
+    int type; /* 0 integer, 1 string */
+    int integer_value;
+    char string_value[RILL_XSETTING_STRING];
+} RillXSetting;
+
 typedef struct RillPlatformServices {
     const char *name;
     int (*list_launchers)(RillLauncher *out, int cap);
@@ -83,6 +94,11 @@ typedef struct RillPlatformServices {
     int (*volume_state)(int *percent, int *muted);
     /* Set sink volume/mute; -1 leaves a value unchanged. */
     int (*volume_set)(int percent, int muted);
+    /* Own the XSETTINGS selection and publish values to X11 apps. */
+    int (*xsettings_publish)(const RillXSetting *settings, int count);
+    /* Read the currently published XSETTINGS values (ours or another
+       daemon's); returns the count copied into out. */
+    int (*xsettings_read)(RillXSetting *out, int cap);
 } RillPlatformServices;
 
 int RillSettingsEnsureDirectory(const char *path);
