@@ -69,6 +69,10 @@ adapters.
   values (with overrides from the Rill settings file) to every X11
   application through the root window property, yielding to an already
   running settings daemon.
+- A clipboard manager (the xfce4-clipman core): Rill watches the CLIPBOARD
+  and PRIMARY selections through XFixes, captures text into a deduplicated
+  history, and re-serves selections so copies outlive their owner. A panel
+  item lists the history and pushes any entry back onto the clipboard.
 
 ## Linux Launchers
 

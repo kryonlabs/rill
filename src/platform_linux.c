@@ -19,6 +19,7 @@
 #include <gio/gdesktopappinfo.h>
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
+#include <X11/extensions/Xfixes.h>
 
 typedef struct XLibreSession {
     Display *display;
@@ -2234,6 +2235,235 @@ linux_open_path(const char *path)
     return ok;
 }
 
+/* Clipboard manager (the xfce4-clipman core): watch the CLIPBOARD and
+   PRIMARY selections, capture text on every owner change, keep a history,
+   and re-serve selections so copies survive their owner exiting. */
+#define RILL_CLIPBOARD_HISTORY 16
+#define RILL_CLIPBOARD_MAX_TEXT 4096
+
+static Display *clipboard_display;
+static Window clipboard_window;
+static int clipboard_event_base;
+static char clipboard_entries[RILL_CLIPBOARD_HISTORY][RILL_CLIPBOARD_MAX_TEXT];
+static int clipboard_entry_lengths[RILL_CLIPBOARD_HISTORY];
+static int clipboard_entry_count;
+static int clipboard_capture_primary = 1;
+static int clipboard_waiting;
+static Atom clipboard_atom, primary_atom, utf8_atom, targets_atom, text_atom;
+
+static void
+clipboard_push(const char *text, int length)
+{
+    int lengths[RILL_CLIPBOARD_HISTORY];
+
+    if(length <= 0 || length >= RILL_CLIPBOARD_MAX_TEXT)
+        return;
+    memcpy(lengths, clipboard_entry_lengths, sizeof(lengths));
+    for(int i = 0; i < clipboard_entry_count; i++)
+        if(lengths[i] == length &&
+           memcmp(clipboard_entries[i], text, (size_t)length) == 0) {
+            char keep[RILL_CLIPBOARD_MAX_TEXT];
+            memcpy(keep, clipboard_entries[i], (size_t)length);
+            memmove(&clipboard_entries[1], &clipboard_entries[0],
+                    (size_t)i * sizeof(clipboard_entries[0]));
+            memmove(&lengths[1], &lengths[0], (size_t)i * sizeof(int));
+            memcpy(clipboard_entries[0], keep, (size_t)length);
+            lengths[0] = length;
+            memcpy(clipboard_entry_lengths, lengths, sizeof(lengths));
+            return;
+        }
+    if(clipboard_entry_count < RILL_CLIPBOARD_HISTORY)
+        clipboard_entry_count++;
+    memmove(&clipboard_entries[1], &clipboard_entries[0],
+            (size_t)(clipboard_entry_count - 1) * sizeof(clipboard_entries[0]));
+    memmove(&lengths[1], &lengths[0],
+            (size_t)(clipboard_entry_count - 1) * sizeof(int));
+    memcpy(clipboard_entries[0], text, (size_t)length);
+    lengths[0] = length;
+    memcpy(clipboard_entry_lengths, lengths, sizeof(lengths));
+}
+
+static int
+clipboard_start(void)
+{
+    int error_base;
+
+    if(clipboard_display != NULL)
+        return 1;
+    if(RillWaylandSession())
+        return 0;
+    clipboard_display = XOpenDisplay(NULL);
+    if(clipboard_display == NULL)
+        return 0;
+    if(!XFixesQueryExtension(clipboard_display, &clipboard_event_base,
+                              &error_base)) {
+        if(getenv("RILL_CLIPBOARD_DEBUG"))
+            fprintf(stderr, "rill: clipboard no XFixes\n");
+        XCloseDisplay(clipboard_display);
+        clipboard_display = NULL;
+        return 0;
+    }
+    clipboard_window = XCreateSimpleWindow(
+        clipboard_display, DefaultRootWindow(clipboard_display), -1, -1, 1, 1,
+        0, 0, 0);
+    XSelectInput(clipboard_display, clipboard_window, PropertyChangeMask);
+    clipboard_atom = XInternAtom(clipboard_display, "CLIPBOARD", False);
+    primary_atom = XA_PRIMARY;
+    utf8_atom = XInternAtom(clipboard_display, "UTF8_STRING", False);
+    targets_atom = XInternAtom(clipboard_display, "TARGETS", False);
+    text_atom = XInternAtom(clipboard_display, "TEXT", False);
+    XFixesSelectSelectionInput(clipboard_display,
+                               DefaultRootWindow(clipboard_display),
+                               clipboard_atom,
+                               XFixesSetSelectionOwnerNotifyMask);
+    XFixesSelectSelectionInput(clipboard_display,
+                               DefaultRootWindow(clipboard_display),
+                               primary_atom,
+                               XFixesSetSelectionOwnerNotifyMask);
+    XFlush(clipboard_display);
+    if(getenv("RILL_CLIPBOARD_DEBUG"))
+        fprintf(stderr, "rill: clipboard started window=%lu base=%d\n",
+                (unsigned long)clipboard_window, clipboard_event_base);
+    return 1;
+}
+
+static void
+clipboard_request(Atom selection, Window owner)
+{
+    if(owner == None || owner == clipboard_window)
+        return;
+    clipboard_waiting = 1;
+    XConvertSelection(clipboard_display, selection, utf8_atom, utf8_atom,
+                      clipboard_window, CurrentTime);
+}
+
+static void
+clipboard_store_incoming(void)
+{
+    Atom type;
+    int format;
+    unsigned long items, remaining;
+    unsigned char *data = NULL;
+
+    clipboard_waiting = 0;
+    if(getenv("RILL_CLIPBOARD_DEBUG"))
+        fprintf(stderr, "rill: clipboard store_incoming\n");
+    if(XGetWindowProperty(clipboard_display, clipboard_window, utf8_atom, 0,
+                          RILL_CLIPBOARD_MAX_TEXT / 4, True, AnyPropertyType,
+                          &type, &format, &items, &remaining, &data) != Success ||
+        data == NULL ||
+        (type != utf8_atom && type != text_atom && type != XA_STRING) ||
+        format != 8 || items == 0) {
+        if(data != NULL)
+            XFree(data);
+        return;
+    }
+    clipboard_push((const char *)data, (int)items);
+    XFree(data);
+}
+
+static void
+clipboard_serve_request(XSelectionRequestEvent *request)
+{
+    XEvent reply;
+    Atom target = request->target;
+
+    memset(&reply, 0, sizeof(reply));
+    reply.xselection.type = SelectionNotify;
+    reply.xselection.requestor = request->requestor;
+    reply.xselection.selection = request->selection;
+    reply.xselection.target = target;
+    reply.xselection.time = request->time;
+    reply.xselection.property = None;
+    if(request->selection == clipboard_atom &&
+       (target == utf8_atom || target == XA_STRING || target == text_atom ||
+        target == targets_atom)) {
+        reply.xselection.property = request->property;
+        if(target == targets_atom) {
+            Atom offered[2] = {targets_atom, utf8_atom};
+            XChangeProperty(clipboard_display, request->requestor,
+                            reply.xselection.property, XA_ATOM, 32,
+                            PropModeReplace, (const unsigned char *)offered, 2);
+        } else {
+            XChangeProperty(clipboard_display, request->requestor,
+                            reply.xselection.property, utf8_atom, 8,
+                            PropModeReplace,
+                            (const unsigned char *)clipboard_entries[0],
+                            clipboard_entry_lengths[0]);
+        }
+    }
+    XSendEvent(clipboard_display, request->requestor, False, NoEventMask, &reply);
+}
+
+static void
+clipboard_pump(void)
+{
+    while(XPending(clipboard_display)) {
+        XEvent event;
+        XNextEvent(clipboard_display, &event);
+        if(event.type == clipboard_event_base + XFixesSelectionNotify) {
+            XFixesSelectionNotifyEvent *notify =
+                (XFixesSelectionNotifyEvent *)&event;
+            if(notify->selection == clipboard_atom)
+                clipboard_request(notify->selection, notify->owner);
+            else if(clipboard_capture_primary &&
+                    notify->selection == primary_atom)
+                clipboard_request(notify->selection, notify->owner);
+        } else if(event.type == SelectionNotify) {
+            if(event.xselection.property != None)
+                clipboard_store_incoming();
+            else
+                clipboard_waiting = 0;
+        } else if(event.type == SelectionRequest) {
+            clipboard_serve_request(&event.xselectionrequest);
+        }
+    }
+    XFlush(clipboard_display);
+}
+
+static int
+linux_clipboard_history(const char **texts, int cap)
+{
+    int count = 0;
+
+    if(texts == NULL || cap <= 0)
+        return 0;
+    if(!clipboard_start())
+        return 0;
+    clipboard_pump();
+    for(int i = 0; i < clipboard_entry_count && count < cap; i++)
+        texts[count++] = clipboard_entries[i];
+    return count;
+}
+
+static int
+linux_clipboard_select(int index)
+{
+    int lengths[RILL_CLIPBOARD_HISTORY];
+
+    if(!clipboard_start())
+        return 0;
+    clipboard_pump();
+    if(index < 0 || index >= clipboard_entry_count)
+        return 0;
+    if(index != 0) {
+        char keep[RILL_CLIPBOARD_MAX_TEXT];
+        int keep_length = clipboard_entry_lengths[index];
+        memcpy(lengths, clipboard_entry_lengths, sizeof(lengths));
+        memcpy(keep, clipboard_entries[index], (size_t)keep_length);
+        memmove(&clipboard_entries[1], &clipboard_entries[0],
+                (size_t)index * sizeof(clipboard_entries[0]));
+        memmove(&lengths[1], &lengths[0], (size_t)index * sizeof(int));
+        memcpy(clipboard_entries[0], keep, (size_t)keep_length);
+        lengths[0] = keep_length;
+        memcpy(clipboard_entry_lengths, lengths, sizeof(lengths));
+    }
+    XSetSelectionOwner(clipboard_display, clipboard_atom, clipboard_window,
+                       CurrentTime);
+    XFlush(clipboard_display);
+    return 1;
+}
+
 static const RillPlatformServices services = {
     "xlibre",
     linux_list_launchers,
@@ -2258,7 +2488,9 @@ static const RillPlatformServices services = {
     linux_volume_state,
     linux_volume_set,
     linux_xsettings_publish,
-    linux_xsettings_read
+    linux_xsettings_read,
+    linux_clipboard_history,
+    linux_clipboard_select
 };
 
 const RillPlatformServices *

@@ -99,6 +99,11 @@ typedef struct RillPlatformServices {
     /* Read the currently published XSETTINGS values (ours or another
        daemon's); returns the count copied into out. */
     int (*xsettings_read)(RillXSetting *out, int cap);
+    /* Poll clipboard history (newest first); pointers stay owned by the
+       platform and are valid until the next poll. */
+    int (*clipboard_history)(const char **texts, int cap);
+    /* Push a history entry back onto the CLIPBOARD selection. */
+    int (*clipboard_select)(int index);
 } RillPlatformServices;
 
 int RillSettingsEnsureDirectory(const char *path);

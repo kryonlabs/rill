@@ -126,6 +126,9 @@ typedef struct RillVisualState {
     int desktop_menu_y;
     RillNotification notifications[4];
     int notification_count;
+    const char *clipboard_texts[8];
+    int clipboard_count;
+    int clipboard_popup_open;
     int battery_percent;
     int battery_charging;
     int battery_available;
@@ -646,6 +649,16 @@ refresh_volume(RillVisualState *visuals, const RillPlatformServices *platform)
 
 /* Publish XSETTINGS for X11 applications: import whatever the current
    settings daemon broadcast, then apply the Rill settings overrides. */
+static void
+refresh_clipboard(RillVisualState *visuals,
+                  const RillPlatformServices *platform)
+{
+    if(visuals == NULL || platform == NULL || platform->clipboard_history == NULL)
+        return;
+    visuals->clipboard_count = platform->clipboard_history(
+        visuals->clipboard_texts, 8);
+}
+
 static void
 publish_xsettings(const RillPlatformServices *platform)
 {
@@ -1727,7 +1740,7 @@ draw_panel_context_menu(RillShellState *shell, RillVisualState *visuals,
         x = 2;
     if(y < 2)
         y = 2;
-    menu = (Rectangle){x, y, 208, index >= 0 ? 188 : 240};
+    menu = (Rectangle){x, y, 208, index >= 0 ? 188 : 268};
     draw_menu_panel(menu);
 
     if(index >= 0) {
@@ -1803,6 +1816,11 @@ draw_panel_context_menu(RillShellState *shell, RillVisualState *visuals,
                                0, 58, 60, 0};
     if(panel_context_row((Rectangle){x + 6, y + 140, 196, 26},
                          "Add Volume Control"))
+        panel_append_item(visuals, side, plugin);
+    plugin = (RillPanelPlugin){RILL_PANEL_CLIPBOARD, "clipboard", "", "",
+                               0, 26, 28, 0};
+    if(panel_context_row((Rectangle){x + 6, y + 168, 196, 26},
+                         "Add Clipboard History"))
         panel_append_item(visuals, side, plugin);
     if(panel_context_row((Rectangle){x + 6, y + 84, 196, 26},
                          "Add XFCE Plugin...")) {
@@ -2052,6 +2070,31 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
                     visuals->volume_muted = !visuals->volume_muted;
             }
         }
+        return x + plugin->advance;
+    }
+    case RILL_PANEL_CLIPBOARD: {
+        Rectangle bounds = {x, (float)y + 2, 22, (float)ph - 4};
+        int hover = CheckCollisionPointRec(GetMousePosition(), bounds);
+        int cy = y + ph / 2;
+
+        if(hover)
+            DrawRectangleRec(bounds, panel_item_hover_color());
+        /* Clipboard glyph: two stacked sheets. */
+        DrawRectangleLines((int)bounds.x + 4, (int)bounds.y + 4, 12, 15,
+                           panel_text_color());
+        DrawRectangle((int)bounds.x + 7, (int)bounds.y + 7, 12, 15,
+                      panel_color());
+        DrawRectangleLines((int)bounds.x + 7, (int)bounds.y + 7, 12, 15,
+                           panel_text_color());
+        if(visuals->clipboard_count > 0) {
+            char label[8];
+            snprintf(label, sizeof(label), "%d", visuals->clipboard_count);
+            DrawText(label, (int)bounds.x + 8, (int)bounds.y + 12, Text12,
+                     GetThemeLink());
+        }
+        if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+            visuals->clipboard_popup_open = !visuals->clipboard_popup_open;
+        (void)cy;
         return x + plugin->advance;
     }
     case RILL_PANEL_ACTIONS: {
@@ -2879,6 +2922,56 @@ draw_calendar_popup(RillVisualState *visuals)
     if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
        !CheckCollisionPointRec(GetMousePosition(), menu))
         visuals->calendar_open = 0;
+}
+
+static void
+draw_clipboard_popup(RillShellState *shell, RillVisualState *visuals,
+                     const RillPlatformServices *platform)
+{
+    Rectangle menu;
+    int rows = visuals->clipboard_count > 8 ? 8 : visuals->clipboard_count;
+    int x;
+    int y;
+    int i;
+
+    if(visuals == NULL || !visuals->clipboard_popup_open)
+        return;
+    if(rows == 0)
+        rows = 1;
+    x = GetScreenWidth() - 280;
+    if(x < 4)
+        x = 4;
+    y = rill_menu_anchor_y(visuals, rows * 28 + 14);
+    menu = (Rectangle){(float)x, (float)y, 272, (float)(rows * 28 + 14)};
+    draw_menu_panel(menu);
+    if(visuals->clipboard_count == 0) {
+        draw_text_fit("Clipboard is empty", x + 12, y + 10, 248, Text12,
+                      GetThemeIcon());
+        return;
+    }
+    for(i = 0; i < rows; i++) {
+        Rectangle row = {x + 6, (float)(y + 6 + i * 28), 260, 26};
+        if(CheckCollisionPointRec(GetMousePosition(), row))
+            DrawRectangleRec(row, panel_item_hover_color());
+        draw_text_fit(visuals->clipboard_texts[i], (int)row.x + 10,
+                      (int)row.y + 6, (int)row.width - 20, Text12,
+                      panel_text_color());
+        if(CheckCollisionPointRec(GetMousePosition(), row) &&
+           IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            if(platform != NULL && platform->clipboard_select != NULL &&
+               platform->clipboard_select(i)) {
+                char status[96];
+                snprintf(status, sizeof(status), "Copied from history: %.40s",
+                         visuals->clipboard_texts[i]);
+                RillShellSetStatus(shell, status);
+            }
+            visuals->clipboard_popup_open = 0;
+            return;
+        }
+    }
+    if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+       !CheckCollisionPointRec(GetMousePosition(), menu))
+        visuals->clipboard_popup_open = 0;
 }
 
 static void
@@ -3753,6 +3846,7 @@ main(int argc, char **argv)
             refresh_notifications(&visuals, platform);
             refresh_battery(&visuals, platform);
             refresh_volume(&visuals, platform);
+            refresh_clipboard(&visuals, platform);
             if(first_refresh) {
                 publish_xsettings(platform);
                 first_refresh = 0;
@@ -3792,6 +3886,7 @@ main(int argc, char **argv)
             draw_window_list_menu(&shell, platform, &visuals);
             draw_panel_context_menu(&shell, &visuals, platform);
             draw_calendar_popup(&visuals);
+            draw_clipboard_popup(&shell, &visuals, platform);
             draw_panel_properties(&shell, &visuals);
             draw_notifications(&shell, &visuals, platform);
             draw_logout_dialog(&shell, &visuals, platform);
