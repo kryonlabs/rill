@@ -21,6 +21,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <time.h>
+#include "plan9_overlay.h"
 
 #ifdef KRYON_NATIVE_PLAN9
 AppHost *KtermCreateAppHost(int abi_version, const char *project_path);
@@ -141,6 +142,7 @@ typedef struct RillVisualState {
     int run_selected;
 } RillVisualState;
 
+static int popup_input_blocked;
 static RillSettings rill_settings;
 static char rill_settings_path[1024];
 
@@ -1327,7 +1329,7 @@ draw_desktop_icon(RillShellState *shell, const RillPlatformServices *platform,
         return;
     box = (Rectangle){x, y, 84, 82};
     icon = (Rectangle){x + 22, y + 5, 40, 40};
-    pressed = icon_hit_button(box, 7000 + x + y);
+    pressed = !popup_input_blocked && icon_hit_button(box, 7000 + x + y);
     if(visuals->desktop_selected == index) {
         DrawRectangleRounded(box, 0.06f, 6, Fade(GetThemeLink(), 0.30f));
         DrawRectangleRoundedLinesEx(box, 0.06f, 6, 1.0f,
@@ -2177,6 +2179,7 @@ draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
         visuals->panel_hidden = 0;
         panel_y = rill_panel_top(visuals);
     }
+    plan9_overlay_rect((Rectangle){0, panel_y, screen_w, panel_h});
     DrawRectangle(0, panel_y, screen_w, panel_h, panel_color());
     DrawRectangle(0, visuals->panel_bottom ? panel_y : panel_y + panel_h - 1,
                   screen_w, 1, Fade(BLACK, 0.72f));
@@ -2238,6 +2241,7 @@ draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
 static void
 draw_menu_panel(Rectangle menu)
 {
+    plan9_overlay_rect(menu);
     DrawRectangleRounded(menu, 0.02f, 6, opaque_color(GetThemeSurface()));
     DrawRectangleRoundedLinesEx(menu, 0.02f, 6, 1.0f,
                                 Fade(GetThemeText(), 0.30f));
@@ -3062,6 +3066,7 @@ draw_logout_dialog(RillShellState *shell, RillVisualState *visuals,
         return;
     panel = (Rectangle){(screen_w - 280) / 2.0f, (screen_h - 246) / 2.0f,
                         280, 246};
+    plan9_overlay_rect(full);
     DrawRectangleRec(full, Fade(BLACK, 0.38f));
     DrawRectangleRounded(panel, 0.03f, 8, opaque_color(GetThemeSurface()));
     DrawRectangleRoundedLinesEx(panel, 0.03f, 8, 2.0f, GetThemeLink());
@@ -3123,7 +3128,7 @@ process_window_mouse(RillShellState *shell)
 {
     Vector2 mouse;
 
-    if(shell == NULL)
+    if(shell == NULL || popup_input_blocked)
         return;
     mouse = GetMousePosition();
     if(IsMouseButtonReleased(MOUSE_BUTTON_LEFT))
@@ -3194,10 +3199,10 @@ draw_host_app(RillAppWindow *app, Rectangle content, RillVisualState *visuals)
     delta = GetMouseDelta();
     memset(&input, 0, sizeof(input));
     input.enabled = 1;
-    input.mouse_inside = app != NULL && app->focused &&
+    input.mouse_inside = !popup_input_blocked && app != NULL && app->focused &&
                          CheckCollisionPointRec(mouse, content);
-    input.pass_buttons = app != NULL && app->focused;
-    input.pass_keyboard = app != NULL && app->focused;
+    input.pass_buttons = !popup_input_blocked && app != NULL && app->focused;
+    input.pass_keyboard = !popup_input_blocked && app != NULL && app->focused;
     input.mouse_position = mouse;
     input.mouse_delta = delta;
 
@@ -3887,6 +3892,9 @@ main(int argc, char **argv)
             }
             next_refresh = GetTime() + 1.0;
         }
+        popup_input_blocked = shell.menu_open != 0 || visuals.panel_context_open ||
+                              visuals.calendar_open || visuals.clipboard_popup_open ||
+                              visuals.properties_open || visuals.logout_open;
         if(!test_scene_active(&test))
             process_window_mouse(&shell);
         if(!test_scene_active(&test) && options.mode != RILL_MODE_SETTINGS)
@@ -3894,6 +3902,7 @@ main(int argc, char **argv)
         if(!test_scene_active(&test))
             rill_control_poll(&control, &shell, platform);
 
+        plan9_overlay_begin();
         BeginDrawing();
         ClearBackground(opaque_color(GetThemeBackground()));
         BeginUIFrame(GetScreenWidth(), GetScreenHeight(), 1.0f);
@@ -3911,7 +3920,15 @@ main(int argc, char **argv)
         } else {
             draw_wallpaper(&visuals);
             draw_desktop(&shell, platform, &visuals);
+            if(popup_input_blocked) {
+                KryonInputOverride blocked;
+                memset(&blocked, 0, sizeof(blocked));
+                blocked.enabled = 1;
+                BeginKryonInputOverride(blocked);
+            }
             draw_apps(&shell, &visuals, platform);
+            if(popup_input_blocked)
+                EndKryonInputOverride();
 #if RILL_HAS_X11
             RillX11Draw(&x11);
 #endif
@@ -3951,6 +3968,7 @@ main(int argc, char **argv)
         }
         EndUIFrame();
         EndDrawing();
+        plan9_overlay_end();
 
         if(test_scene_active(&test) || test.ready_file != NULL ||
            test.exit_after_frames > 0) {
