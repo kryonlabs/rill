@@ -3438,6 +3438,30 @@ linux_session_diagnostics(char *text, int size)
 }
 
 static int
+linux_xfce_panel_config_load(char *xml, int size)
+{
+    const char *home = getenv("HOME");
+    gchar *contents = NULL;
+    char path[1024];
+
+    if(xml == NULL || size <= 0)
+        return 0;
+    xml[0] = '\0';
+    if(home == NULL || home[0] == '\0')
+        home = g_get_home_dir();
+    snprintf(path, sizeof(path),
+             "%s/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml",
+             home != NULL ? home : "");
+    if(!g_file_get_contents(path, &contents, NULL, NULL) || contents == NULL) {
+        g_free(contents);
+        return 0;
+    }
+    g_strlcpy(xml, contents, (gsize)size);
+    g_free(contents);
+    return 1;
+}
+
+static int
 linux_open_settings(const char *category)
 {
     static const struct { const char *category; const char *commands[5]; } panels[] = {
@@ -3519,6 +3543,7 @@ static const RillPlatformServices services = {
     AllowFileTransferConflicts,
     ResolveFileTransferConflict,
     RetryFileTransfer,
+    UndoFileTransfer,
     RecoverStagingDirectory,
     ListFileTrash,
     RestoreFileTrashItem,
@@ -3536,7 +3561,8 @@ static const RillPlatformServices services = {
     linux_removable_volumes,
     linux_removable_mount,
     linux_removable_unmount,
-    linux_removable_eject
+    linux_removable_eject,
+    linux_xfce_panel_config_load
 };
 
 const RillPlatformServices *

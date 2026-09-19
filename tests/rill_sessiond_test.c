@@ -186,6 +186,10 @@ main(int argc, char **argv)
     daemon = fork();
     if(daemon == 0) {
         unsetenv("DBUS_SESSION_BUS_ADDRESS");
+        /* The manager may ask windows to close at logout; without this it
+           could see the developer's live desktop display. */
+        unsetenv("DISPLAY");
+        unsetenv("WAYLAND_DISPLAY");
         setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/tmp/rill-sessiond-no-system-bus", 1);
         char runtime[300];
         char home[300];

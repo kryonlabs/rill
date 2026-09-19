@@ -55,6 +55,9 @@ int AllowFileTransferConflicts(void);
 int ResolveFileTransferConflict(int answer, int apply_to_all);
 /* Re-run the job that failed last. Returns 0 when there is nothing to retry. */
 int RetryFileTransfer(void);
+/* Reverse the last fully successful copy, move or duplicate job: copied
+ * items are sent to the Trash and moved items return to their sources. */
+int UndoFileTransfer(void);
 
 /* Remove abandoned ".transfer-*" staging directories left by a crash; returns
  * the number removed, or -1 when the directory could not be read. */

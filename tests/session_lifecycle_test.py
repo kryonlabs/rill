@@ -35,6 +35,10 @@ class SessionLifecycleTest(unittest.TestCase):
                         XDG_CACHE_HOME=str(self.root / 'cache'), XDG_CURRENT_DESKTOP='Rill:XFCE',
                         DBUS_SESSION_BUS_ADDRESS='unix:path=' + str(self.root / 'no-bus'),
                         DBUS_SYSTEM_BUS_ADDRESS='unix:path=' + str(self.root / 'no-system-bus'))
+        # This manager may send close requests at logout; it must never see,
+        # let alone touch, the developer's real desktop display.
+        for leaked in ('DISPLAY', 'WAYLAND_DISPLAY'):
+            self.env.pop(leaked, None)
         self.manager = None
         self.log = (self.root / 'log').open('w+')
         self.probe = self.root / 'probe.py'

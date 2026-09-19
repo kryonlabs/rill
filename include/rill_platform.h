@@ -171,6 +171,7 @@ typedef struct RillPlatformServices {
     int (*file_transfer_conflicts)(void);
     int (*file_transfer_resolve)(int answer, int apply_to_all);
     int (*file_transfer_retry)(void);
+    int (*file_transfer_undo)(void);
     /* Remove abandoned ".transfer-*" staging directories after a crash. */
     int (*file_recover_staging)(const char *directory, char *error, int error_size);
     /* Trash management on the user's XDG trash directories. */
@@ -198,6 +199,8 @@ typedef struct RillPlatformServices {
     int (*session_diagnostics)(char *text, int size);
     /* Removable volumes through the platform's volume monitor. */
     int (*removable_volumes)(RillVolume *out, int cap);
+    /* The installed Xfce panel configuration, for one-time migration. */
+    int (*xfce_panel_config_load)(char *xml, int size);
     /* Mount returns the mount path; unmount/eject operate by device. */
     int (*removable_mount)(const char *device, char *path, int path_size,
                            char *error, int error_size);

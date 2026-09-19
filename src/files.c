@@ -24,7 +24,25 @@ typedef struct FileTransfer {
     int conflict_mode;
     int conflict_answer;
     int conflict_all;
+    /* Per-item final destinations (NULL for skipped items), used to journal
+     * one undoable job. */
+    char **results;
+    /* Undo bookkeeping: for "undo" jobs reversing a move, the original
+     * location each item came from. */
+    char **undo_sources;
+    int undo_move;
 } FileTransfer;
+
+/* The journal of the last fully successful copy/move/duplicate job. */
+typedef struct FileUndo {
+    int valid;
+    int move;
+    char **sources;
+    char **results;
+    int count;
+} FileUndo;
+
+static FileUndo undo_journal;
 
 typedef struct FileClipboard {
     char **uris;
@@ -324,10 +342,55 @@ prepare_target(GFile **target, GCancellable *cancel, GError **error)
 
 static ItemResult
 transfer_item(GFile *source, GFile *directory, const char *operation,
-               GCancellable *cancel, GError **error)
+              GCancellable *cancel, GError **error, char **result_out,
+              const char *undo_target)
 {
-    if(strcmp(operation, "trash") == 0)
-        return g_file_trash(source, cancel, error) ? ITEM_DONE : ITEM_ERROR;
+    if(result_out != NULL)
+        *result_out = NULL;
+    if(strcmp(operation, "trash") == 0) {
+        gboolean trashed = g_file_trash(source, cancel, error);
+        if(trashed && result_out != NULL) {
+            char *path = g_file_get_path(source);
+            if(path != NULL)
+                *result_out = strdup(path);
+            g_free(path);
+        }
+        return trashed ? ITEM_DONE : ITEM_ERROR;
+    }
+    if(strcmp(operation, "undo") == 0) {
+        /* Reverse one journaled item: move it back to its original location,
+         * or send a copied item to the Trash. */
+        if(undo_target != NULL && undo_target[0] != '\0') {
+            GFile *target = file_for_location(undo_target);
+            char *parent_path = g_path_get_dirname(undo_target);
+            GFile *parent = parent_path != NULL ?
+                g_file_new_for_path(parent_path) : NULL;
+            if(parent != NULL)
+                g_mkdir_with_parents(parent_path, 0700);
+            gboolean moved = target != NULL &&
+                g_file_move(source, target, G_FILE_COPY_NOFOLLOW_SYMLINKS,
+                            cancel, NULL, NULL, error);
+            if(!moved && target != NULL) {
+                g_clear_error(error);
+                moved = copy_tree(source, target, cancel, error) &&
+                        remove_tree(source, cancel, error);
+            }
+            if(moved && result_out != NULL)
+                *result_out = g_strdup(undo_target);
+            g_free(parent_path);
+            g_clear_object(&parent);
+            g_clear_object(&target);
+            return moved ? ITEM_DONE : ITEM_ERROR;
+        }
+        gboolean trashed = g_file_trash(source, cancel, error);
+        if(trashed && result_out != NULL) {
+            char *path = g_file_get_path(source);
+            if(path != NULL)
+                *result_out = strdup(path);
+            g_free(path);
+        }
+        return trashed ? ITEM_DONE : ITEM_ERROR;
+    }
     char *name = g_file_get_basename(source);
     if(name == NULL || strcmp(name, "/") == 0) {
         g_free(name);
@@ -356,6 +419,12 @@ transfer_item(GFile *source, GFile *directory, const char *operation,
     if(move && g_file_move(source, target,
         G_FILE_COPY_NOFOLLOW_SYMLINKS | G_FILE_COPY_NO_FALLBACK_FOR_MOVE,
         cancel, NULL, NULL, error)) {
+        if(result_out != NULL) {
+            char *path = g_file_get_path(target);
+            if(path != NULL)
+                *result_out = strdup(path);
+            g_free(path);
+        }
         g_object_unref(target);
         return ITEM_DONE;
     }
@@ -397,6 +466,12 @@ transfer_item(GFile *source, GFile *directory, const char *operation,
         g_object_unref(staging);
         if(ok && move)
             ok = remove_tree(source, cancel, error);
+        if(ok && result_out != NULL) {
+            char *path = g_file_get_path(target);
+            if(path != NULL)
+                *result_out = strdup(path);
+            g_free(path);
+        }
     } else if(*error == NULL)
         set_error(error, G_IO_ERROR_EXISTS, "Could not reserve a temporary destination.");
     g_object_unref(target);
@@ -409,6 +484,20 @@ free_job(FileJob *job)
     g_clear_pointer(&job->sources, g_strfreev);
     g_clear_pointer(&job->destination, g_free);
     memset(job, 0, sizeof(*job));
+}
+
+static void
+free_undo_journal(void)
+{
+    if(undo_journal.sources != NULL)
+        for(int i = 0; i < undo_journal.count; i++)
+            free(undo_journal.sources[i]);
+    if(undo_journal.results != NULL)
+        for(int i = 0; i < undo_journal.count; i++)
+            free(undo_journal.results[i]);
+    free(undo_journal.sources);
+    free(undo_journal.results);
+    memset(&undo_journal, 0, sizeof(undo_journal));
 }
 
 static gpointer
@@ -470,7 +559,12 @@ transfer_worker(gpointer unused)
         g_strlcpy(transfer.status.current, transfer.sources[i], sizeof(transfer.status.current));
         g_mutex_unlock(&transfer.mutex);
         ItemResult item = transfer_item(g_ptr_array_index(sources, i), directory,
-                                        transfer.status.operation, transfer.cancel, &error);
+                                        transfer.status.operation, transfer.cancel,
+                                        &error,
+                                        transfer.results != NULL ?
+                                            &transfer.results[i] : NULL,
+                                        transfer.undo_sources != NULL ?
+                                            transfer.undo_sources[i] : NULL);
         if(item == ITEM_CANCELLED)
             break;
         if(item == ITEM_ERROR)
@@ -495,6 +589,31 @@ transfer_worker(gpointer unused)
         g_strlcpy(retry_job.operation, transfer.status.operation, sizeof(retry_job.operation));
         retry_valid = transfer.sources != NULL;
     }
+    if(error == NULL && !transfer.status.cancelled &&
+       transfer.status.completed == transfer.status.total &&
+       (strcmp(transfer.status.operation, "copy") == 0 ||
+        strcmp(transfer.status.operation, "move") == 0 ||
+        strcmp(transfer.status.operation, "duplicate") == 0)) {
+        /* Journal one undoable job: copies/duplicates are undone by trashing
+         * their results, moves by moving every result back to its source. */
+        free_undo_journal();
+        int total = transfer.status.total;
+        undo_journal.sources = malloc((size_t)(total > 0 ? total : 1) * sizeof(char *));
+        undo_journal.results = malloc((size_t)(total > 0 ? total : 1) * sizeof(char *));
+        if(undo_journal.sources != NULL && undo_journal.results != NULL &&
+           transfer.sources != NULL && transfer.results != NULL) {
+            for(int i = 0; i < total; i++) {
+                if(transfer.sources[i] == NULL || transfer.results[i] == NULL)
+                    continue;
+                undo_journal.sources[undo_journal.count] = strdup(transfer.sources[i]);
+                undo_journal.results[undo_journal.count] = strdup(transfer.results[i]);
+                undo_journal.count++;
+            }
+            undo_journal.move = strcmp(transfer.status.operation, "move") == 0;
+            undo_journal.valid = undo_journal.count > 0;
+        } else
+            free_undo_journal();
+    }
     transfer.status.running = 0;
     g_mutex_unlock(&transfer.mutex);
     g_clear_error(&error);
@@ -511,11 +630,20 @@ release_transfer(void)
     g_clear_object(&transfer.cancel);
     g_clear_pointer(&transfer.sources, g_strfreev);
     g_clear_pointer(&transfer.destination, g_free);
+    g_clear_pointer(&transfer.results, g_strfreev);
+    g_clear_pointer(&transfer.undo_sources, g_strfreev);
 }
 
 /* Start one job; its strings move into the active transfer. */
+static void start_job_ex(FileJob *job, char **undo_sources, int undo_move);
 static void
 start_job(FileJob *job)
+{
+    start_job_ex(job, NULL, 0);
+}
+
+static void
+start_job_ex(FileJob *job, char **undo_sources, int undo_move)
 {
     int count = 0;
     while(job->sources != NULL && job->sources[count] != NULL)
@@ -533,6 +661,13 @@ start_job(FileJob *job)
     transfer.destination = job->destination;
     job->sources = NULL;
     job->destination = NULL;
+    if(transfer.results != NULL)
+        g_strfreev(transfer.results);
+    transfer.results = g_new0(char *, count + 1);
+    if(transfer.undo_sources != NULL)
+        g_strfreev(transfer.undo_sources);
+    transfer.undo_sources = undo_sources;
+    transfer.undo_move = undo_move;
     transfer.cancel = g_cancellable_new();
     transfer.conflict_mode = 0;
     transfer.thread = g_thread_new("file-transfer", transfer_worker, NULL);
@@ -677,6 +812,30 @@ RetryFileTransfer(void)
     return 1;
 }
 
+/* Reverse the last fully successful copy, move or duplicate job: copied
+ * items go to the Trash, moved items return to their original locations. */
+int
+UndoFileTransfer(void)
+{
+    g_mutex_lock(&transfer.mutex);
+    int idle = !transfer.status.running && !transfer.paste_pending &&
+               transfer.thread == NULL;
+    int available = idle && undo_journal.valid;
+    g_mutex_unlock(&transfer.mutex);
+    if(!available)
+        return 0;
+    FileJob job = {0};
+    job.sources = g_strdupv(undo_journal.results);
+    g_strlcpy(job.operation, "undo", sizeof(job.operation));
+    char **undo_sources = undo_journal.move ?
+        g_strdupv(undo_journal.sources) : NULL;
+    free_undo_journal();
+    if(job.sources == NULL)
+        return 0;
+    start_job_ex(&job, undo_sources, undo_sources != NULL);
+    return 1;
+}
+
 void
 FinishFileTransfers(void)
 {
@@ -687,6 +846,7 @@ FinishFileTransfers(void)
     job_queue_count = 0;
     free_job(&retry_job);
     retry_valid = 0;
+    free_undo_journal();
 }
 
 static void

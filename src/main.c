@@ -4286,7 +4286,8 @@ draw_file_dialog(RillShellState *shell, RillVisualState *visuals,
 }
 
 static void
-draw_file_transfer(RillVisualState *visuals, const RillPlatformServices *platform)
+draw_file_transfer(RillShellState *shell, RillVisualState *visuals,
+                   const RillPlatformServices *platform)
 {
     if(!visuals->file_transfer_visible)
         return;
@@ -4300,6 +4301,7 @@ draw_file_transfer(RillVisualState *visuals, const RillPlatformServices *platfor
         !status->running ? "File operation complete" :
         strcmp(status->operation, "move") == 0 ? "Moving files" :
         strcmp(status->operation, "duplicate") == 0 ? "Duplicating files" :
+        strcmp(status->operation, "undo") == 0 ? "Undoing the file operation" :
         strcmp(status->operation, "trash") == 0 ? "Moving files to Trash" : "Copying files";
     Text((TextProps){.bounds = {panel.x + 12, panel.y + 10, 356, 22},
                      .text = title, .font = Text16, .class_name = LabelPrimary});
@@ -4342,6 +4344,11 @@ draw_file_transfer(RillVisualState *visuals, const RillPlatformServices *platfor
     if(!status->running && status->error[0] && platform->file_transfer_retry != NULL &&
        draw_settings_button((Rectangle){panel.x + 178, panel.y + 118, 86, 26}, "Retry", 0))
         button = 2;
+    if(!status->running && !status->error[0] && !status->cancelled &&
+       status->completed == status->total &&
+       platform->file_transfer_undo != NULL &&
+       draw_settings_button((Rectangle){panel.x + 178, panel.y + 118, 86, 26}, "Undo", 0))
+        button = 3;
     if(draw_settings_button((Rectangle){panel.x + 276, panel.y + 118, 92, 26},
                             status->running ? "Cancel" : "Close", 0))
         button = 1;
@@ -4352,6 +4359,10 @@ draw_file_transfer(RillVisualState *visuals, const RillPlatformServices *platfor
             visuals->file_transfer_visible = 0;
     } else if(button == 2)
         platform->file_transfer_retry();
+    else if(button == 3) {
+        if(!platform->file_transfer_undo())
+            RillShellSetStatus(shell, "Nothing to undo");
+    }
 }
 
 static void
@@ -4949,9 +4960,22 @@ draw_logout_dialog(RillShellState *shell, RillVisualState *visuals,
         .bounds = {(int)panel.x + 16, (int)panel.y + 14, 0, 0},
         .text = "End session", .font = Text18, .class_name = LabelPrimary,
         .wrap = TextWrapNone});
+    /* Explicit behavior for in-progress file transfers: ending the session
+     * waits for the active job instead of discarding it silently. */
+    int transfer_running = visuals->file_transfer.running ||
+                           visuals->file_transfer.queued > 0;
+    if(transfer_running)
+        draw_text_fit((TextProps){
+            .bounds = {panel.x + 16, panel.y + 28, panel.width - 32, 14},
+            .text = "A file operation is still running; it finishes first.",
+            .font = Text12, .class_name = LabelPrimary, .wrap = TextWrapNone});
     for(i = 0; i < 6; i++) {
         Rectangle button = {panel.x + 16, panel.y + 46 + i * 32,
                             panel.width - 32, 28};
+        if(transfer_running && i >= 1 && i <= 4) {
+            draw_settings_button(button, labels[i], 0);
+            continue;
+        }
         if(draw_settings_button(button, labels[i], 0)) {
             if(i < 5) {
                 if(platform != NULL && platform->session_action != NULL &&
@@ -5680,6 +5704,248 @@ draw_input_settings_shortcuts(RillShellState *shell, Rectangle content,
                               .class_name = LabelPrimary});
 }
 
+/* ---- Xfce panel migration (Settings application) ---- */
+
+/* Map one xfce4-panel plugin name to a native panel item. Returns 1 when the
+ * plugin has a native equivalent, 2 for launchers (which carry a desktop id),
+ * 0 when there is none. */
+static int
+xfce_plugin_mapping(const char *name, RillPanelPlugin *out)
+{
+    memset(out, 0, sizeof(*out));
+    if(strcmp(name, "whiskermenu") == 0 || strcmp(name, "applicationsmenu") == 0 ||
+       strcmp(name, "directorymenu") == 0) {
+        out->kind = RILL_PANEL_MENU;
+        snprintf(out->id, sizeof(out->id), "applications");
+        snprintf(out->label, sizeof(out->label), "Applications");
+        out->menu_id = 1;
+        out->width = 104;
+        out->advance = 106;
+        return 1;
+    }
+    if(strcmp(name, "launcher") == 0) {
+        out->kind = RILL_PANEL_LAUNCHER;
+        out->width = 26;
+        out->advance = 28;
+        return 2;
+    }
+    if(strcmp(name, "tasklist") == 0 || strcmp(name, "windowmenu") == 0) {
+        out->kind = RILL_PANEL_TASK_LIST;
+        snprintf(out->id, sizeof(out->id), "task-list");
+        return 1;
+    }
+    if(strcmp(name, "pager") == 0) {
+        out->kind = RILL_PANEL_WORKSPACES;
+        snprintf(out->id, sizeof(out->id), "workspaces");
+        out->width = 42;
+        out->advance = 44;
+        return 1;
+    }
+    if(strcmp(name, "systray") == 0) {
+        out->kind = RILL_PANEL_TRAY;
+        snprintf(out->id, sizeof(out->id), "tray");
+        out->width = 72;
+        out->advance = 80;
+        return 1;
+    }
+    if(strcmp(name, "clock") == 0) {
+        out->kind = RILL_PANEL_CLOCK;
+        snprintf(out->id, sizeof(out->id), "clock");
+        out->width = 60;
+        out->advance = 64;
+        return 1;
+    }
+    if(strcmp(name, "showdesktop") == 0) {
+        out->kind = RILL_PANEL_SHOW_DESKTOP;
+        snprintf(out->id, sizeof(out->id), "show-desktop");
+        out->width = 26;
+        out->advance = 28;
+        return 1;
+    }
+    if(strcmp(name, "actions") == 0 || strcmp(name, "actionsmenu") == 0) {
+        out->kind = RILL_PANEL_ACTIONS;
+        snprintf(out->id, sizeof(out->id), "actions");
+        out->width = 26;
+        out->advance = 28;
+        return 1;
+    }
+    if(strcmp(name, "separator") == 0) {
+        out->kind = RILL_PANEL_SEPARATOR;
+        snprintf(out->id, sizeof(out->id), "sep");
+        out->advance = 8;
+        return 1;
+    }
+    if(strcmp(name, "pulseaudio") == 0) {
+        out->kind = RILL_PANEL_VOLUME;
+        snprintf(out->id, sizeof(out->id), "volume");
+        out->width = 58;
+        out->advance = 60;
+        return 1;
+    }
+    if(strcmp(name, "xfce4-clipman-plugin") == 0 || strcmp(name, "clipman") == 0) {
+        out->kind = RILL_PANEL_CLIPBOARD;
+        snprintf(out->id, sizeof(out->id), "clipboard");
+        out->width = 26;
+        out->advance = 28;
+        return 1;
+    }
+    return 0;
+}
+
+/* One plugin entry extracted from xfce4-panel.xml. */
+typedef struct XfcePluginEntry {
+    int id;
+    char name[48];
+    char item[160];
+} XfcePluginEntry;
+
+static const char *
+xml_attr(const char *element, const char *attribute)
+{
+    static char value[512];
+    char pattern[64];
+    snprintf(pattern, sizeof(pattern), "%s=\"", attribute);
+    const char *found = strstr(element, pattern);
+    if(found == NULL)
+        return NULL;
+    found += strlen(pattern);
+    const char *end = strchr(found, '"');
+    if(end == NULL || (size_t)(end - found) >= sizeof(value))
+        return NULL;
+    memcpy(value, found, (size_t)(end - found));
+    value[end - found] = '\0';
+    return value;
+}
+
+/* Extract the plugin table and the first panel's plugin order from
+ * xfce4-panel.xml. Returns the ordered id count. */
+static int
+parse_xfce_panel(const char *xml, XfcePluginEntry *plugins, int plugin_cap,
+                 int *order, int order_cap)
+{
+    int plugin_count = 0, order_count = 0;
+    const char *scan = xml;
+    XfcePluginEntry *current = NULL;
+    while(*scan != '\0') {
+        const char *tag = strchr(scan, '<');
+        if(tag == NULL)
+            break;
+        const char *end = strchr(tag, '>');
+        if(end == NULL)
+            break;
+        size_t length = (size_t)(end - tag - 1);
+        char element[256];
+        if(length < sizeof(element)) {
+            memcpy(element, tag + 1, length);
+            element[length] = '\0';
+            if(strncmp(element, "property", 8) == 0) {
+                const char *name = xml_attr(element, "name");
+                const char *value = xml_attr(element, "value");
+                if(name != NULL && strncmp(name, "plugin-", 7) == 0 &&
+                   name[7] >= '0' && name[7] <= '9') {
+                    int id = atoi(name + 7);
+                    if(id > 0 && plugin_count < plugin_cap) {
+                        current = &plugins[plugin_count++];
+                        memset(current, 0, sizeof(*current));
+                        current->id = id;
+                    } else
+                        current = NULL;
+                } else if(current != NULL && name != NULL) {
+                    if(strcmp(name, "name") == 0 && value != NULL &&
+                       current->name[0] == '\0')
+                        snprintf(current->name, sizeof(current->name), "%s", value);
+                    else if(strcmp(name, "items") == 0 && value != NULL &&
+                            current->item[0] == '\0')
+                        snprintf(current->item, sizeof(current->item), "%s", value);
+                } else if(name != NULL && value != NULL &&
+                          strcmp(name, "plugin-ids") == 0) {
+                    char ids[1024];
+                    snprintf(ids, sizeof(ids), "%s", value);
+                    char *save = NULL;
+                    for(char *token = strtok_r(ids, ", ", &save);
+                        token != NULL && order_count < order_cap;
+                        token = strtok_r(NULL, ", ", &save))
+                        order[order_count++] = atoi(token);
+                }
+            } else if(strncmp(element, "/property", 9) == 0)
+                current = NULL;
+            else if(strncmp(element, "value", 5) == 0 && current != NULL &&
+                    current->item[0] == '\0') {
+                /* Launcher items are <value type="string" value="id.desktop"/>. */
+                const char *value = xml_attr(element, "value");
+                if(value != NULL)
+                    snprintf(current->item, sizeof(current->item), "%s", value);
+            }
+        }
+        scan = end + 1;
+    }
+    return order_count > 0 ? order_count : plugin_count;
+}
+
+/* Import the installed Xfce panel into the native primary panel layout. */
+static int
+import_xfce_panel(RillVisualState *visuals, const RillPlatformServices *platform)
+{
+    char xml[65536];
+    if(platform->xfce_panel_config_load == NULL ||
+       !platform->xfce_panel_config_load(xml, sizeof(xml)))
+        return 0;
+    XfcePluginEntry plugins[64];
+    int order[64];
+    memset(plugins, 0, sizeof(plugins));
+    memset(order, 0, sizeof(order));
+    int ordered = parse_xfce_panel(xml, plugins, 64, order, 64);
+    if(ordered == 0)
+        return 0;
+    int left_count = 0, right_count = 0;
+    RillPanelPlugin *left = visuals->left_panel;
+    RillPanelPlugin *right = visuals->right_panel;
+    for(int o = 0; o < ordered; o++) {
+        XfcePluginEntry *entry = NULL;
+        for(int p = 0; p < 64 && entry == NULL; p++)
+            if(plugins[p].id == order[o] && plugins[p].name[0] != '\0')
+                entry = &plugins[p];
+        if(entry == NULL)
+            continue;
+        RillPanelPlugin plugin;
+        int mapping = xfce_plugin_mapping(entry->name, &plugin);
+        if(mapping == 0)
+            continue;
+        if(mapping == 2) {
+            const char *item = entry->item[0] != '\0' ? entry->item : "";
+            char identifier[96];
+            const char *slash = strrchr(item, '/');
+            snprintf(identifier, sizeof(identifier), "%s",
+                     slash != NULL ? slash + 1 : item);
+            char *dot = strstr(identifier, ".desktop");
+            if(dot != NULL)
+                *dot = '\0';
+            if(identifier[0] == '\0')
+                snprintf(identifier, sizeof(identifier), "terminal");
+            snprintf(plugin.id, sizeof(plugin.id), "xfce-%s", identifier);
+            snprintf(plugin.launcher_id, sizeof(plugin.launcher_id), "%s",
+                     identifier);
+        }
+        int status = plugin.kind == RILL_PANEL_MENU ||
+                     plugin.kind == RILL_PANEL_LAUNCHER ||
+                     plugin.kind == RILL_PANEL_TASK_LIST ||
+                     plugin.kind == RILL_PANEL_SEPARATOR;
+        RillPanelPlugin *target = status ? left : right;
+        int *count = status ? &left_count : &right_count;
+        if(*count >= RILL_PANEL_PLUGIN_MAX)
+            continue;
+        target[(*count)++] = plugin;
+    }
+    if(left_count + right_count == 0)
+        return 0;
+    visuals->left_panel_count = left_count;
+    visuals->right_panel_count = right_count;
+    visuals->panel_dirty = 1;
+    return 1;
+}
+
+
+
 
 static void
 load_panel_entries(RillVisualState *visuals,
@@ -5828,6 +6094,17 @@ draw_panels_settings(RillShellState *shell, Rectangle content,
         else
             snprintf(visuals->panel_entry_error, sizeof(visuals->panel_entry_error),
                      "Could not write panels.json.");
+    }
+    if(draw_settings_button((Rectangle){content.x + 12, (float)y + 36, 150, 26},
+                            "Import Xfce Panel", 0)) {
+        if(visuals->panel_config_path[0] != '\0' &&
+           import_xfce_panel(visuals, platform)) {
+            RillShellSetStatus(shell, "Xfce panel items imported");
+            snprintf(visuals->panel_entry_error, sizeof(visuals->panel_entry_error),
+                     "Imported the Xfce layout; it applies after restarting the panel.");
+        } else
+            snprintf(visuals->panel_entry_error, sizeof(visuals->panel_entry_error),
+                     "No Xfce panel configuration was found.");
     }
     if(visuals->panel_entry_error[0])
         draw_text_fit((TextProps){
@@ -6809,7 +7086,7 @@ main(int argc, char **argv)
             draw_notifications(&shell, &visuals, platform);
             draw_logout_dialog(&shell, &visuals, platform);
             draw_file_dialog(&shell, &visuals, platform);
-            draw_file_transfer(&visuals, platform);
+            draw_file_transfer(&shell, &visuals, platform);
             draw_trash_dialog(&shell, &visuals, platform);
             draw_drives_dialog(&shell, &visuals, platform);
             if(visuals.wallpaper_slideshow && visuals.wallpaper_count > 1 &&

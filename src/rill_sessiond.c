@@ -131,6 +131,12 @@ close_remaining_windows(void)
     Display *display = XOpenDisplay(NULL);
     if(display == NULL)
         return;
+    /* Hard guard: without supervised processes nothing here may send a
+     * protocol request at all, whatever _NET_CLIENT_LIST contains. */
+    if(processes == NULL || processes->len == 0) {
+        XCloseDisplay(display);
+        return;
+    }
     Atom client_list = XInternAtom(display, "_NET_CLIENT_LIST", False);
     Atom close_window = XInternAtom(display, "_NET_CLOSE_WINDOW", False);
     Atom pid_atom = XInternAtom(display, "_NET_WM_PID", False);
