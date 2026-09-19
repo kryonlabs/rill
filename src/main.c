@@ -197,7 +197,8 @@ typedef enum RillRunMode {
     RILL_MODE_WM,
     RILL_MODE_WINDOWED,
     RILL_MODE_SETTINGS,
-    RILL_MODE_RUN
+    RILL_MODE_RUN,
+    RILL_MODE_ABOUT
 } RillRunMode;
 
 typedef struct RillRuntimeOptions {
@@ -407,6 +408,10 @@ parse_runtime_options(int argc, char **argv, RillRuntimeOptions *options)
         }
         if(strcmp(argv[i], "--settings") == 0) {
             options->mode = RILL_MODE_SETTINGS;
+            continue;
+        }
+        if(strcmp(argv[i], "--about") == 0) {
+            options->mode = RILL_MODE_ABOUT;
             continue;
         }
         if(strcmp(argv[i], "--run-dialog") == 0) {
@@ -3762,7 +3767,7 @@ main(int argc, char **argv)
     RillShellRefresh(&shell, platform);
     RillShellSetStatus(&shell, startup_status);
     memset(&control, 0, sizeof(control));
-    if(options.mode != RILL_MODE_SETTINGS)
+    if(options.mode != RILL_MODE_SETTINGS && options.mode != RILL_MODE_ABOUT)
         rill_control_init(&control);
 
     SetSingleInstance(0);
@@ -3770,6 +3775,8 @@ main(int argc, char **argv)
         InitWindow(480, 240, "Rill run dialog");
     else if(options.mode == RILL_MODE_SETTINGS)
         InitWindow(540, 440, "Settings");
+    else if(options.mode == RILL_MODE_ABOUT)
+        InitWindow(500, 460, "About Rill");
     else
         InitWindow(RILL_WIDTH, RILL_HEIGHT, window_title);
     if(!IsWindowReady()) {
@@ -3897,7 +3904,8 @@ main(int argc, char **argv)
                               visuals.properties_open || visuals.logout_open;
         if(!test_scene_active(&test))
             process_window_mouse(&shell);
-        if(!test_scene_active(&test) && options.mode != RILL_MODE_SETTINGS)
+        if(!test_scene_active(&test) && options.mode != RILL_MODE_SETTINGS &&
+           options.mode != RILL_MODE_ABOUT)
             process_desktop_mouse(&shell, platform, &visuals);
         if(!test_scene_active(&test))
             rill_control_poll(&control, &shell, platform);
@@ -3917,6 +3925,8 @@ main(int argc, char **argv)
         } else if(options.mode == RILL_MODE_SETTINGS) {
             draw_settings_app(&shell, (Rectangle){0, 0, GetScreenWidth(), GetScreenHeight()},
                               &visuals, platform);
+        } else if(options.mode == RILL_MODE_ABOUT) {
+            draw_about_app((Rectangle){0, 0, GetScreenWidth(), GetScreenHeight()});
         } else {
             draw_wallpaper(&visuals);
             draw_desktop(&shell, platform, &visuals);
