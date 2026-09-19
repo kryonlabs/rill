@@ -235,6 +235,10 @@ static int
 rill_note(void *context, char *note)
 {
     (void)context;
+    if(strncmp(note, "sys: fp:", 8) == 0)
+        /* The kernel delivers stray unmasked floating-point traps from
+         * library math; they must not take down the desktop. */
+        return 1;
     if(strcmp(note, "interrupt") != 0 && strcmp(note, "hangup") != 0)
         return 0;
     rill_stop_requested = 1;
