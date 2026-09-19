@@ -1723,6 +1723,18 @@ panel_append_item(RillVisualState *visuals, int side, RillPanelPlugin plugin)
     visuals->panel_context_index = count;
 }
 
+static RillPanelPlugin
+panel_plugin(RillPanelPluginKind kind, const char *id, int width, int advance)
+{
+    RillPanelPlugin plugin;
+    memset(&plugin, 0, sizeof(plugin));
+    plugin.kind = kind;
+    snprintf(plugin.id, sizeof(plugin.id), "%s", id);
+    plugin.width = width;
+    plugin.advance = advance;
+    return plugin;
+}
+
 static void
 draw_panel_context_menu(RillShellState *shell, RillVisualState *visuals,
                          const RillPlatformServices *platform)
@@ -1805,36 +1817,29 @@ draw_panel_context_menu(RillShellState *shell, RillVisualState *visuals,
         y += 62;
     }
 
-    plugin = (RillPanelPlugin){RILL_PANEL_SEPARATOR, "separator", "", "",
-                               0, 0, 8, 0};
+    plugin = panel_plugin(RILL_PANEL_SEPARATOR, "separator", 0, 8);
     if(panel_context_row((Rectangle){x + 6, y, 196, 26}, "Add Separator"))
         panel_append_item(visuals, side, plugin);
-    plugin = (RillPanelPlugin){RILL_PANEL_TASK_LIST, "task-list", "", "",
-                               0, 0, 0, 0};
+    plugin = panel_plugin(RILL_PANEL_TASK_LIST, "task-list", 0, 0);
     if(panel_context_row((Rectangle){x + 6, y + 28, 196, 26}, "Add Task List"))
         panel_append_item(visuals, side, plugin);
-    plugin = (RillPanelPlugin){RILL_PANEL_WORKSPACES, "workspaces", "", "",
-                               0, 42, 42, 0};
+    plugin = panel_plugin(RILL_PANEL_WORKSPACES, "workspaces", 42, 42);
     if(panel_context_row((Rectangle){x + 6, y + 56, 196, 26},
                          "Add Workspaces"))
         panel_append_item(visuals, side, plugin);
-    plugin = (RillPanelPlugin){RILL_PANEL_SHOW_DESKTOP, "show-desktop", "", "",
-                               0, 26, 28, 0};
+    plugin = panel_plugin(RILL_PANEL_SHOW_DESKTOP, "show-desktop", 26, 28);
     if(panel_context_row((Rectangle){x + 6, y + 84, 196, 26},
                          "Add Show Desktop"))
         panel_append_item(visuals, side, plugin);
-    plugin = (RillPanelPlugin){RILL_PANEL_ACTIONS, "actions", "", "",
-                               0, 26, 28, 0};
+    plugin = panel_plugin(RILL_PANEL_ACTIONS, "actions", 26, 28);
     if(panel_context_row((Rectangle){x + 6, y + 112, 196, 26},
                          "Add Action Buttons"))
         panel_append_item(visuals, side, plugin);
-    plugin = (RillPanelPlugin){RILL_PANEL_VOLUME, "volume", "", "",
-                               0, 58, 60, 0};
+    plugin = panel_plugin(RILL_PANEL_VOLUME, "volume", 58, 60);
     if(panel_context_row((Rectangle){x + 6, y + 140, 196, 26},
                          "Add Volume Control"))
         panel_append_item(visuals, side, plugin);
-    plugin = (RillPanelPlugin){RILL_PANEL_CLIPBOARD, "clipboard", "", "",
-                               0, 26, 28, 0};
+    plugin = panel_plugin(RILL_PANEL_CLIPBOARD, "clipboard", 26, 28);
     if(panel_context_row((Rectangle){x + 6, y + 168, 196, 26},
                          "Add Clipboard History"))
         panel_append_item(visuals, side, plugin);
