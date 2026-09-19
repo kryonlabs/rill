@@ -13,7 +13,9 @@
 #endif
 
 #include <math.h>
+#ifndef KRYON_NATIVE_PLAN9
 #include <signal.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -222,6 +224,19 @@ static const RillMenuCategory rill_menu_categories[] = {
     {"Other", "other"}
 };
 
+#ifdef KRYON_NATIVE_PLAN9
+static volatile int rill_stop_requested;
+
+static int
+rill_note(void *context, char *note)
+{
+    (void)context;
+    if(strcmp(note, "interrupt") != 0 && strcmp(note, "hangup") != 0)
+        return 0;
+    rill_stop_requested = 1;
+    return 1;
+}
+#else
 static volatile sig_atomic_t rill_stop_requested;
 
 static void
@@ -230,6 +245,7 @@ rill_signal_stop(int signal_number)
     (void)signal_number;
     rill_stop_requested = 1;
 }
+#endif
 
 static Color
 mix_color(Color a, Color b, float t)
@@ -3687,8 +3703,12 @@ main(int argc, char **argv)
     RillX11Manager x11;
 #endif
 
+#ifdef KRYON_NATIVE_PLAN9
+    atnotify(rill_note, 1);
+#else
     signal(SIGINT, rill_signal_stop);
     signal(SIGTERM, rill_signal_stop);
+#endif
 
     init_test_state(&test);
     parse_runtime_options(argc, argv, &options);

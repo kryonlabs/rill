@@ -283,9 +283,14 @@ add_rio_task(const char *name, RillTask *task)
     if(!read_window_file(id, "label", task->title, sizeof(task->title)))
         return 0;
     trim_line(task->title);
-    if(read_window_file(id, "wctl", state, sizeof(state)))
+    /* Taiji's snapshot leaves the application's resize event stream alone. */
+    if(read_window_file(id, "winfo", state, sizeof(state)) ||
+       read_window_file(id, "wctl", state, sizeof(state))) {
+        if(strstr(state, " desktop") != NULL)
+            return 0;
         task->focused = strstr(state, "current") != NULL &&
                         strstr(state, "notcurrent") == NULL;
+    }
     return 1;
 }
 
@@ -361,8 +366,14 @@ plan9_launch(const RillLauncher *launcher)
 static int
 plan9_focus_task(int task_id)
 {
-    /* unhide also focuses, but top is needed for an already visible window. */
-    if(!write_window_control(task_id, "unhide")) return 0;
+    char state[128];
+    /* Activate works during a panel click: rio completes it on release. */
+    if(read_window_file(task_id, "winfo", state, sizeof(state)))
+        return write_window_control(task_id, "activate");
+    /* Original rio rejects unhide for windows that are already visible. */
+    if(read_window_file(task_id, "wctl", state, sizeof(state)) &&
+       strstr(state, "hidden") != NULL &&
+       !write_window_control(task_id, "unhide")) return 0;
     if(!write_window_control(task_id, "top")) return 0;
     return write_window_control(task_id, "current");
 }
