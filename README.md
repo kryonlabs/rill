@@ -24,8 +24,9 @@ adapters.
   editable through the item Properties dialog.
 - StatusNotifier tray hosting: Rill owns `org.kde.StatusNotifierWatcher` when
   no other host (such as the real Xfce panel) already registered, renders
-  StatusNotifierItem icons in the panel and forwards left/right clicks as
-  Activate/SecondaryActivate. Legacy XEmbed tray icons dock into an
+  StatusNotifierItem icons in the panel, forwards left clicks as Activate and
+  shows the item's D-Bus menu (submenus, toggles, disabled entries) on right
+  click. Legacy XEmbed tray icons dock into an
   override-redirect host window composited over the same panel slot
   (`_NET_SYSTEM_TRAY_S<n>`), following panel placement and auto-hide.
 - Desktop notification server: Rill owns `org.freedesktop.Notifications` when
@@ -51,8 +52,16 @@ adapters.
 - Desktop icons from launchers marked `X-Rill-Favorite=true`, entries in the
   user's configured XDG desktop folder (including ordinary files and folders),
   and Home / File System / Trash shortcuts. Icons select on click, open on
-  double-click, and retain dragged positions. Rename, new-folder and confirmed
-  Trash actions are available from the desktop context menu.
+  double-click (single-click is configurable), and retain dragged positions.
+  Rename, new-folder and confirmed Trash actions are available from the desktop
+  context menu, arrow keys move the selection spatially, typing selects by name,
+  and the Trash icon carries a count badge with restore and empty commands.
+- External drag and drop in both directions through XDND: files dropped by
+  other applications land on the desktop or inside folder icons, and dragging
+  selected desktop files delivers them to any drop target. Transfers queue,
+  offer conflict choices (skip, replace or keep both, optionally for the whole
+  job), support duplicate-in-place and retry, and abandoned staging
+  directories are recovered after a crash.
 - Desktop context menu (right-click) with Applications, Terminal, Files,
   Settings, wallpaper and session entries; middle-click opens a window list
   that focuses any task; the mouse wheel over the desktop switches workspaces.
@@ -65,10 +74,16 @@ adapters.
   XDG autostart overrides, independent desktop/WM/panel service supervision,
   cancellable save-before-logout, and opt-in saved-command restoration.
 - Standalone dock panels with named output selection and reserved work areas.
-  Configure multiple panels through `panels.json`; Shift-drag reorders items.
+  Configure multiple panels through `panels.json` or the Settings panels page;
+  panels sit on any screen edge (vertical panels use a compact icon column),
+  and Shift-drag reorders items.
 - A standalone `rill --settings` window, live shared preference updates and
   links to installed system control panels. File saves are atomic on Linux
-  and merge changes from separate desktop/panel processes.
+  and merge changes from separate desktop/panel processes. Settings also
+  changes display modes with a fifteen-second revert confirmation, keyboard
+  repeat and pointer speed, edits the window-manager shortcuts with conflict
+  detection, manages the panel list, and reports supervised services plus
+  screen-lock readiness.
 - An XSETTINGS provider (the xfsettingsd core): Rill owns the
   `_XSETTINGS_S<n>` selection and broadcasts the imported GTK theme/font
   values (with overrides from the Rill settings file) to every X11

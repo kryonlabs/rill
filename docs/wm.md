@@ -35,11 +35,14 @@ xfce4-session and Thunar. Their code and APIs have not been reimplemented.
   the title double-click action and the focus model (click or
   focus-follows-mouse) are read from the xfwm4 xfconf channel at startup.
   `RILL_WM_BUTTON_LAYOUT` and `RILL_WM_FOCUS_MODE` override them without
-  xfconf.
+  xfconf. The installed xfwm4 theme's `themerc` colors (active/inactive frame
+  and title text) are imported as well; `RILL_WM_THEME` overrides the theme
+  name. Themed decoration pixmaps are not used.
 - Monitor-aware placement: maximizing, tiling and fullscreen use the RandR
   monitor containing the window, including fake monitors, and follow monitor
-  changes.
-- Transient/modal dialogs, parent minimize/restore, panel struts/work areas,
+  changes. New windows without a position hint prefer free screen space.
+- Transient/modal dialogs stack with their owner: raising a window carries its
+  transient chain, parent minimize/restore, panel struts/work areas,
   basic monitor-aware maximization/fullscreen and display resize handling.
 - ICCCM delete/take-focus messages, EWMH state/move/resize requests, Motif
   undecorated hints including changes after mapping, bounding/input-shaped
@@ -80,7 +83,8 @@ Default controls; every one of them can be rebound through the key file below.
 Bindings load at startup from `$XDG_CONFIG_HOME/rill/wm-keys` (or
 `$HOME/.config/rill/wm-keys`; `RILL_WM_KEYS` points somewhere else). Each line
 binds one action; comments start with `#`, invalid lines are ignored, and
-unlisted actions keep their defaults:
+unlisted actions keep their defaults. The Settings application edits this file
+graphically with conflict detection and a reset button:
 
 ```ini
 close = Ctrl+Alt+q
@@ -132,11 +136,10 @@ network or privileged functionality.
 
 Rill WM is not yet a 1:1 xfwm4 replacement. These gaps remain explicit:
 
-- xfwm4 theme parsing and matching decoration appearance; the imported
-  preferences cover button layout, double-click action and focus model, but
-  not themed decoration pixmaps or a graphical settings interface.
-- Detailed placement policies, full transient/group stacking behavior and
-  application-specific compatibility.
+- Themed decoration pixmaps: themerc colors are imported, but per-theme button
+  and frame art and a graphical decoration settings interface are not.
+- Detailed placement policies for unusual applications and full
+  application-specific compatibility beyond smart placement.
 - Broader application/session restoration and dynamic window-type changes.
   Motif decoration changes, frame input shapes and normal geometry recovery
   after a crash are implemented and tested.

@@ -16,22 +16,36 @@ and [window-manager details](wm.md) for the implemented behavior.
   bounded crash recovery, cancellable logout and save/phase-two interactions.
   Applications launched through Rill survive desktop and panel crashes.
 - Multiple panels configured by name/output, work-area reservation, horizontal
-  top/bottom placement, autohide and persistent Shift-drag item ordering.
+  top/bottom placement and vertical left/right panels, autohide and persistent
+  Shift-drag item ordering. A graphical panels.json editor in Settings manages
+  panel creation/removal, output, edge, size and autohide.
 - XDG desktop folder discovery, ordinary files/folders, application launching,
   selection, persistent icon placement, rename, new folders and confirmed Trash.
 - Multiple desktop selection with Control-click, Shift ranges, a selection
-  rectangle and Select All; moving selected icons together.
-- File cut/copy/paste interoperating with file-manager clipboard formats,
-  background recursive copy/move/Trash, progress and cancellation. Copies preserve
-  symbolic links, reject existing destinations and stage each top-level item
-  before publishing it. Rill clears its own cut clipboard after a successful move.
+  rectangle and Select All; moving selected icons together; arrow-key spatial
+  navigation and type-to-select with an optional single-click activation
+  preference.
+- External drag and drop both ways through XDND: dropping URI lists onto the
+  desktop or onto folder icons starts transfers, and dragging selected desktop
+  files delivers them to other applications.
+- File transfers with a queue, interactive conflict choices (skip, replace or
+  keep both, each also apply-to-all), duplicate-in-place, retry after failure,
+  staging-directory recovery after crashes, cut/copy/paste interoperating with
+  file-manager clipboard formats, Trash listing, restore and emptying with a
+  count badge and management dialog.
 - Standalone Settings, installed system-control-panel launchers, concurrent
   preference merging, live panel updates and existing application preferences.
 - Notifications, text clipboard history, StatusNotifier and XEmbed tray hosting,
-  basic volume and battery indicators.
+  StatusNotifier D-Bus menus (submenus, toggles, disabled entries), basic volume
+  and battery indicators and audio output selection.
+- Display mode changes with a fifteen-second revert confirmation, keyboard
+  repeat and pointer speed settings, a graphical WM-shortcut editor with
+  conflict detection, and a supervised-service plus screen-lock-readiness
+  report from the session manager.
 - Lock-result checking and lock-before-suspend for Rill's own Suspend action.
-- Dynamic decoration hints, input shapes and normal-window-geometry recovery
-  after a WM crash.
+- Dynamic decoration hints, input shapes, transient-group stacking, smart
+  placement of new windows, xfwm4 themerc color import and normal-window
+  geometry recovery after a WM crash.
 - Current Kryon text/font/frame APIs and an upstream Linux libdraw fix for real
   key releases, modifier shortcuts, focus state and Delete/Backspace distinction.
 
@@ -40,12 +54,15 @@ and [window-manager details](wm.md) for the implemented behavior.
 ### Screen locking and power
 
 - [ ] Install/configure a supported locker and expose its readiness clearly in
-  Settings. The development machine currently reports **no detected locker**.
+  Settings. The development machine currently reports **no detected locker**;
+  the Settings System page now names the detected provider or this gap.
 - [ ] Validate lock, unlock, authentication failure, idle timeout, lid close,
   suspend/resume and logout on real hardware.
 - [ ] Keep a working locker and polkit provider alive across session failures.
-- [ ] Decide whether a native PAM-authenticated locker is required or supported
-  provider integration is the product boundary; implement and audit accordingly.
+- [x] Decide the locker boundary: supported-provider integration with explicit
+  readiness reporting is the product boundary. A self-written PAM locker
+  without a security audit would be riskier than the documented provider
+  contract; revisit if an audited native locker is produced.
 - [ ] Test inhibitor handling and rejected power requests with real logind/polkit.
 
 Acceptance: the session cannot report a successful lock while the desktop remains
@@ -54,25 +71,26 @@ supported policy. Private Xvfb tests do not establish this.
 
 ### File operations and desktop interaction
 
-- [ ] External drag/drop: XDND source and target, URI lists, copy/move negotiation,
-  dropping onto folders, cancellation and protocol completion after actual I/O.
-- [ ] Add keyboard spatial navigation, type-to-select, configurable single-click
-  activation and accessible selection announcements.
-- [ ] Add conflict choices (skip, rename, replace with explicit confirmation),
-  duplicate-in-place, retry and a queue for multiple transfer jobs. Current
-  behavior refuses collisions and permits one active transfer per process.
-- [ ] Recover abandoned staging directories after a desktop crash; expose any
-  cleanup failure. Graceful cancellation cleans staging data, but a killed
-  process can leave a hidden `.transfer-*` directory.
+- [x] External drag/drop: XDND source and target, URI lists, copy/move
+  negotiation, dropping onto folders, cancellation and protocol completion
+  after actual I/O.
+- [x] Keyboard spatial navigation, type-to-select and configurable single-click
+  activation. Accessible selection announcements still need assistive
+  technology (see below).
+- [x] Conflict choices (skip, rename/keep-both, replace with explicit
+  confirmation), duplicate-in-place, retry and a queue for multiple transfer
+  jobs.
+- [x] Recover abandoned staging directories after a desktop crash; the desktop
+  clears them at startup and reports the count.
 - [ ] Improve cross-filesystem moves and partial-result reporting. A completed
   destination can remain if source cleanup fails; multiple top-level items are
   committed individually, not as one atomic batch. No undo is implemented.
 - [ ] Preserve file selections on clipboard-owner exit/desktop crash and expand
   testing to GVfs network mounts, large trees, ACLs/xattrs, permissions and
   disconnects. Current clipboard tests cover local files and separate owners.
-- [ ] Complete removable-media mount/eject/unmount, Trash count/restore/empty and
-  volume errors. The installed file manager handles browsing and advanced media
-  operations today.
+- [ ] Full removable-media mount/eject/unmount and volume errors beyond the
+  implemented Trash management. The installed file manager still handles
+  browsing and advanced media operations.
 
 Acceptance: real Thunar and another file manager can copy, cut, paste and drag
 files both ways; cancellation/conflicts never silently overwrite or remove data;
@@ -80,11 +98,11 @@ errors identify completed and unfinished work.
 
 ### Settings and accessibility
 
-- [ ] Native display configuration, scaling and output placement, with timed
-  rollback for an unusable display setup.
-- [ ] Native keyboard/layout/repeat, mouse/touchpad, theme/font/default-app,
-  audio and power preferences, or an explicitly supported provider contract.
-- [ ] A graphical WM-shortcut editor with conflict detection and reset.
+- [x] Native display mode changes with a timed rollback for an unusable setup.
+- [x] Native keyboard repeat and pointer speed preferences; a graphical
+  WM-shortcut editor with conflict detection and reset. Remaining device
+  categories keep the documented provider contract through installed control
+  panels.
 - [ ] Full keyboard traversal, accessible names/roles/states/actions, screen-reader
   navigation, selection announcements, high contrast and large text throughout
   Rill's own custom desktop, menus, panels and dialogs.
@@ -99,15 +117,17 @@ reader. Opening an installed control panel does not establish native support.
 
 ### Panels, trays and plugins
 
-- [ ] Vertical and deskbar orientation, appropriate item layout and struts.
-- [ ] Graphical creation/removal of panels, monitor selection and geometry editing;
-  the current panel list is `panels.json` and changes require login/restart.
+- [x] Vertical (left/right edge) orientation with appropriate item layout and
+  struts. Deskbar (wrapped multi-row horizontal) layout is still open.
+- [x] Graphical creation/removal of panels, monitor selection and geometry
+  editing through the Settings panels page; changes apply at the next login.
 - [ ] Full native migration of existing Xfce panel/plugin layouts.
 - [ ] Independent hosting of unchanged GTK plugins, or explicit supported plugin
   replacements. Compatibility mode still uses the real Xfce panel.
-- [ ] StatusNotifier D-Bus menus, submenu/toggle/disabled states and lifecycle
-  updates; secondary activation is not a substitute for a complete item menu.
-- [ ] More complete audio-device, network, Bluetooth and battery controls.
+- [x] StatusNotifier D-Bus menus with submenu/toggle/disabled states; item
+  lifecycle menu refresh and icon-only shortcuts inside submenus remain open.
+- [x] Audio output selection for the default sink through the volume item;
+  more complete network and Bluetooth controls remain open.
 
 Acceptance: representative existing panel layouts migrate without losing their
 settings; panels follow hotplug and orientation changes; tray menus operate the
@@ -115,9 +135,11 @@ real application actions.
 
 ### Window manager and compositor
 
-- [ ] Broader transient/group stacking, placement, dialogs, focus-stealing and
-  application-startup activation regressions.
-- [ ] xfwm4 theme compatibility or a documented migration to Rill themes.
+- [x] Broader transient/group stacking and placement: dialogs and their
+  transients stay above their owner, and new windows prefer free screen space.
+- [x] xfwm4 theme compatibility at the color level: active/inactive frame and
+  title colors are imported from the installed theme's themerc. Themed
+  decoration pixmaps and per-theme button art remain open.
 - [ ] Frame pacing/vsync, fullscreen bypass and sustained-load benchmarks.
 - [ ] Physical output hotplug, mixed DPI, multi-seat and fullscreen-game testing.
 
@@ -132,8 +154,9 @@ WM restarts, with measured rendering behavior.
 - [ ] Arbitrary XSMP client restart styles and wider application-restore coverage.
 - [ ] Persist/restore application state where applications support it, not merely
   their restart commands and working directories.
-- [ ] Better user-facing diagnostics for missing/crashing optional services and
-  failed asynchronous application launches.
+- [x] Better user-facing diagnostics for missing/crashing optional services and
+  failed asynchronous application launches: the session manager publishes a
+  per-service status file shown in Settings, including screen-lock readiness.
 - [ ] Explicit behavior for in-progress file transfers during logout/recovery.
   Graceful desktop exit currently cancels and joins its active transfer.
 
@@ -167,9 +190,12 @@ or modifier parity to the native Plan 9 rune transport.
 ## Verification and completion gates
 
 The automated suite covers recursive file transfers, symlinks, collision refusal,
-self-copy through a symlink, cancellation cleanup, cross-process clipboard
-formats, desktop multiple selection and cut/copy/paste, desktop crash recovery,
-XSMP transactions, panels, WM input/shapes/geometry and compositor rendering.
+interactive conflict decisions, the transfer queue, duplicate and retry,
+self-copy through a symlink, cancellation cleanup, crash-time staging recovery,
+Trash listing/restore/emptying, cross-process clipboard formats, XDND target
+and source protocol exchanges, desktop multiple selection and cut/copy/paste,
+desktop crash recovery, XSMP transactions, panels, WM input/shapes/geometry and
+compositor rendering.
 
 ```sh
 make test

@@ -77,6 +77,7 @@ static char *auth_cookie;
 
 static void begin_save(int shutdown);
 static void cancel_logout(void);
+static void write_status(void);
 
 static gint64
 now_ms(void)
@@ -142,6 +143,7 @@ start_process(SessionProcess *process)
                 process->name, error->message);
         g_clear_error(&error);
         process->pid = 0;
+        write_status();
         if(process->required) {
             exit_status = 1;
             stop_requested = 1;
@@ -150,6 +152,37 @@ start_process(SessionProcess *process)
     }
     fprintf(stderr, "rill-sessiond: started %s (%ld)\n",
             process->name, (long)process->pid);
+    write_status();
+}
+
+/* A plain-text service report the Settings application can show: one line
+ * per supervised process with its current state. */
+void
+write_status(void)
+{
+    if(runtime_directory == NULL)
+        return;
+    char *path = g_build_filename(runtime_directory, "status", NULL);
+    char *temporary = g_strconcat(path, ".tmp", NULL);
+    FILE *file = fopen(temporary, "w");
+    if(file != NULL) {
+        for(guint i = 0; i < processes->len; i++) {
+            SessionProcess *process = g_ptr_array_index(processes, i);
+            const char *state = process->pid > 0 ? "running" :
+                                process->retry_at > 0 ? "restarting" :
+                                process->required ? "failed" : "exited";
+            fprintf(file, "%s: %s%s%s (pid %ld, %d restart%s)\n",
+                    process->name, state,
+                    process->required ? ", required" : "",
+                    process->body ? ", session body" : "",
+                    (long)(process->pid > 0 ? process->pid : 0),
+                    process->failures, process->failures == 1 ? "" : "s");
+        }
+        fclose(file);
+        rename(temporary, path);
+    }
+    g_free(temporary);
+    g_free(path);
 }
 
 static void
@@ -210,6 +243,7 @@ reap_processes(void)
                 exit_status = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
                 stop_requested = 1;
             }
+            write_status();
             break;
         }
     }

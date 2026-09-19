@@ -61,19 +61,25 @@ management.
 
 A native panel is a separate X11 dock with a reserved work area. Its window shape
 includes open menus and leaves the rest of the desktop available to applications.
-Height, top/bottom placement and autohide are persisted. Hold **Shift** while
+Height or column width, any screen edge (vertical panels render a compact icon
+column) and autohide are persisted. Hold **Shift** while
 dragging an item onto another item to reorder it. Right-click retains item
 properties and move/remove commands. Settings changes propagate to the desktop
 and primary panel without restarting them; concurrent saves merge changed keys.
 
-For multiple panels, put `panels.json` in the **original** `~/.config/rill`:
+For multiple panels, put `panels.json` in the **original** `~/.config/rill`, or
+edit it graphically from the Settings panels page:
 
 ```json
 [
-  {"id": "primary"},
-  {"id": "secondary", "output": "DP-2"}
+  {"id": "primary", "edge": "top", "size": 26, "autohide": false},
+  {"id": "secondary", "output": "DP-2", "edge": "right", "size": 40}
 ]
 ```
+
+Every field except `id` is optional: `edge` is `top`, `bottom`, `left` or
+`right` (default `top`), `size` is a 20-64 pixel bar height or column width,
+and `autohide` hides the bar until the pointer reaches its screen edge.
 
 IDs must be unique and contain only ASCII letters, digits, hyphens or underscores.
 The default output is the primary monitor. A missing named output temporarily

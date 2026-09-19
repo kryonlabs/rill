@@ -235,7 +235,17 @@ def configured_services(env, binary, original):
             output = panel.get('output', '')
             if not isinstance(output, str) or '\0' in output or len(output) > 127:
                 raise ValueError('panel output must be an XRandR output name')
-            command = [binary, '--panel', name]
+            edge = panel.get('edge', 'top')
+            if edge not in ('top', 'bottom', 'left', 'right'):
+                raise ValueError('panel edge must be top, bottom, left or right')
+            size = panel.get('size', 26)
+            if not isinstance(size, int) or size < 20 or size > 64:
+                raise ValueError('panel size must be between 20 and 64')
+            autohide = panel.get('autohide', False)
+            if not isinstance(autohide, bool):
+                raise ValueError('panel autohide must be true or false')
+            command = [binary, '--panel', name, '--panel-edge', edge,
+                       '--panel-size', str(size), '--panel-autohide', '1' if autohide else '0']
             if output:
                 command += ['--panel-output', output]
             services.append({'name': 'Panel ' + name, 'command': command, 'restart': True, 'required': True})

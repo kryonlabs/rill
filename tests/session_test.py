@@ -86,7 +86,8 @@ class NativeSessionTest(unittest.TestCase):
             (original / 'autostart').mkdir()
             (original / 'autostart/personal.desktop').write_text('[Desktop Entry]\nHidden=true\n')
             (personal / 'panels.json').write_text(json.dumps([
-                {'id': 'primary'}, {'id': 'second', 'output': 'DP-2'},
+                {'id': 'primary'}, {'id': 'second', 'output': 'DP-2', 'edge': 'right',
+                                     'size': 44, 'autohide': True},
             ]))
             result = module['prepare']({'HOME': directory, 'RILL_SESSION_SERVICES': 'none'}, '/opt/rill/rill')
             profile = Path(result['XDG_CONFIG_HOME'])
@@ -99,7 +100,8 @@ class NativeSessionTest(unittest.TestCase):
             self.assertEqual(list((original / 'autostart').iterdir()),
                              [original / 'autostart/personal.desktop'])
             services = Path(result['RILL_SESSION_SERVICES_FILE']).read_text()
-            self.assertIn('--panel;second;--panel-output;DP-2;', services)
+            self.assertIn('--panel;second;--panel-edge;right;--panel-size;44;'
+                          '--panel-autohide;1;--panel-output;DP-2;', services)
             (profile / 'rill/settings').write_text('panel-height = 28\n')
             module['prepare']({'HOME': directory, 'RILL_SESSION_SERVICES': 'none'}, '/opt/rill/rill')
             self.assertEqual((profile / 'rill/settings').read_text(), 'panel-height = 28\n')

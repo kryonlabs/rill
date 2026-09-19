@@ -80,6 +80,30 @@ static char button_left[8], button_right[8];
 static int follow_mouse;
 enum { DoubleClickMaximize, DoubleClickShade, DoubleClickNone };
 static int double_click = DoubleClickMaximize;
+/* Frame colors; an xfwm4 theme's themerc overrides these at startup. */
+static unsigned long theme_active = 0x344c6b;
+static unsigned long theme_inactive = 0x41444b;
+static unsigned long theme_active_text = 0xffe6e9ef;
+static unsigned long theme_inactive_text = 0xffb8bcc4;
+/* "#rrggbb" or "#aarrggbb" to a pixel value; 0xdeadbeef marks a bad value. */
+static unsigned long parse_theme_color(const char *text)
+{
+    if (!text || text[0] != '#')
+        return 0xdeadbeefUL;
+    char *end = NULL;
+    unsigned long value = strtoul(text + 1, &end, 16);
+    if (end == text + 1)
+        return 0xdeadbeefUL;
+    size_t digits = (size_t)(end - (text + 1));
+    if (digits == 6)
+        value = ((value & 0xff) << 16) | (value & 0xff00) | ((value >> 16) & 0xff);
+    else if (digits == 8)
+        value = ((value & 0xff) << 24) | ((value & 0xff00) << 8) |
+                ((value >> 8) & 0xff00) | ((value >> 24) & 0xff);
+    else
+        return 0xdeadbeefUL;
+    return value | 0xff000000UL;
+}
 static Atom atom(const char *name) { return XInternAtom(display, name, False); }
 static int max(int a, int b) { return a > b ? a : b; }
 static int min(int a, int b) { return a < b ? a : b; }
@@ -277,10 +301,67 @@ static void load_decoration_preferences(void)
         else if (strcmp(value, "none") == 0)
             double_click = DoubleClickNone;
     }
+    /* Theme colors: an xfwm4 theme's themerc supplies the frame and title
+     * colors so existing themes keep their look (pixmaps are not used). */
+    char theme[128] = "";
+    const char *theme_override = getenv("RILL_WM_THEME");
+    if (theme_override && *theme_override)
+        snprintf(theme, sizeof(theme), "%s", theme_override);
+    else if (xfwm4_setting("/general/theme", value, sizeof(value)))
+        snprintf(theme, sizeof(theme), "%s", value);
+    if (!*theme)
+        return;
+    const char *roots[] = {getenv("HOME"), "/usr/share/themes", "/usr/local/share/themes"};
+    for (unsigned r = 0; r < sizeof(roots) / sizeof(roots[0]); r++) {
+        if (!roots[r] || !*roots[r])
+            continue;
+        char path[512];
+        snprintf(path, sizeof(path), "%s/.themes", roots[r]);
+        if (r == 0)
+            snprintf(path, sizeof(path), "%s/.themes/%s/xfwm4/themerc", roots[r], theme);
+        else
+            snprintf(path, sizeof(path), "%s/%s/xfwm4/themerc", roots[r], theme);
+        FILE *file = fopen(path, "r");
+        if (!file)
+            continue;
+        char line[256];
+        while (fgets(line, sizeof(line), file)) {
+            char *equals = strchr(line, '=');
+            if (!equals)
+                continue;
+            *equals = 0;
+            char *key = line, *value_color = equals + 1;
+            while (*key == ' ' || *key == '\t')
+                key++;
+            char *end = key + strlen(key);
+            while (end > key && (end[-1] == ' ' || end[-1] == '\t'))
+                *--end = 0;
+            while (*value_color == ' ' || *value_color == '\t')
+                value_color++;
+            end = value_color + strlen(value_color);
+            while (end > value_color && (end[-1] == ' ' || end[-1] == '\t' ||
+                                         end[-1] == '\n' || end[-1] == '\r'))
+                *--end = 0;
+            unsigned long parsed = parse_theme_color(value_color);
+            if (parsed == 0xdeadbeefUL)
+                continue;
+            if (!strcmp(key, "active_color") || !strcmp(key, "active_border"))
+                theme_active = parsed;
+            else if (!strcmp(key, "inactive_color") || !strcmp(key, "inactive_border"))
+                theme_inactive = parsed;
+            else if (!strcmp(key, "active_text_color") || !strcmp(key, "active_text"))
+                theme_active_text = parsed;
+            else if (!strcmp(key, "inactive_text_color") || !strcmp(key, "inactive_text"))
+                theme_inactive_text = parsed;
+        }
+        fclose(file);
+        break;
+    }
 }
 static void draw_button_glyph(Client *c, int x, char kind)
 {
-    XSetForeground(display, c->paint, 0xffe6e9ef);
+    XSetForeground(display, c->paint, c == focused ? theme_active_text :
+                                                   theme_inactive_text);
     Window frame = c->frame;
     GC paint = c->paint;
     if (kind == 'C') {
@@ -326,7 +407,8 @@ static void draw_frame(Client *c)
     if (!c->frame || !c->title)
         return;
     int width = c->geometry.w + 2 * c->border;
-    unsigned long color = c == focused ? 0x344c6b : 0x41444b;
+    int is_active = c == focused;
+    unsigned long color = is_active ? theme_active : theme_inactive;
     if (c->urgent && c != focused)
         color = 0x805328;
     if (c->hung)
@@ -566,6 +648,7 @@ static void visibility(Client *c)
     }
     state(c);
 }
+static void raise_with_group(Client *c, int depth);
 static void restack(void)
 {
     /* Raising each layer in order keeps panels above ordinary windows. */
@@ -577,16 +660,27 @@ static void restack(void)
                     : c->above      ? 3
                                     : 1;
             if (c->visible && l == layer)
-                XRaiseWindow(display, surface(c));
+                raise_with_group(c, 0);
         }
     if (focused && focused->visible) {
-        XRaiseWindow(display, surface(focused));
+        raise_with_group(focused, 0);
         if (!focused->fullscreen)
             for (Client *c = clients; c; c = c->next)
                 if (c != focused && c->visible && (c->dock || c->above))
                     XRaiseWindow(display, surface(c));
     }
     publish_clients();
+}
+/* Raise a window together with its transient chain: dialogs stay above the
+ * window they belong to, transitively, without disturbing other layers. */
+static void raise_with_group(Client *c, int depth)
+{
+    XRaiseWindow(display, surface(c));
+    if (depth >= 8)
+        return;
+    for (Client *t = clients; t; t = t->next)
+        if (t != c && t->visible && !t->special && t->transient == c->window)
+            raise_with_group(t, depth + 1);
 }
 static void publish_clients(void)
 {
@@ -873,6 +967,7 @@ static void manage(Window window)
         c->desktop = parent->desktop;
     c->normal = (Geometry){a.x, a.y, max(1, a.width), max(1, a.height)};
     unsigned long *saved = property(window, "_RILL_NORMAL_GEOMETRY", XA_CARDINAL, &n);
+    int had_saved = saved != NULL && n == 4;
     if (!c->special && n == 4 && saved[2] > 0 && saved[2] <= 65535 &&
         saved[3] > 0 && saved[3] <= 65535)
         c->normal = (Geometry){(int)saved[0], (int)saved[1], (int)saved[2], (int)saved[3]};
@@ -883,6 +978,28 @@ static void manage(Window window)
         if (parent && !(c->hints.flags & (USPosition | PPosition))) {
             c->normal.x = parent->geometry.x + (parent->geometry.w - a.width) / 2;
             c->normal.y = parent->geometry.y + (parent->geometry.h - a.height) / 2;
+        } else if (!parent && !had_saved && !(c->hints.flags & (USPosition | PPosition))) {
+            /* Smart placement: prefer a spot that does not cover an existing
+             * window; fall back to a short cascade when none is free. */
+            int placed = 0;
+            for (int step = 0; step < 64 && !placed; step++) {
+                int gx = area_.x + Border + 24 + (step % 8) * 34;
+                int gy = area_.y + Title + Border + 24 + (step / 8) * 30;
+                Geometry candidate = {gx, gy, c->normal.w, c->normal.h};
+                int overlaps = 0;
+                for (Client *o = clients; o && !overlaps; o = o->next)
+                    if (o != c && o->visible && !o->special && o->desktop == c->desktop) {
+                        int ox = o->geometry.x - 8, oy = o->geometry.y - 8;
+                        int ow = o->geometry.w + 16, oh = o->geometry.h + 16;
+                        overlaps = gx < ox + ow && gx + candidate.w > ox &&
+                                   gy < oy + oh && gy + candidate.h > oy;
+                    }
+                if (!overlaps) {
+                    c->normal.x = gx;
+                    c->normal.y = gy;
+                    placed = 1;
+                }
+            }
         }
         c->normal.x = max(area_.x + Border, min(c->normal.x, area_.x + area_.w - 80));
         c->normal.y = max(area_.y + Title + Border, min(c->normal.y, area_.y + area_.h - 40));
@@ -2341,6 +2458,15 @@ static int initialize(void)
     move_cursor = XCreateFontCursor(display, XC_fleur);
     resize_cursor = XCreateFontCursor(display, XC_bottom_right_corner);
     load_decoration_preferences();
+    /* The active theme title color also drives the shared text color. */
+    {
+        char title_color[10];
+        snprintf(title_color, sizeof(title_color), "#%06lx",
+                 (theme_active_text >> 8) & 0xffffffUL);
+        XftColorAllocName(display, DefaultVisual(display, screen_number),
+                          DefaultColormap(display, screen_number), title_color,
+                          &text_color);
+    }
     char keys_path[512];
     const char *keys_override = getenv("RILL_WM_KEYS");
     if (keys_override && *keys_override)

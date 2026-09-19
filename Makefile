@@ -71,9 +71,10 @@ BUILD_DIR := build/$(PLATFORM)-$(ARCH)
 BIN := $(BUILD_DIR)/$(APP_NAME)
 TEST_BIN := $(BUILD_DIR)/rill_shell_test
 LINUX_LAUNCHER_TEST_BIN := $(BUILD_DIR)/rill_linux_launcher_test
-SRCS := src/main.c src/rill_settings.c src/rill_shell.c src/rill_panel.c src/rill_x11.c $(PLATFORM_SRC) $(WAYLAND_SRC)
+SRCS := src/main.c src/rill_settings.c src/rill_shell.c src/rill_panel.c src/rill_x11.c src/rill_dnd.c $(PLATFORM_SRC) $(WAYLAND_SRC)
 TEST_SRCS := tests/rill_shell_test.c src/rill_shell.c src/rill_panel.c src/platform_stub.c
 LINUX_LAUNCHER_TEST_SRCS := tests/rill_linux_launcher_test.c src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC)
+DND_TEST_SRCS := tests/rill_dnd_test.c src/rill_dnd.c
 
 .PHONY: all clean run test clean-text-api-check visual-test windowed-smoke kryon FORCE
 
@@ -162,7 +163,14 @@ xsettings-test: $(BUILD_DIR)/rill_xsettings_test
 clipboard-test: $(BUILD_DIR)/rill_clipboard_test
 	xvfb-run -a $(BUILD_DIR)/rill_clipboard_test
 
-test: platform-test xembed-test xsettings-test clipboard-test sessiond-test
+$(BUILD_DIR)/rill_dnd_test: $(wildcard include/rill_dnd.h) $(DND_TEST_SRCS) | $(BUILD_DIR)
+	$(CC) -Iinclude $(X11_PKG_CFLAGS) $(CFLAGS) -o $@ $(DND_TEST_SRCS) $(X11_PKG_LIBS)
+
+.PHONY: dnd-test
+dnd-test: $(BUILD_DIR)/rill_dnd_test
+	xvfb-run -a $(BUILD_DIR)/rill_dnd_test
+
+test: platform-test xembed-test xsettings-test clipboard-test sessiond-test dnd-test
 
 $(BUILD_DIR)/files_test: tests/files_test.c src/files.c include/files.h | $(BUILD_DIR)
 	$(CC) -Iinclude $(GTK_PKG_CFLAGS) $(CFLAGS) -o $@ tests/files_test.c src/files.c $(GTK_PKG_LIBS) -lX11

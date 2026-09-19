@@ -4,17 +4,26 @@
 #include <gio/gio.h>
 #include <gtk/gtk.h>
 #include <gdk/gdkx.h>
+#include <glib/gstdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 typedef struct FileTransfer {
     GMutex mutex;
+    GCond cond;
     GThread *thread;
     GCancellable *cancel;
     FileTransferStatus status;
     char **sources;
     char *destination;
     int paste_pending;
+    /* Interactive conflicts are only offered after the UI opts in; otherwise
+     * an existing destination keeps failing the job. */
+    int conflicts_allowed;
+    /* Sticky answer applied to the remaining conflicts of this job. */
+    int conflict_mode;
+    int conflict_answer;
+    int conflict_all;
 } FileTransfer;
 
 typedef struct FileClipboard {
@@ -23,10 +32,22 @@ typedef struct FileClipboard {
     int cut;
 } FileClipboard;
 
+typedef struct FileJob {
+    char **sources;
+    char *destination;
+    char operation[16];
+} FileJob;
+
+#define FILE_TRANSFER_QUEUE_MAX 16
+
 static FileTransfer transfer;
 static FileClipboard *owned_clipboard;
 static FileClipboard *paste_clipboard;
 static unsigned int clipboard_generation;
+static FileJob job_queue[FILE_TRANSFER_QUEUE_MAX];
+static int job_queue_count;
+static FileJob retry_job;
+static int retry_valid;
 
 static Window
 clipboard_owner(void)
@@ -187,33 +208,163 @@ destination_inside_source(GFile *source, GFile *directory)
     return inside;
 }
 
-static gboolean
+/* Pick a destination name that does not exist yet: "name (copy)", then
+ * "name (copy 2)" and so on. The suffix goes before a file extension. */
+static GFile *
+unique_sibling(GFile *directory, const char *name)
+{
+    const char *dot = strrchr(name, '.');
+    int stem_end = dot != NULL && dot != name ? (int)(dot - name) : (int)strlen(name);
+    for(int attempt = 1; attempt < 100; attempt++) {
+        char *candidate = attempt == 1 ?
+            g_strdup_printf("%.*s (copy)%s", stem_end, name, name + stem_end) :
+            g_strdup_printf("%.*s (copy %d)%s", stem_end, name, attempt, name + stem_end);
+        GFile *target = g_file_get_child(directory, candidate);
+        GFileInfo *info = g_file_query_info(target, "standard::type",
+            G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL, NULL);
+        g_free(candidate);
+        if(info == NULL)
+            return target;
+        g_object_unref(info);
+        g_object_unref(target);
+    }
+    char *uuid = g_uuid_string_random();
+    char *candidate = g_strdup_printf("%.*s-%s%s", stem_end, name, uuid, name + stem_end);
+    GFile *target = g_file_get_child(directory, candidate);
+    g_free(candidate);
+    g_free(uuid);
+    return target;
+}
+
+typedef enum {
+    ITEM_ERROR = 0,
+    ITEM_DONE,
+    ITEM_SKIPPED,
+    ITEM_CANCELLED
+} ItemResult;
+
+typedef enum {
+    PREPARE_ERROR = 0,
+    PREPARE_PROCEED,
+    PREPARE_SKIPPED,
+    PREPARE_CANCELLED
+} PrepareResult;
+
+/* Ask the UI what to do about an existing destination. Returns a FILE_CONFLICT_
+ * answer, or -1 when no interactive decision is available and the caller must
+ * keep refusing the collision. */
+static int
+conflict_decision(const char *destination, GCancellable *cancel)
+{
+    g_mutex_lock(&transfer.mutex);
+    int answer = -1;
+    if(transfer.conflict_mode != 0) {
+        answer = transfer.conflict_mode;
+    } else if(transfer.conflicts_allowed && !transfer.status.conflict) {
+        g_strlcpy(transfer.status.conflict_destination, destination,
+                  sizeof(transfer.status.conflict_destination));
+        transfer.status.conflict = 1;
+        while(transfer.status.conflict && !g_cancellable_is_cancelled(transfer.cancel))
+            g_cond_wait(&transfer.cond, &transfer.mutex);
+        transfer.status.conflict = 0;
+        transfer.status.conflict_destination[0] = '\0';
+        answer = transfer.conflict_answer;
+        if(transfer.conflict_all && answer != FILE_CONFLICT_CANCEL)
+            transfer.conflict_mode = answer;
+    }
+    g_mutex_unlock(&transfer.mutex);
+    if(answer == FILE_CONFLICT_CANCEL || g_cancellable_is_cancelled(cancel))
+        return FILE_CONFLICT_CANCEL;
+    return answer;
+}
+
+/* Make room for one item at *target. The target may be replaced with a unique
+ * sibling when the caller asked to keep both files. */
+static PrepareResult
+prepare_target(GFile **target, GCancellable *cancel, GError **error)
+{
+    GFileInfo *info = g_file_query_info(*target, "standard::type",
+        G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, cancel, NULL);
+    if(info == NULL)
+        return PREPARE_PROCEED;
+    g_object_unref(info);
+    char *path = g_file_get_path(*target);
+    int answer = conflict_decision(path != NULL ? path : "", cancel);
+    g_free(path);
+    if(answer == FILE_CONFLICT_CANCEL)
+        return PREPARE_CANCELLED;
+    if(answer == FILE_CONFLICT_SKIP)
+        return PREPARE_SKIPPED;
+    if(answer == FILE_CONFLICT_KEEP_BOTH) {
+        GFile *parent = g_file_get_parent(*target);
+        char *name = g_file_get_basename(*target);
+        if(parent != NULL && name != NULL) {
+            GFile *unique = unique_sibling(parent, name);
+            g_object_unref(*target);
+            *target = unique;
+        }
+        g_free(name);
+        g_clear_object(&parent);
+        return PREPARE_PROCEED;
+    }
+    if(answer == FILE_CONFLICT_REPLACE) {
+        GError *failure = NULL;
+        gboolean removed = remove_tree(*target, cancel, &failure);
+        if(!removed) {
+            if(failure != NULL)
+                g_propagate_error(error, failure);
+            return PREPARE_ERROR;
+        }
+        return PREPARE_PROCEED;
+    }
+    set_error(error, G_IO_ERROR_EXISTS,
+              "A destination item already exists. Rename it or choose another folder.");
+    return PREPARE_ERROR;
+}
+
+static ItemResult
 transfer_item(GFile *source, GFile *directory, const char *operation,
                GCancellable *cancel, GError **error)
 {
     if(strcmp(operation, "trash") == 0)
-        return g_file_trash(source, cancel, error);
+        return g_file_trash(source, cancel, error) ? ITEM_DONE : ITEM_ERROR;
     char *name = g_file_get_basename(source);
     if(name == NULL || strcmp(name, "/") == 0) {
         g_free(name);
         set_error(error, G_IO_ERROR_INVALID_ARGUMENT, "A filesystem root cannot be transferred.");
-        return FALSE;
+        return ITEM_ERROR;
     }
-    GFile *target = g_file_get_child(directory, name);
+    GFile *target = strcmp(operation, "duplicate") == 0 ?
+        unique_sibling(directory, name) : g_file_get_child(directory, name);
     g_free(name);
+    PrepareResult prepared = prepare_target(&target, cancel, error);
+    if(prepared == PREPARE_SKIPPED) {
+        g_object_unref(target);
+        return ITEM_SKIPPED;
+    }
+    if(prepared == PREPARE_CANCELLED) {
+        g_object_unref(target);
+        g_cancellable_cancel(cancel);
+        set_error(error, G_IO_ERROR_CANCELLED, "The operation was cancelled.");
+        return ITEM_CANCELLED;
+    }
+    if(prepared == PREPARE_ERROR) {
+        g_object_unref(target);
+        return ITEM_ERROR;
+    }
     gboolean move = strcmp(operation, "move") == 0;
     if(move && g_file_move(source, target,
         G_FILE_COPY_NOFOLLOW_SYMLINKS | G_FILE_COPY_NO_FALLBACK_FOR_MOVE,
         cancel, NULL, NULL, error)) {
         g_object_unref(target);
-        return TRUE;
+        return ITEM_DONE;
     }
     if(move) {
         if(!g_error_matches(*error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED) &&
            !g_error_matches(*error, G_IO_ERROR, G_IO_ERROR_WOULD_RECURSE) &&
            !g_error_matches(*error, G_IO_ERROR, G_IO_ERROR_WOULD_MERGE)) {
             g_object_unref(target);
-            return FALSE;
+            return ITEM_ERROR;
         }
         g_clear_error(error);
     }
@@ -249,7 +400,15 @@ transfer_item(GFile *source, GFile *directory, const char *operation,
     } else if(*error == NULL)
         set_error(error, G_IO_ERROR_EXISTS, "Could not reserve a temporary destination.");
     g_object_unref(target);
-    return ok;
+    return ok ? ITEM_DONE : ITEM_ERROR;
+}
+
+static void
+free_job(FileJob *job)
+{
+    g_clear_pointer(&job->sources, g_strfreev);
+    g_clear_pointer(&job->destination, g_free);
+    memset(job, 0, sizeof(*job));
 }
 
 static gpointer
@@ -261,6 +420,11 @@ transfer_worker(gpointer unused)
     GPtrArray *sources = g_ptr_array_new_with_free_func(g_object_unref);
     GHashTable *names = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     gboolean trash = strcmp(transfer.status.operation, "trash") == 0;
+    g_mutex_lock(&transfer.mutex);
+    /* Without an interactive conflict handler the job keeps its historical
+     * all-or-nothing refusal: every destination must be free up front. */
+    gboolean interactive = transfer.conflicts_allowed || transfer.conflict_mode != 0;
+    g_mutex_unlock(&transfer.mutex);
     g_cancellable_set_error_if_cancelled(transfer.cancel, &error);
     if(error == NULL && !trash && (directory == NULL || g_file_query_file_type(directory,
                               G_FILE_QUERY_INFO_NONE, transfer.cancel) != G_FILE_TYPE_DIRECTORY))
@@ -280,42 +444,57 @@ transfer_worker(gpointer unused)
             if(g_file_info_get_file_type(info) == G_FILE_TYPE_DIRECTORY &&
                destination_inside_source(source, directory))
                 set_error(&error, G_IO_ERROR_INVALID_ARGUMENT, "A folder cannot be copied or moved inside itself.");
-            char *name = g_file_get_basename(source);
-            if(name == NULL || strcmp(name, "/") == 0 || g_hash_table_contains(names, name)) {
-                if(error == NULL)
-                    set_error(&error, G_IO_ERROR_EXISTS, "The selection contains conflicting destination names.");
-            } else {
-                GFile *target = g_file_get_child(directory, name);
-                GFileInfo *existing = g_file_query_info(target, "standard::type",
-                    G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, transfer.cancel, NULL);
-                if(existing != NULL && error == NULL)
-                    set_error(&error, G_IO_ERROR_EXISTS, "A destination item already exists. Rename it or choose another folder.");
-                g_clear_object(&existing);
-                g_object_unref(target);
-                g_hash_table_add(names, g_strdup(name));
+            if(error == NULL && !interactive) {
+                char *name = g_file_get_basename(source);
+                if(name == NULL || strcmp(name, "/") == 0 || g_hash_table_contains(names, name)) {
+                    if(error == NULL)
+                        set_error(&error, G_IO_ERROR_EXISTS, "The selection contains conflicting destination names.");
+                } else {
+                    GFile *target = g_file_get_child(directory, name);
+                    GFileInfo *existing = g_file_query_info(target, "standard::type",
+                        G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, transfer.cancel, NULL);
+                    if(existing != NULL)
+                        set_error(&error, G_IO_ERROR_EXISTS, "A destination item already exists. Rename it or choose another folder.");
+                    g_clear_object(&existing);
+                    g_object_unref(target);
+                    g_hash_table_add(names, g_strdup(name));
+                }
+                g_free(name);
             }
-            g_free(name);
         }
         g_object_unref(info);
     }
+    g_hash_table_unref(names);
     for(guint i = 0; i < sources->len && error == NULL; i++) {
         g_mutex_lock(&transfer.mutex);
         g_strlcpy(transfer.status.current, transfer.sources[i], sizeof(transfer.status.current));
         g_mutex_unlock(&transfer.mutex);
-        if(!transfer_item(g_ptr_array_index(sources, i), directory,
-                          transfer.status.operation, transfer.cancel, &error))
+        ItemResult item = transfer_item(g_ptr_array_index(sources, i), directory,
+                                        transfer.status.operation, transfer.cancel, &error);
+        if(item == ITEM_CANCELLED)
+            break;
+        if(item == ITEM_ERROR)
             break;
         g_mutex_lock(&transfer.mutex);
+        if(item == ITEM_SKIPPED)
+            transfer.status.skipped++;
         transfer.status.completed++;
         g_mutex_unlock(&transfer.mutex);
     }
-    g_hash_table_unref(names);
     g_ptr_array_unref(sources);
     g_clear_object(&directory);
     g_mutex_lock(&transfer.mutex);
     transfer.status.cancelled = g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
     if(error != NULL)
         g_strlcpy(transfer.status.error, error->message, sizeof(transfer.status.error));
+    if(error != NULL && !transfer.status.cancelled) {
+        /* Keep the failed job available for a retry. */
+        free_job(&retry_job);
+        retry_job.sources = g_strdupv(transfer.sources);
+        retry_job.destination = g_strdup(transfer.destination);
+        g_strlcpy(retry_job.operation, transfer.status.operation, sizeof(retry_job.operation));
+        retry_valid = transfer.sources != NULL;
+    }
     transfer.status.running = 0;
     g_mutex_unlock(&transfer.mutex);
     g_clear_error(&error);
@@ -334,35 +513,88 @@ release_transfer(void)
     g_clear_pointer(&transfer.destination, g_free);
 }
 
+/* Start one job; its strings move into the active transfer. */
+static void
+start_job(FileJob *job)
+{
+    int count = 0;
+    while(job->sources != NULL && job->sources[count] != NULL)
+        count++;
+    release_transfer();
+    g_mutex_lock(&transfer.mutex);
+    unsigned int id = transfer.status.id + 1;
+    memset(&transfer.status, 0, sizeof(transfer.status));
+    transfer.status.id = id;
+    transfer.status.queued = job_queue_count;
+    transfer.status.running = 1;
+    transfer.status.total = count;
+    g_strlcpy(transfer.status.operation, job->operation, sizeof(transfer.status.operation));
+    transfer.sources = job->sources;
+    transfer.destination = job->destination;
+    job->sources = NULL;
+    job->destination = NULL;
+    transfer.cancel = g_cancellable_new();
+    transfer.conflict_mode = 0;
+    transfer.thread = g_thread_new("file-transfer", transfer_worker, NULL);
+    g_mutex_unlock(&transfer.mutex);
+}
+
+/* Move the next queued job into the active transfer when it is idle. */
+static void
+advance_queue(void)
+{
+    g_mutex_lock(&transfer.mutex);
+    int idle = !transfer.status.running && transfer.thread == NULL &&
+               !transfer.paste_pending;
+    g_mutex_unlock(&transfer.mutex);
+    if(!idle || job_queue_count == 0)
+        return;
+    FileJob job = job_queue[0];
+    memmove(&job_queue[0], &job_queue[1],
+            (size_t)(job_queue_count - 1) * sizeof(FileJob));
+    job_queue_count--;
+    free_job(&retry_job);
+    retry_valid = 0;
+    start_job(&job);
+    g_mutex_lock(&transfer.mutex);
+    transfer.status.queued = job_queue_count;
+    g_mutex_unlock(&transfer.mutex);
+}
+
 int
 StartFileTransfer(const char *operation, const char *const *sources,
                    int count, const char *destination)
 {
     if(operation == NULL || sources == NULL || count < 1 || count > 4096 ||
        (strcmp(operation, "copy") != 0 && strcmp(operation, "move") != 0 &&
-        strcmp(operation, "trash") != 0))
+        strcmp(operation, "trash") != 0 && strcmp(operation, "duplicate") != 0))
         return 0;
     for(int i = 0; i < count; i++)
         if(sources[i] == NULL || sources[i][0] == '\0')
             return 0;
     g_mutex_lock(&transfer.mutex);
-    int busy = transfer.status.running || transfer.paste_pending;
+    int busy = transfer.status.running || transfer.paste_pending ||
+               transfer.thread != NULL;
+    int room = job_queue_count < FILE_TRANSFER_QUEUE_MAX;
     g_mutex_unlock(&transfer.mutex);
-    if(busy)
+    if(!room)
         return 0;
-    release_transfer();
-    unsigned int id = transfer.status.id + 1;
-    memset(&transfer.status, 0, sizeof(transfer.status));
-    transfer.status.id = id;
-    transfer.status.running = 1;
-    transfer.status.total = count;
-    g_strlcpy(transfer.status.operation, operation, sizeof(transfer.status.operation));
-    transfer.sources = g_new0(char *, count + 1);
+    FileJob job = {0};
+    job.sources = g_new0(char *, count + 1);
     for(int i = 0; i < count; i++)
-        transfer.sources[i] = g_strdup(sources[i]);
-    transfer.destination = g_strdup(destination);
-    transfer.cancel = g_cancellable_new();
-    transfer.thread = g_thread_new("file-transfer", transfer_worker, NULL);
+        job.sources[i] = g_strdup(sources[i]);
+    job.destination = g_strdup(destination);
+    g_strlcpy(job.operation, operation, sizeof(job.operation));
+    if(busy) {
+        job_queue[job_queue_count++] = job;
+        g_mutex_lock(&transfer.mutex);
+        transfer.status.queued = job_queue_count;
+        g_mutex_unlock(&transfer.mutex);
+        return 1;
+    }
+    free_job(&retry_job);
+    retry_valid = 0;
+    start_job(&job);
     return 1;
 }
 
@@ -371,6 +603,12 @@ PollFileTransfer(FileTransferStatus *status)
 {
     while(g_main_context_iteration(NULL, FALSE))
         ;
+    g_mutex_lock(&transfer.mutex);
+    int joinable = transfer.thread != NULL && !transfer.status.running;
+    g_mutex_unlock(&transfer.mutex);
+    if(joinable)
+        release_transfer();
+    advance_queue();
     if(status == NULL)
         return 0;
     g_mutex_lock(&transfer.mutex);
@@ -378,7 +616,8 @@ PollFileTransfer(FileTransferStatus *status)
     g_mutex_unlock(&transfer.mutex);
     if(status->id && !status->running && paste_clipboard != NULL) {
         if(paste_clipboard == owned_clipboard && owned_clipboard->cut &&
-           !status->error[0] && !status->cancelled && status->completed == status->total)
+           !status->error[0] && !status->cancelled && !status->skipped &&
+           status->completed == status->total)
             gtk_clipboard_clear(gtk_clipboard_get(GDK_SELECTION_CLIPBOARD));
         paste_clipboard = NULL;
     }
@@ -388,8 +627,54 @@ PollFileTransfer(FileTransferStatus *status)
 void
 CancelFileTransfer(void)
 {
+    g_mutex_lock(&transfer.mutex);
+    int prompting = transfer.status.conflict;
+    g_mutex_unlock(&transfer.mutex);
+    if(prompting)
+        ResolveFileTransferConflict(FILE_CONFLICT_CANCEL, 0);
     if(transfer.cancel != NULL)
         g_cancellable_cancel(transfer.cancel);
+}
+
+int
+AllowFileTransferConflicts(void)
+{
+    g_mutex_lock(&transfer.mutex);
+    transfer.conflicts_allowed = 1;
+    g_mutex_unlock(&transfer.mutex);
+    return 1;
+}
+
+int
+ResolveFileTransferConflict(int answer, int apply_to_all)
+{
+    if(answer < FILE_CONFLICT_CANCEL || answer > FILE_CONFLICT_KEEP_BOTH)
+        return 0;
+    g_mutex_lock(&transfer.mutex);
+    transfer.conflict_answer = answer;
+    transfer.conflict_all = apply_to_all != 0;
+    transfer.status.conflict = 0;
+    g_cond_signal(&transfer.cond);
+    g_mutex_unlock(&transfer.mutex);
+    return 1;
+}
+
+int
+RetryFileTransfer(void)
+{
+    g_mutex_lock(&transfer.mutex);
+    int idle = !transfer.status.running && !transfer.paste_pending &&
+               transfer.thread == NULL;
+    g_mutex_unlock(&transfer.mutex);
+    if(!retry_valid || !idle)
+        return 0;
+    FileJob job = {0};
+    job.sources = g_strdupv(retry_job.sources);
+    job.destination = g_strdup(retry_job.destination);
+    g_strlcpy(job.operation, retry_job.operation, sizeof(job.operation));
+    retry_valid = 0;
+    start_job(&job);
+    return 1;
 }
 
 void
@@ -397,6 +682,11 @@ FinishFileTransfers(void)
 {
     CancelFileTransfer();
     release_transfer();
+    for(int i = 0; i < job_queue_count; i++)
+        free_job(&job_queue[i]);
+    job_queue_count = 0;
+    free_job(&retry_job);
+    retry_valid = 0;
 }
 
 static void
@@ -565,5 +855,243 @@ PasteFilesFromClipboard(const char *destination)
     request->generation = clipboard_generation;
     gtk_clipboard_request_contents(gtk_clipboard_get(GDK_SELECTION_CLIPBOARD),
         gdk_atom_intern_static_string("x-special/gnome-copied-files"), paste_contents_received, request);
+    return 1;
+}
+
+/* ---- Staging recovery and Trash management ---- */
+
+static void
+delete_path_recursively(const char *path)
+{
+    if(!g_file_test(path, G_FILE_TEST_EXISTS))
+        return;
+    int is_dir = g_file_test(path, G_FILE_TEST_IS_DIR) &&
+                 !g_file_test(path, G_FILE_TEST_IS_SYMLINK);
+    if(is_dir) {
+        GDir *dir = g_dir_open(path, 0, NULL);
+        if(dir != NULL) {
+            const char *name;
+            while((name = g_dir_read_name(dir)) != NULL) {
+                char *child = g_build_filename(path, name, NULL);
+                delete_path_recursively(child);
+                g_free(child);
+            }
+            g_dir_close(dir);
+        }
+    }
+    if(is_dir)
+        g_rmdir(path);
+    else
+        g_unlink(path);
+}
+
+int
+RecoverStagingDirectory(const char *directory, char *error, int error_size)
+{
+    if(error != NULL && error_size > 0)
+        error[0] = '\0';
+    if(directory == NULL || directory[0] == '\0')
+        return -1;
+    GDir *dir = g_dir_open(directory, 0, NULL);
+    if(dir == NULL) {
+        if(error != NULL && error_size > 0)
+            snprintf(error, (size_t)error_size, "Could not read %s.", directory);
+        return -1;
+    }
+    int removed = 0, failed = 0;
+    const char *name;
+    while((name = g_dir_read_name(dir)) != NULL) {
+        if(strncmp(name, ".transfer-", strlen(".transfer-")) != 0)
+            continue;
+        char *child = g_build_filename(directory, name, NULL);
+        delete_path_recursively(child);
+        if(g_file_test(child, G_FILE_TEST_EXISTS))
+            failed++;
+        else
+            removed++;
+        g_free(child);
+    }
+    g_dir_close(dir);
+    if(failed > 0 && error != NULL && error_size > 0)
+        snprintf(error, (size_t)error_size,
+                 "%d abandoned transfer folder(s) could not be removed.", failed);
+    return removed;
+}
+
+/* The XDG trash under the data home is a plain directory pair; Rill reads it
+ * directly so Trash management works without a GVfs daemon. */
+static void
+trash_directories(const char **files, const char **info)
+{
+    const char *data_home = g_get_user_data_dir();
+    static char files_path[1024], info_path[1024];
+    snprintf(files_path, sizeof(files_path), "%s/Trash/files", data_home);
+    snprintf(info_path, sizeof(info_path), "%s/Trash/info", data_home);
+    *files = files_path;
+    *info = info_path;
+}
+
+/* Read "Path=" and "DeletionDate=" from one .trashinfo file. */
+static void
+read_trash_info(const char *info_dir, const char *name,
+                char *original, int original_size, char *deleted, int deleted_size)
+{
+    original[0] = '\0';
+    deleted[0] = '\0';
+    char *path = g_build_filename(info_dir, name, NULL);
+    gchar *contents = NULL;
+    if(g_file_get_contents(path, &contents, NULL, NULL) && contents != NULL) {
+        gchar **lines = g_strsplit(contents, "\n", -1);
+        for(int i = 0; lines[i] != NULL; i++) {
+            if(g_str_has_prefix(lines[i], "Path=")) {
+                char *decoded = g_uri_unescape_string(lines[i] + 5, NULL);
+                g_strlcpy(original, decoded != NULL ? decoded : lines[i] + 5,
+                          (gsize)original_size);
+                g_free(decoded);
+            } else if(g_str_has_prefix(lines[i], "DeletionDate=")) {
+                g_strlcpy(deleted, lines[i] + strlen("DeletionDate="), (gsize)deleted_size);
+            }
+        }
+        g_strfreev(lines);
+    }
+    g_free(contents);
+    g_free(path);
+}
+
+int
+ListFileTrash(FileTrashEntry *out, int cap)
+{
+    const char *files_dir, *info_dir;
+    trash_directories(&files_dir, &info_dir);
+    if(out == NULL || cap <= 0)
+        return 0;
+    GDir *dir = g_dir_open(files_dir, 0, NULL);
+    if(dir == NULL)
+        return 0;
+    int count = 0;
+    const char *name;
+    while(count < cap && (name = g_dir_read_name(dir)) != NULL) {
+        char *path = g_build_filename(files_dir, name, NULL);
+        char *info_name = g_strconcat(name, ".trashinfo", NULL);
+        g_strlcpy(out[count].name, name, sizeof(out[count].name));
+        read_trash_info(info_dir, info_name, out[count].original,
+                        sizeof(out[count].original), out[count].deleted,
+                        sizeof(out[count].deleted));
+        out[count].is_directory = g_file_test(path, G_FILE_TEST_IS_DIR) &&
+                                  !g_file_test(path, G_FILE_TEST_IS_SYMLINK);
+        count++;
+        g_free(info_name);
+        g_free(path);
+    }
+    g_dir_close(dir);
+    return count;
+}
+
+int
+RestoreFileTrashItem(const char *name, char *error, int error_size)
+{
+    if(error != NULL && error_size > 0)
+        error[0] = '\0';
+    if(name == NULL || name[0] == '\0' || strchr(name, '/') != NULL) {
+        if(error != NULL && error_size > 0)
+            snprintf(error, (size_t)error_size, "Choose a valid Trash entry.");
+        return 0;
+    }
+    const char *files_dir, *info_dir;
+    trash_directories(&files_dir, &info_dir);
+    char *source = g_build_filename(files_dir, name, NULL);
+    if(!g_file_test(source, G_FILE_TEST_EXISTS)) {
+        if(error != NULL && error_size > 0)
+            snprintf(error, (size_t)error_size, "That item is no longer in the Trash.");
+        g_free(source);
+        return 0;
+    }
+    char *info_name = g_strconcat(name, ".trashinfo", NULL);
+    char original[1024], deleted[40];
+    read_trash_info(info_dir, info_name, original, sizeof(original), deleted, sizeof(deleted));
+    char *target = original[0] != '\0' ? g_strdup(original) :
+        g_build_filename(g_get_home_dir(), name, NULL);
+    if(g_file_test(target, G_FILE_TEST_EXISTS)) {
+        /* Keep both: restore beside the collision with a distinguishable name. */
+        char *parent = g_path_get_dirname(target);
+        char *base = g_path_get_basename(target);
+        const char *dot = strrchr(base, '.');
+        int stem = dot != NULL && dot != base ? (int)(dot - base) : (int)strlen(base);
+        char *attempt = NULL;
+        for(int i = 1; i < 100; i++) {
+            g_free(attempt);
+            char *kept = i == 1 ?
+                g_strdup_printf("%.*s (restored)%s", stem, base, base + stem) :
+                g_strdup_printf("%.*s (restored %d)%s", stem, base, i, base + stem);
+            attempt = g_build_filename(parent, kept, NULL);
+            g_free(kept);
+            if(!g_file_test(attempt, G_FILE_TEST_EXISTS))
+                break;
+        }
+        if(attempt != NULL) {
+            g_free(target);
+            target = attempt;
+        }
+        g_free(base);
+        g_free(parent);
+    }
+    char *parent = g_path_get_dirname(target);
+    g_mkdir_with_parents(parent, 0700);
+    g_free(parent);
+    GFile *from = g_file_new_for_path(source);
+    GFile *to = g_file_new_for_path(target);
+    GError *failure = NULL;
+    gboolean moved = g_file_move(from, to, G_FILE_COPY_NOFOLLOW_SYMLINKS,
+                                 NULL, NULL, NULL, &failure);
+    g_object_unref(from);
+    g_object_unref(to);
+    if(!moved) {
+        if(error != NULL && error_size > 0)
+            snprintf(error, (size_t)error_size, "Could not restore: %s",
+                     failure != NULL && failure->message != NULL ?
+                     failure->message : "unknown error");
+        g_clear_error(&failure);
+        g_free(info_name);
+        g_free(source);
+        g_free(target);
+        return 0;
+    }
+    char *info_file = g_build_filename(info_dir, info_name, NULL);
+    g_unlink(info_file);
+    g_free(info_file);
+    g_free(info_name);
+    g_free(source);
+    g_free(target);
+    return 1;
+}
+
+int
+EmptyFileTrash(char *error, int error_size)
+{
+    if(error != NULL && error_size > 0)
+        error[0] = '\0';
+    const char *files_dir, *info_dir;
+    trash_directories(&files_dir, &info_dir);
+    int failed = 0;
+    for(int pass = 0; pass < 2; pass++) {
+        const char *directory = pass == 0 ? files_dir : info_dir;
+        GDir *handle = g_dir_open(directory, 0, NULL);
+        if(handle == NULL)
+            continue;
+        const char *name;
+        while((name = g_dir_read_name(handle)) != NULL) {
+            char *child = g_build_filename(directory, name, NULL);
+            delete_path_recursively(child);
+            if(g_file_test(child, G_FILE_TEST_EXISTS))
+                failed++;
+            g_free(child);
+        }
+        g_dir_close(handle);
+    }
+    if(failed > 0) {
+        if(error != NULL && error_size > 0)
+            snprintf(error, (size_t)error_size, "%d item(s) could not be deleted.", failed);
+        return 0;
+    }
     return 1;
 }

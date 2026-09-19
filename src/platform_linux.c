@@ -24,6 +24,8 @@
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/extensions/Xfixes.h>
+#include <X11/extensions/Xrandr.h>
+#include <X11/XKBlib.h>
 
 typedef struct XLibreSession {
     Display *display;
@@ -1978,6 +1980,65 @@ linux_volume_set(int percent, int muted)
     return ok;
 }
 
+/* Audio device selection through pactl; each line is "id state name driver"
+ * and the default sink comes from get-default-sink. */
+static int
+linux_volume_sinks(char (*names)[96], int cap, char *default_sink,
+                   int default_size)
+{
+    char output[4096];
+    char line[512];
+    int count = 0;
+    char *scan;
+
+    if(names == NULL || cap <= 0)
+        return 0;
+    if(default_sink != NULL && default_size > 0)
+        default_sink[0] = '\0';
+    if(!linux_run_capture("pactl list short sinks", output, sizeof(output)))
+        return 0;
+    scan = output;
+    while(*scan != '\0' && count < cap) {
+        char *end = strchr(scan, '\n');
+        if(end != NULL)
+            *end = '\0';
+        /* Columns: id state name driver ...; the name is the third. */
+        char *column = scan;
+        for(int field = 0; field < 2 && column != NULL; field++)
+            column = strchr(column + (field == 0 ? 0 : 1), '\t');
+        if(column != NULL) {
+            char *name = column + 1;
+            char *stop = strchr(name, '\t');
+            if(stop != NULL)
+                *stop = '\0';
+            if(name[0] != '\0') {
+                snprintf(names[count], 96, "%s", name);
+                count++;
+            }
+        }
+        scan = end != NULL ? end + 1 : scan + strlen(scan);
+    }
+    if(default_sink != NULL && default_size > 0 &&
+       linux_run_capture("pactl get-default-sink", line, sizeof(line))) {
+        char *newline = strchr(line, '\n');
+        if(newline != NULL)
+            *newline = '\0';
+        snprintf(default_sink, (size_t)default_size, "%s", line);
+    }
+    return count;
+}
+
+static int
+linux_volume_set_default(const char *name)
+{
+    char command[192];
+
+    if(name == NULL || name[0] == '\0' || strchr(name, '\'') != NULL)
+        return 0;
+    snprintf(command, sizeof(command), "pactl set-default-sink '%s'", name);
+    return linux_run_capture(command, NULL, 0);
+}
+
 /* XSETTINGS provider (the xfsettingsd core): own the manager selection and
    broadcast theme/font/DPI values to every X11 application through the root
    window property. The wire format is the freedesktop XSETTINGS spec. */
@@ -2313,6 +2374,169 @@ linux_tray_activate(const char *id, int secondary)
             return 1;
         }
     return 0;
+}
+
+/* ---- StatusNotifier item menus (com.canonical.dbusmenu) ---- */
+
+static const char *
+tray_menu_path(const char *id)
+{
+    static char path[256];
+    for(int i = 0; i < tray_registration_count; i++)
+        if(strcmp(tray_registrations[i].bus, id) == 0) {
+            GVariant *menu = NULL;
+            if(tray_item_property(id, tray_registrations[i].path, "Menu", &menu)) {
+                const char *text = g_variant_get_string(menu, NULL);
+                snprintf(path, sizeof(path), "%s", text != NULL ? text : "");
+                g_variant_unref(menu);
+                return path;
+            }
+            snprintf(path, sizeof(path), "%s", tray_registrations[i].path);
+            return path;
+        }
+    return NULL;
+}
+
+static void
+append_menu_rows(GVariant *node, int depth, RillTrayMenuRow *out, int cap,
+                 int *count)
+{
+    if(node == NULL || *count >= cap)
+        return;
+    gint32 item_id = 0;
+    GVariant *properties = NULL;
+    GVariant *children = NULL;
+    if(!g_variant_is_of_type(node, G_VARIANT_TYPE("(ia{sv}av)")))
+        return;
+    g_variant_get(node, "(i@a{sv}@av)", &item_id, &properties, &children);
+    RillTrayMenuRow *row = &out[(*count)++];
+    memset(row, 0, sizeof(*row));
+    row->item_id = item_id;
+    row->depth = (short)(depth > 999 ? 999 : depth);
+    row->enabled = 1;
+    row->toggle = -1;
+    const gchar *label = NULL;
+    if(properties != NULL) {
+        GVariant *value = g_variant_lookup_value(properties, "label",
+                                                 G_VARIANT_TYPE_STRING);
+        if(value != NULL) {
+            label = g_variant_get_string(value, NULL);
+            /* Strip menu accelerators so "E_xit" reads as "Exit". */
+            char cleaned[160];
+            int offset = 0;
+            for(const char *scan = label; *scan != '\0' && offset < 158; scan++)
+                if(*scan != '_')
+                    cleaned[offset++] = *scan;
+            cleaned[offset] = '\0';
+            snprintf(row->label, sizeof(row->label), "%s", cleaned);
+            g_variant_unref(value);
+        }
+        value = g_variant_lookup_value(properties, "enabled",
+                                       G_VARIANT_TYPE_BOOLEAN);
+        if(value != NULL) {
+            row->enabled = g_variant_get_boolean(value) != 0;
+            g_variant_unref(value);
+        }
+        value = g_variant_lookup_value(properties, "toggle-state",
+                                       G_VARIANT_TYPE_INT32);
+        if(value != NULL) {
+            row->toggle = (short)g_variant_get_int32(value);
+            g_variant_unref(value);
+        }
+        value = g_variant_lookup_value(properties, "type",
+                                       G_VARIANT_TYPE_STRING);
+        if(value != NULL) {
+            const gchar *type = g_variant_get_string(value, NULL);
+            row->separator = g_strcmp0(type, "separator") == 0;
+            g_variant_unref(value);
+        }
+        g_variant_unref(properties);
+    }
+    if(label == NULL && !row->separator)
+        row->separator = 1;
+    gsize child_count = g_variant_n_children(children);
+    for(gsize i = 0; i < child_count && *count < cap; i++) {
+        GVariant *child = NULL;
+        g_variant_get_child(children, i, "v", &child);
+        append_menu_rows(child, depth + 1, out, cap, count);
+        if(child != NULL)
+            g_variant_unref(child);
+    }
+    g_variant_unref(children);
+}
+
+static int
+linux_tray_menu(const char *id, RillTrayMenuRow *out, int cap)
+{
+    GError *error = NULL;
+    GVariant *result = NULL;
+    const char *path;
+    int count = 0;
+
+    if(out == NULL || cap <= 0 || tray_connection == NULL || id == NULL)
+        return 0;
+    tray_start();
+    path = tray_menu_path(id);
+    if(path == NULL || path[0] == '\0')
+        return 0;
+    const char *properties[] = {"label", "enabled", "type", "toggle-state", NULL};
+    result = g_dbus_connection_call_sync(tray_connection, id, path,
+                                         "com.canonical.dbusmenu", "GetLayout",
+                                         g_variant_new("(iias)", 0, -1,
+                                                       properties),
+                                         G_VARIANT_TYPE("(ia(ia{sv})as)"),
+                                         G_DBUS_CALL_FLAGS_NONE, 1500, NULL,
+                                         &error);
+    if(result == NULL) {
+        if(getenv("RILL_TRAY_DEBUG"))
+            fprintf(stderr, "rill: tray menu GetLayout failed: %s\n",
+                    error != NULL ? error->message : "unknown");
+        g_clear_error(&error);
+        return 0;
+    }
+    GVariant *layout = NULL;
+    g_variant_get(result, "(i@a(ia{sv})as)", NULL, &layout, NULL);
+    if(layout != NULL && g_variant_n_children(layout) > 0) {
+        GVariant *root = g_variant_get_child_value(layout, 0);
+        append_menu_rows(root, 0, out, cap, &count);
+        g_variant_unref(root);
+    }
+    if(layout != NULL)
+        g_variant_unref(layout);
+    g_variant_unref(result);
+    /* The first row is the invisible root; drop it. */
+    if(count > 0) {
+        memmove(&out[0], &out[1], (size_t)(count - 1) * sizeof(out[0]));
+        count--;
+    }
+    return count;
+}
+
+static int
+linux_tray_menu_activate(const char *id, int item_id)
+{
+    GError *error = NULL;
+    const char *path;
+
+    if(tray_connection == NULL || id == NULL)
+        return 0;
+    path = tray_menu_path(id);
+    if(path == NULL || path[0] == '\0')
+        return 0;
+    g_dbus_connection_call_sync(tray_connection, id, path,
+                                "com.canonical.dbusmenu", "Event",
+                                g_variant_new("(isvu)", item_id, "clicked",
+                                              g_variant_new_int32(0),
+                                              (guint32)0),
+                                NULL, G_DBUS_CALL_FLAGS_NONE, 800, NULL, &error);
+    if(error != NULL) {
+        if(getenv("RILL_TRAY_DEBUG"))
+            fprintf(stderr, "rill: tray menu Event failed: %s\n",
+                    error->message);
+        g_error_free(error);
+        return 0;
+    }
+    return 1;
 }
 
 static const char *
@@ -2745,6 +2969,362 @@ linux_clipboard_select(int index)
     return 1;
 }
 
+/* Connected RandR outputs for panel placement and display settings. */
+static int
+linux_display_outputs(RillDisplayOutput *out, int cap)
+{
+    Display *display;
+    XRRScreenResources *resources;
+    int count = 0;
+
+    if(out == NULL || cap <= 0)
+        return 0;
+    display = XOpenDisplay(NULL);
+    if(display == NULL)
+        return 0;
+    resources = XRRGetScreenResourcesCurrent(display, DefaultRootWindow(display));
+    if(resources != NULL) {
+        for(int i = 0; i < resources->noutput && count < cap; i++) {
+            XRROutputInfo *info = XRRGetOutputInfo(display, resources,
+                                                    resources->outputs[i]);
+            if(info == NULL)
+                continue;
+            if(info->connection == RR_Connected && info->crtc != None) {
+                XRRCrtcInfo *crtc = XRRGetCrtcInfo(display, resources, info->crtc);
+                RillDisplayOutput *entry = &out[count];
+                memset(entry, 0, sizeof(*entry));
+                snprintf(entry->name, sizeof(entry->name), "%.*s",
+                         (int)(info->nameLen < sizeof(entry->name) - 1 ?
+                               info->nameLen : sizeof(entry->name) - 1),
+                         info->name);
+                entry->connected = 1;
+                if(crtc != NULL) {
+                    entry->width = crtc->width;
+                    entry->height = crtc->height;
+                    entry->primary = (crtc->x == 0 && crtc->y == 0);
+                    XRRFreeCrtcInfo(crtc);
+                }
+                count++;
+            }
+            XRRFreeOutputInfo(info);
+        }
+        XRRFreeScreenResources(resources);
+    }
+    XCloseDisplay(display);
+    return count;
+}
+
+/* Modes of one output, unique by size, largest first. */
+static int
+linux_display_modes(const char *output, RillDisplayMode *out, int cap)
+{
+    Display *display;
+    XRRScreenResources *resources;
+    XRROutputInfo *info = NULL;
+    int count = 0;
+
+    if(output == NULL || out == NULL || cap <= 0)
+        return 0;
+    display = XOpenDisplay(NULL);
+    if(display == NULL)
+        return 0;
+    resources = XRRGetScreenResourcesCurrent(display, DefaultRootWindow(display));
+    if(resources == NULL) {
+        XCloseDisplay(display);
+        return 0;
+    }
+    for(int i = 0; i < resources->noutput && info == NULL; i++) {
+        XRROutputInfo *candidate = XRRGetOutputInfo(display, resources,
+                                                     resources->outputs[i]);
+        if(candidate != NULL && candidate->nameLen == strlen(output) &&
+           strncmp(candidate->name, output, candidate->nameLen) == 0)
+            info = candidate;
+        else
+            XRRFreeOutputInfo(candidate);
+    }
+    if(info != NULL) {
+        for(int m = 0; m < info->nmode && count < cap; m++) {
+            XRRModeInfo *mode = NULL;
+            for(int s = 0; s < resources->nmode; s++)
+                if(resources->modes[s].id == info->modes[m])
+                    mode = &resources->modes[s];
+            if(mode == NULL)
+                continue;
+            int width = (int)mode->width;
+            int height = (int)mode->height;
+            int duplicate = 0;
+            for(int d = 0; d < count; d++)
+                if(out[d].width == width && out[d].height == height)
+                    duplicate = 1;
+            if(!duplicate) {
+                out[count].width = width;
+                out[count].height = height;
+                count++;
+            }
+        }
+        XRRFreeOutputInfo(info);
+    }
+    XRRFreeScreenResources(resources);
+    XCloseDisplay(display);
+    for(int i = 0; i < count; i++)
+        for(int j = i + 1; j < count; j++)
+            if(out[j].width * out[j].height > out[i].width * out[i].height) {
+                RillDisplayMode swap = out[i];
+                out[i] = out[j];
+                out[j] = swap;
+            }
+    return count;
+}
+
+static int
+linux_display_apply(const char *output, int width, int height,
+                    char *error, int error_size)
+{
+    Display *display;
+    XRRScreenResources *resources;
+    XRROutputInfo *info = NULL;
+    XRRCrtcInfo *crtc = NULL;
+    RROutput found = None;
+    int ok = 0;
+
+    if(error != NULL && error_size > 0)
+        error[0] = '\0';
+    if(output == NULL || width <= 0 || height <= 0)
+        goto invalid;
+    display = XOpenDisplay(NULL);
+    if(display == NULL)
+        goto invalid;
+    resources = XRRGetScreenResourcesCurrent(display, DefaultRootWindow(display));
+    if(resources == NULL) {
+        XCloseDisplay(display);
+        goto invalid;
+    }
+    for(int i = 0; i < resources->noutput && found == None; i++) {
+        XRROutputInfo *candidate = XRRGetOutputInfo(display, resources,
+                                                     resources->outputs[i]);
+        if(candidate != NULL && candidate->nameLen == strlen(output) &&
+           strncmp(candidate->name, output, candidate->nameLen) == 0) {
+            found = resources->outputs[i];
+            info = candidate;
+        } else
+            XRRFreeOutputInfo(candidate);
+    }
+    if(info == NULL || info->crtc == None) {
+        if(info != NULL)
+            XRRFreeOutputInfo(info);
+        XRRFreeScreenResources(resources);
+        XCloseDisplay(display);
+        goto invalid;
+    }
+    crtc = XRRGetCrtcInfo(display, resources, info->crtc);
+    for(int m = 0; m < info->nmode; m++) {
+        XRRModeInfo *mode = NULL;
+        for(int s = 0; s < resources->nmode; s++)
+            if(resources->modes[s].id == info->modes[m])
+                mode = &resources->modes[s];
+        if(mode == NULL || (int)mode->width != width || (int)mode->height != height)
+            continue;
+        if(XRRSetCrtcConfig(display, resources, info->crtc,
+                            resources->configTimestamp,
+                            crtc != NULL ? crtc->x : 0,
+                            crtc != NULL ? crtc->y : 0,
+                            mode->id,
+                            crtc != NULL ? crtc->rotation : RR_Rotate_0,
+                            &found, 1) == Success)
+            ok = 1;
+        break;
+    }
+    if(crtc != NULL)
+        XRRFreeCrtcInfo(crtc);
+    XRRFreeOutputInfo(info);
+    XRRFreeScreenResources(resources);
+    XFlush(display);
+    XCloseDisplay(display);
+    if(!ok && error != NULL && error_size > 0)
+        snprintf(error, (size_t)error_size,
+                 "%dx%d is not an available mode for %s.", width, height, output);
+    return ok;
+invalid:
+    if(error != NULL && error_size > 0)
+        snprintf(error, (size_t)error_size, "Choose a connected output.");
+    return 0;
+}
+
+static int
+linux_pointer_settings(int *numerator, int *denominator, int *threshold)
+{
+    Display *display;
+    if(numerator == NULL || denominator == NULL || threshold == NULL)
+        return 0;
+    display = XOpenDisplay(NULL);
+    if(display == NULL)
+        return 0;
+    XGetPointerControl(display, numerator, denominator, threshold);
+    XCloseDisplay(display);
+    return 1;
+}
+
+static int
+linux_pointer_set(int numerator, int denominator, int threshold)
+{
+    Display *display;
+    if(numerator < 1 || denominator < 1 || threshold < 0)
+        return 0;
+    display = XOpenDisplay(NULL);
+    if(display == NULL)
+        return 0;
+    XChangePointerControl(display, True, True, numerator, denominator, threshold);
+    XFlush(display);
+    XCloseDisplay(display);
+    return 1;
+}
+
+static int
+linux_keyboard_repeat(int *delay, int *rate)
+{
+    Display *display;
+    unsigned int keyboard_delay = 0, keyboard_rate = 0;
+    if(delay == NULL || rate == NULL)
+        return 0;
+    display = XOpenDisplay(NULL);
+    if(display == NULL)
+        return 0;
+    int ok = XkbGetAutoRepeatRate(display, XkbUseCoreKbd,
+                                  &keyboard_delay, &keyboard_rate) != 0;
+    *delay = (int)keyboard_delay;
+    *rate = (int)keyboard_rate;
+    XCloseDisplay(display);
+    return ok;
+}
+
+static int
+linux_keyboard_set_repeat(int delay, int rate)
+{
+    Display *display;
+    if(delay < 100 || rate < 1)
+        return 0;
+    display = XOpenDisplay(NULL);
+    if(display == NULL)
+        return 0;
+    int ok = XkbSetAutoRepeatRate(display, XkbUseCoreKbd,
+                                  (unsigned int)delay, (unsigned int)rate) != 0;
+    XFlush(display);
+    XCloseDisplay(display);
+    return ok;
+}
+
+/* panels.json lives in the user's original configuration root so both native
+ * and compatibility sessions see the same panel list. */
+static char *
+linux_panel_config_path(void)
+{
+    static char path[1024];
+    const char *override = getenv("RILL_PANELS_JSON");
+    if(override != NULL && override[0] != '\0') {
+        snprintf(path, sizeof(path), "%s", override);
+        return path;
+    }
+    const char *home = getenv("HOME");
+    if(home == NULL || home[0] == '\0')
+        home = g_get_home_dir();
+    snprintf(path, sizeof(path), "%s/.config/rill/panels.json",
+             home != NULL ? home : "");
+    return path;
+}
+
+static int
+linux_panel_config_load(char *json, int size)
+{
+    const char *path = linux_panel_config_path();
+    gchar *contents = NULL;
+    if(json == NULL || size <= 0)
+        return 0;
+    json[0] = '\0';
+    if(!g_file_get_contents(path, &contents, NULL, NULL) || contents == NULL) {
+        g_free(contents);
+        return 0;
+    }
+    g_strlcpy(json, contents, (gsize)size);
+    g_free(contents);
+    return 1;
+}
+
+static int
+linux_panel_config_store(const char *json)
+{
+    const char *path = linux_panel_config_path();
+    char *directory = g_path_get_dirname(path);
+    if(directory != NULL) {
+        g_mkdir_with_parents(directory, 0700);
+        g_free(directory);
+    }
+    char *temporary = g_strconcat(path, ".tmp", NULL);
+    GError *error = NULL;
+    gboolean ok = g_file_set_contents(temporary, json, -1, &error) &&
+                  rename(temporary, path) == 0;
+    if(!ok && error != NULL) {
+        fprintf(stderr, "rill: could not save panels.json: %s\n", error->message);
+        g_error_free(error);
+    }
+    g_free(temporary);
+    return ok != 0;
+}
+
+/* Service report for the Settings application: the session manager's status
+ * file plus a screen-lock readiness summary. */
+static int
+linux_session_diagnostics(char *text, int size)
+{
+    const char *control = getenv("RILL_SESSION_CONTROL");
+    int offset = 0;
+
+    if(text == NULL || size <= 0)
+        return 0;
+    text[0] = '\0';
+    if(control != NULL && control[0] != '\0') {
+        char *directory = g_path_get_dirname(control);
+        gchar *contents = NULL;
+        if(directory != NULL) {
+            char *path = g_build_filename(directory, "status", NULL);
+            if(g_file_get_contents(path, &contents, NULL, NULL) && contents != NULL) {
+                offset += snprintf(text + offset, (size_t)(size - offset),
+                                   "Services:\n%s", contents);
+            }
+            g_free(path);
+            g_free(directory);
+        }
+        g_free(contents);
+    }
+    if(offset >= size - 2)
+        return 1;
+    const char *lock = getenv("RILL_LOCK_COMMAND");
+    if(lock != NULL && lock[0] != '\0')
+        offset += snprintf(text + offset, (size_t)(size - offset),
+                           "Screen lock: RILL_LOCK_COMMAND\n");
+    else {
+        static const char *const lockers[] = {
+            "xsecurelock", "i3lock", "swaylock", "light-locker",
+            "xfce4-screensaver", "mate-screensaver", "xscreensaver", "xlockmore"
+        };
+        const char *found = NULL;
+        for(size_t i = 0; i < sizeof(lockers) / sizeof(lockers[0]) && found == NULL; i++) {
+            char *program = g_find_program_in_path(lockers[i]);
+            if(program != NULL)
+                found = lockers[i];
+            g_free(program);
+        }
+        if(found != NULL)
+            offset += snprintf(text + offset, (size_t)(size - offset),
+                               "Screen lock: %s\n", found);
+        else
+            offset += snprintf(text + offset, (size_t)(size - offset),
+                               "Screen lock: no locker detected. Install one "
+                               "or set RILL_LOCK_COMMAND before relying on "
+                               "lock and suspend.\n");
+    }
+    return 1;
+}
+
 static int
 linux_open_settings(const char *category)
 {
@@ -2798,6 +3378,8 @@ static const RillPlatformServices services = {
     linux_show_desktop,
     linux_tray_icons,
     linux_tray_activate,
+    linux_tray_menu,
+    linux_tray_menu_activate,
     linux_list_desktop_files,
     linux_open_path,
     linux_notifications_poll,
@@ -2807,6 +3389,8 @@ static const RillPlatformServices services = {
     linux_xembed_tray_layout,
     linux_volume_state,
     linux_volume_set,
+    linux_volume_sinks,
+    linux_volume_set_default,
     linux_xsettings_publish,
     linux_xsettings_read,
     linux_clipboard_history,
@@ -2819,7 +3403,24 @@ static const RillPlatformServices services = {
     CancelFileTransfer,
     FinishFileTransfers,
     CopyFilesToClipboard,
-    PasteFilesFromClipboard
+    PasteFilesFromClipboard,
+    AllowFileTransferConflicts,
+    ResolveFileTransferConflict,
+    RetryFileTransfer,
+    RecoverStagingDirectory,
+    ListFileTrash,
+    RestoreFileTrashItem,
+    EmptyFileTrash,
+    linux_display_outputs,
+    linux_display_modes,
+    linux_display_apply,
+    linux_pointer_settings,
+    linux_pointer_set,
+    linux_keyboard_repeat,
+    linux_keyboard_set_repeat,
+    linux_panel_config_load,
+    linux_panel_config_store,
+    linux_session_diagnostics
 };
 
 const RillPlatformServices *

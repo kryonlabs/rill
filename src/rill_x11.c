@@ -1284,6 +1284,12 @@ RillX11SyncDesktop(void)
     XCloseDisplay(display);
 }
 
+unsigned long
+RillX11DesktopWindow(void)
+{
+    return (unsigned long)desktop_window;
+}
+
 static void
 restore_surface_focus(Display *display, Window surface, Window previous)
 {
@@ -1470,7 +1476,7 @@ PanelSurfaceInit(const char *title, const char *output)
 }
 
 int
-PanelSurfaceBegin(int height, int bottom)
+PanelSurfaceBegin(int size, int edge)
 {
     if(panel_display == NULL || panel_window == None)
         return 0;
@@ -1500,24 +1506,32 @@ PanelSurfaceBegin(int height, int bottom)
         panel_pointer_mask = mask;
     }
     panel_rectangle_count = 0;
-    if(height != panel_last_height || bottom != panel_last_bottom) {
+    if(size != panel_last_height || edge != panel_last_bottom) {
         XWindowAttributes root;
         XGetWindowAttributes(panel_display, DefaultRootWindow(panel_display), &root);
         unsigned long strut[12] = {0};
-        if(bottom) {
-            strut[3] = root.height - (panel_y + panel_height) + height;
+        if(edge == 1) {
+            strut[3] = root.height - (panel_y + panel_height) + size;
             strut[10] = panel_x;
             strut[11] = panel_x + panel_width - 1;
+        } else if(edge == 2) {
+            strut[0] = panel_x + size;
+            strut[4] = panel_y;
+            strut[5] = panel_y + panel_height - 1;
+        } else if(edge == 3) {
+            strut[1] = root.width - (panel_x + panel_width) + size;
+            strut[6] = panel_y;
+            strut[7] = panel_y + panel_height - 1;
         } else {
-            strut[2] = panel_y + height;
+            strut[2] = panel_y + size;
             strut[8] = panel_x;
             strut[9] = panel_x + panel_width - 1;
         }
         XChangeProperty(panel_display, panel_window,
                         XInternAtom(panel_display, "_NET_WM_STRUT_PARTIAL", False),
                         XA_CARDINAL, 32, PropModeReplace, (unsigned char *)strut, 12);
-        panel_last_height = height;
-        panel_last_bottom = bottom;
+        panel_last_height = size;
+        panel_last_bottom = edge;
     }
     return outside_press;
 }
