@@ -73,7 +73,21 @@ typedef struct RillX11Manager {
 } RillX11Manager;
 
 void RillX11SyncDesktop(void);
+void DesktopSurfaceInput(int active);
+int DesktopSurfacePointer(Vector2 *position, int *down, int *over);
 int RillX11SetDesktop(const char *title);
+int PanelSurfaceInit(const char *title, const char *output);
+int PanelSurfaceBegin(int height, int bottom);
+typedef struct PanelPointer {
+    Vector2 position;
+    int pressed;
+    int released;
+    int shift;
+} PanelPointer;
+int PanelSurfacePointer(PanelPointer *pointer);
+void PanelSurfaceInclude(Rectangle bounds);
+void PanelSurfaceEnd(int keyboard);
+Vector2 PanelSurfaceOrigin(void);
 
 void RillX11Init(RillX11Manager *wm);
 int RillX11StartRoot(RillX11Manager *wm);

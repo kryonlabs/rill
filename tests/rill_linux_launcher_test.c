@@ -201,6 +201,12 @@ main(int argc, char **argv)
               strcmp(log, "logout\nsuspend\nlock\n") == 0, &failures);
     }
     unsetenv("RILL_SESSION_ACTION_FILE");
+    setenv("RILL_LOCK_COMMAND", "/bin/false", 1);
+    check("failed locker does not report success", !platform->session_action("lock"), &failures);
+    check("failed locker prevents suspend", !platform->session_action("suspend"), &failures);
+    setenv("RILL_LOCK_COMMAND", "/bin/true", 1);
+    check("successful locker command acknowledged", platform->session_action("lock"), &failures);
+    unsetenv("RILL_LOCK_COMMAND");
     unlink(app_path);
     check("wallpaper listing is bounded", platform->list_wallpapers != NULL &&
           platform->list_wallpapers(walls, 2) <= 2, &failures);
@@ -474,6 +480,53 @@ main(int argc, char **argv)
               platform->list_desktop_files != NULL && count == 1 &&
               strcmp(desktop_launchers[0].name, "Desktop Notes") == 0,
               &failures);
+        char regular[1024], renamed[1024], folder[1024], error[256];
+        snprintf(regular, sizeof(regular), "%s/notes with spaces.txt", desktop);
+        check("create ordinary desktop file", write_file(regular, "keep me\n"), &failures);
+        snprintf(folder, sizeof(folder), "%s/Documents", desktop);
+        check("create desktop folder", platform->file_operation("mkdir", desktop, "Documents",
+                                                               error, sizeof(error)), &failures);
+        count = platform->list_desktop_files(desktop_launchers, 4);
+        check("ordinary files and directories discovered", count == 3, &failures);
+        int found_file = 0, found_folder = 0;
+        for(int i = 0; i < count; i++) {
+            if(strcmp(desktop_launchers[i].file_path, regular) == 0)
+                found_file = strcmp(desktop_launchers[i].name, "notes with spaces.txt") == 0;
+            if(strcmp(desktop_launchers[i].file_path, folder) == 0)
+                found_folder = strcmp(desktop_launchers[i].description, "Folder") == 0;
+        }
+        check("file identity and folder type", found_file && found_folder, &failures);
+        check("refuse rename over existing file", !platform->file_operation("rename", regular,
+              "notes.desktop", error, sizeof(error)) && error[0], &failures);
+        check("refuse path traversal name", !platform->file_operation("mkdir", desktop,
+              "../outside", error, sizeof(error)), &failures);
+        check("rename with Unicode and spaces", platform->file_operation("rename", regular,
+              "café notes.txt", error, sizeof(error)), &failures);
+        snprintf(renamed, sizeof(renamed), "%s/café notes.txt", desktop);
+        check("renamed file exists", access(renamed, F_OK) == 0 && access(regular, F_OK) != 0,
+              &failures);
+        check("copy into folder", platform->file_operation("copy", renamed, folder,
+                                                          error, sizeof(error)), &failures);
+        check("copy refuses overwrite", !platform->file_operation("copy", renamed, folder,
+                                                                 error, sizeof(error)), &failures);
+        snprintf(regular, sizeof(regular), "%s/Documents/café notes.txt", desktop);
+        unlink(regular);
+        unlink(renamed);
+        rmdir(folder);
+        count = platform->list_desktop_files(desktop_launchers, 4);
+        check("deleted files disappear", count == 1, &failures);
+        /* Read user-dirs as data without evaluating commands or shell variables. */
+        const char *old_config = getenv("XDG_CONFIG_HOME");
+        char *saved_config = old_config ? strdup(old_config) : NULL;
+        setenv("XDG_CONFIG_HOME", home, 1);
+        snprintf(regular, sizeof(regular), "%s/user-dirs.dirs", home);
+        write_file(regular, "XDG_DESKTOP_DIR=\"$HOME/Escritorio\"\n");
+        snprintf(folder, sizeof(folder), "%s/Escritorio", home);
+        check("localized XDG desktop folder", strcmp(platform->desktop_directory(), folder) == 0,
+              &failures);
+        if(saved_config) { setenv("XDG_CONFIG_HOME", saved_config, 1); free(saved_config); }
+        else unsetenv("XDG_CONFIG_HOME");
+        unlink(regular);
         if(original_home[0] != '\0')
             setenv("HOME", original_home, 1);
         else

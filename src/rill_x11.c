@@ -19,6 +19,8 @@
 #include <X11/extensions/Xcomposite.h>
 #include <X11/extensions/Xdamage.h>
 #include <X11/extensions/XTest.h>
+#include <X11/extensions/shape.h>
+#include <X11/extensions/Xrandr.h>
 #undef Font
 #undef Screen
 
@@ -1000,8 +1002,8 @@ RillX11Draw(RillX11Manager *wm)
         DrawRectangleRec(title, mix(GetThemeSurface(), border, 0.18f));
         BeginScissorMode((int)title.x + 8, (int)title.y,
                          (int)title.width - 44, (int)title.height);
-        DrawText(client->title, (int)title.x + 10, (int)title.y + 8,
-             Text14, GetThemeText());
+        Text((TextProps){.bounds = {title.x + 10, title.y + 8, title.width - 44, 0},
+                         .text = client->title, .font = Text14, .wrap = TextWrapNone});
         EndScissorMode();
         if(close_button(close)) {
             request_close(wm, client->window, CurrentTime);
@@ -1015,8 +1017,8 @@ RillX11Draw(RillX11Manager *wm)
                                        (float)client->texture.height},
                            content, (Vector2){0, 0}, 0.0f, WHITE);
         } else {
-            DrawText("Waiting for X11 surface", (int)content.x + 14,
-                 (int)content.y + 14, Text14, GetThemeIcon());
+            Text((TextProps){.bounds = {content.x + 14, content.y + 14, content.width - 28, 0},
+                             .text = "Waiting for X11 surface", .font = Text14, .wrap = TextWrapNone});
         }
         EndScissorMode();
     }
@@ -1218,6 +1220,28 @@ find_named_window(Display *display, Window root, const char *title, int depth)
 
 static Window desktop_window;
 
+int
+DesktopSurfacePointer(Vector2 *position, int *down, int *over)
+{
+    static Display *display;
+    Window root, child;
+    int root_x, root_y, x, y;
+    unsigned int mask;
+
+    if(desktop_window == None)
+        return 0;
+    if(display == NULL)
+        display = XOpenDisplay(NULL);
+    if(display == NULL ||
+       !XQueryPointer(display, DefaultRootWindow(display), &root, &child,
+                      &root_x, &root_y, &x, &y, &mask))
+        return 0;
+    *position = (Vector2){root_x, root_y};
+    *down = (mask & Button1Mask) != 0;
+    *over = child == desktop_window;
+    return 1;
+}
+
 void
 RillX11SyncDesktop(void)
 {
@@ -1233,6 +1257,47 @@ RillX11SyncDesktop(void)
         XFlush(display);
     }
     XCloseDisplay(display);
+}
+
+static void
+restore_surface_focus(Display *display, Window surface, Window previous)
+{
+    Window current;
+    int revert;
+    XGetInputFocus(display, &current, &revert);
+    if(current != surface)
+        return;
+    /* The previous application may have closed while a menu was open. */
+    int (*handler)(Display *, XErrorEvent *) = XSetErrorHandler(x11_error_handler);
+    XWindowAttributes attributes;
+    if(previous != None && previous != PointerRoot &&
+       (!XGetWindowAttributes(display, previous, &attributes) || attributes.map_state != IsViewable))
+        previous = PointerRoot;
+    XSetInputFocus(display, previous != None ? previous : PointerRoot, RevertToPointerRoot, CurrentTime);
+    XSync(display, False);
+    XSetErrorHandler(handler);
+}
+
+void
+DesktopSurfaceInput(int active)
+{
+    static Display *display;
+    static int focused;
+    static Window previous;
+    if(desktop_window == None || active == focused)
+        return;
+    if(display == NULL)
+        display = XOpenDisplay(NULL);
+    if(display == NULL)
+        return;
+    if(active) {
+        int revert;
+        XGetInputFocus(display, &previous, &revert);
+        XSetInputFocus(display, desktop_window, RevertToPointerRoot, CurrentTime);
+    } else
+        restore_surface_focus(display, desktop_window, previous);
+    focused = active;
+    XFlush(display);
 }
 
 int
@@ -1266,4 +1331,220 @@ RillX11SetDesktop(const char *title)
     XSync(display, False);
     XCloseDisplay(display);
     return 1;
+}
+
+/* A panel has its own dock surface. Its bounding shape contains the bar and
+ * open popups, leaving the rest of the desktop visible and interactive. */
+static Display *panel_display;
+static Window panel_window;
+static Window panel_previous_focus;
+static int panel_has_focus;
+static int panel_has_monitors;
+static XRectangle panel_rectangles[64];
+static XRectangle panel_previous_rectangles[64];
+static int panel_rectangle_count;
+static int panel_previous_count = -1;
+static int panel_x, panel_y, panel_width, panel_height;
+static int panel_last_height = -1, panel_last_bottom = -1;
+static unsigned int panel_pointer_mask;
+static PanelPointer panel_pointer;
+static char panel_output[128];
+static double panel_next_output_check;
+
+static void
+panel_update_output(void)
+{
+    if(panel_display == NULL || GetTime() < panel_next_output_check)
+        return;
+    panel_next_output_check = GetTime() + 1.0;
+    Window root = DefaultRootWindow(panel_display);
+    XWindowAttributes attributes;
+    if(!XGetWindowAttributes(panel_display, root, &attributes))
+        return;
+    int x = 0, y = 0, width = attributes.width, height = attributes.height;
+    int count = 0;
+    XRRMonitorInfo *monitors = panel_has_monitors ? XRRGetMonitors(panel_display, root, True, &count) : NULL;
+    XRRScreenResources *resources = panel_has_monitors && panel_output[0] ?
+        XRRGetScreenResourcesCurrent(panel_display, root) : NULL;
+    int chosen = 0, match = -1;
+    for(int i = 0; i < count; i++) {
+        char *name = XGetAtomName(panel_display, monitors[i].name);
+        if(monitors[i].primary)
+            chosen = i;
+        if(name != NULL && strcmp(name, panel_output) == 0)
+            match = i;
+        for(int output = 0; resources != NULL && output < monitors[i].noutput; output++) {
+            XRROutputInfo *info = XRRGetOutputInfo(panel_display, resources, monitors[i].outputs[output]);
+            if(info != NULL) {
+                if((size_t)info->nameLen == strlen(panel_output) &&
+                   strncmp(info->name, panel_output, (size_t)info->nameLen) == 0)
+                    match = i;
+                XRRFreeOutputInfo(info);
+            }
+        }
+        if(name != NULL)
+            XFree(name);
+    }
+    if(resources != NULL)
+        XRRFreeScreenResources(resources);
+    if(match >= 0)
+        chosen = match;
+    if(count > 0) {
+        x = monitors[chosen].x;
+        y = monitors[chosen].y;
+        width = monitors[chosen].width;
+        height = monitors[chosen].height;
+    }
+    if(monitors != NULL)
+        XRRFreeMonitors(monitors);
+    if(x != panel_x || y != panel_y || width != panel_width || height != panel_height) {
+        panel_x = x;
+        panel_y = y;
+        panel_width = width;
+        panel_height = height;
+        panel_last_height = -1;
+        XMoveResizeWindow(panel_display, panel_window, x, y, width, height);
+    }
+}
+
+int
+PanelSurfaceInit(const char *title, const char *output)
+{
+    panel_display = XOpenDisplay(NULL);
+    if(panel_display == NULL)
+        return 0;
+    int event, error;
+    if(!XShapeQueryExtension(panel_display, &event, &error))
+        return 0;
+    int major = 0, minor = 0;
+    panel_has_monitors = XRRQueryExtension(panel_display, &event, &error) &&
+        XRRQueryVersion(panel_display, &major, &minor) &&
+        (major > 1 || (major == 1 && minor >= 5));
+    Window root = DefaultRootWindow(panel_display);
+    panel_window = find_named_window(panel_display, root, title, 0);
+    if(panel_window == None)
+        return 0;
+    snprintf(panel_output, sizeof(panel_output), "%s", output != NULL ? output : "");
+    XUnmapWindow(panel_display, panel_window);
+    Atom dock = XInternAtom(panel_display, "_NET_WM_WINDOW_TYPE_DOCK", False);
+    XChangeProperty(panel_display, panel_window,
+                    XInternAtom(panel_display, "_NET_WM_WINDOW_TYPE", False),
+                    XA_ATOM, 32, PropModeReplace, (unsigned char *)&dock, 1);
+    unsigned long sticky = 0xffffffffUL;
+    XChangeProperty(panel_display, panel_window,
+                    XInternAtom(panel_display, "_NET_WM_DESKTOP", False),
+                    XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&sticky, 1);
+    panel_update_output();
+    XRectangle initial = {0, 0, (unsigned short)panel_width, 26};
+    XShapeCombineRectangles(panel_display, panel_window, ShapeBounding, 0, 0,
+                            &initial, 1, ShapeSet, Unsorted);
+    XStoreName(panel_display, panel_window, title);
+    XMapWindow(panel_display, panel_window);
+    XSync(panel_display, False);
+    return 1;
+}
+
+int
+PanelSurfaceBegin(int height, int bottom)
+{
+    if(panel_display == NULL || panel_window == None)
+        return 0;
+    panel_update_output();
+    Window root_return, child;
+    int rx, ry, wx, wy;
+    unsigned int mask = 0;
+    int outside_press = 0;
+    panel_pointer.pressed = 0;
+    panel_pointer.released = 0;
+    if(XQueryPointer(panel_display, panel_window, &root_return, &child,
+                      &rx, &ry, &wx, &wy, &mask)) {
+        if((mask & (Button1Mask | Button2Mask | Button3Mask)) &&
+           !(panel_pointer_mask & (Button1Mask | Button2Mask | Button3Mask))) {
+            outside_press = 1;
+            for(int i = 0; i < panel_previous_count; i++) {
+                XRectangle rect = panel_previous_rectangles[i];
+                if(wx >= rect.x && wy >= rect.y && wx < rect.x + rect.width &&
+                   wy < rect.y + rect.height)
+                    outside_press = 0;
+            }
+        }
+        panel_pointer.position = (Vector2){wx, wy};
+        panel_pointer.pressed = (mask & Button1Mask) && !(panel_pointer_mask & Button1Mask);
+        panel_pointer.released = !(mask & Button1Mask) && (panel_pointer_mask & Button1Mask);
+        panel_pointer.shift = (mask & ShiftMask) != 0;
+        panel_pointer_mask = mask;
+    }
+    panel_rectangle_count = 0;
+    if(height != panel_last_height || bottom != panel_last_bottom) {
+        XWindowAttributes root;
+        XGetWindowAttributes(panel_display, DefaultRootWindow(panel_display), &root);
+        unsigned long strut[12] = {0};
+        if(bottom) {
+            strut[3] = root.height - (panel_y + panel_height) + height;
+            strut[10] = panel_x;
+            strut[11] = panel_x + panel_width - 1;
+        } else {
+            strut[2] = panel_y + height;
+            strut[8] = panel_x;
+            strut[9] = panel_x + panel_width - 1;
+        }
+        XChangeProperty(panel_display, panel_window,
+                        XInternAtom(panel_display, "_NET_WM_STRUT_PARTIAL", False),
+                        XA_CARDINAL, 32, PropModeReplace, (unsigned char *)strut, 12);
+        panel_last_height = height;
+        panel_last_bottom = bottom;
+    }
+    return outside_press;
+}
+
+int
+PanelSurfacePointer(PanelPointer *pointer)
+{
+    if(panel_display == NULL || pointer == NULL)
+        return 0;
+    *pointer = panel_pointer;
+    return 1;
+}
+
+void
+PanelSurfaceInclude(Rectangle bounds)
+{
+    if(panel_display == NULL || panel_rectangle_count >= 64 ||
+       bounds.width <= 0 || bounds.height <= 0)
+        return;
+    panel_rectangles[panel_rectangle_count++] = (XRectangle){
+        (short)bounds.x, (short)bounds.y,
+        (unsigned short)bounds.width, (unsigned short)bounds.height};
+}
+
+void
+PanelSurfaceEnd(int keyboard)
+{
+    if(panel_display == NULL)
+        return;
+    if(panel_rectangle_count != panel_previous_count ||
+       memcmp(panel_rectangles, panel_previous_rectangles,
+              (size_t)panel_rectangle_count * sizeof(panel_rectangles[0])) != 0) {
+        XShapeCombineRectangles(panel_display, panel_window, ShapeBounding, 0, 0,
+                                panel_rectangles, panel_rectangle_count, ShapeSet, Unsorted);
+        memcpy(panel_previous_rectangles, panel_rectangles,
+               (size_t)panel_rectangle_count * sizeof(panel_rectangles[0]));
+        panel_previous_count = panel_rectangle_count;
+    }
+    if(keyboard && !panel_has_focus) {
+        int revert;
+        XGetInputFocus(panel_display, &panel_previous_focus, &revert);
+        XSetInputFocus(panel_display, panel_window, RevertToPointerRoot, CurrentTime);
+        panel_has_focus = 1;
+    } else if(!keyboard && panel_has_focus) {
+        restore_surface_focus(panel_display, panel_window, panel_previous_focus);
+        panel_has_focus = 0;
+    }
+    XFlush(panel_display);
+}
+
+Vector2
+PanelSurfaceOrigin(void)
+{
+    return (Vector2){panel_x, panel_y};
 }

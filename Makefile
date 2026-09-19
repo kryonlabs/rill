@@ -2,6 +2,7 @@ APP_NAME := rill
 KRYON_DIR ?= ../kryon
 PLAN9PORT_DIR ?= ../plan9port
 KRYON_BACKEND ?= libdraw
+KRYON_WITH_SYNC ?= 0
 
 CC ?= cc
 CFLAGS ?= -Wall -Wextra -O2
@@ -10,9 +11,9 @@ LDFLAGS := -rdynamic
 LDLIBS =
 GTK_PKG_CFLAGS := $(shell pkg-config --cflags gtk+-3.0 gio-unix-2.0 2>/dev/null)
 GTK_PKG_LIBS := $(shell pkg-config --libs gtk+-3.0 gio-unix-2.0 2>/dev/null)
-X11_PKGS := x11 xcomposite xdamage xfixes xrender xtst
+X11_PKGS := x11 xext xrandr xcomposite xdamage xfixes xrender xtst
 X11_PKG_CFLAGS := $(shell pkg-config --cflags $(X11_PKGS) 2>/dev/null)
-X11_PKG_LIBS := $(shell pkg-config --libs $(X11_PKGS) 2>/dev/null || printf '%s' '-lX11 -lXcomposite -lXdamage -lXfixes -lXrender -lXtst')
+X11_PKG_LIBS := $(shell pkg-config --libs $(X11_PKGS) 2>/dev/null || printf '%s' '-lX11 -lXext -lXrandr -lXcomposite -lXdamage -lXfixes -lXrender -lXtst')
 
 UNAME_S := $(shell uname -s 2>/dev/null)
 UNAME_M := $(shell uname -m 2>/dev/null)
@@ -39,6 +40,8 @@ endif
 KRYON_BUILD_ROOT := $(abspath build/kryon-$(KRYON_BACKEND))
 KRYON_BUILD_DIR := $(KRYON_BUILD_ROOT)/$(PLATFORM)-$(ARCH)
 KRYON_LIB := $(KRYON_BUILD_DIR)/libkryon.a
+CPPFLAGS += -I$(KRYON_BUILD_DIR)/generated/include \
+	-I$(KRYON_BUILD_DIR)/generated/src -DKRYON_WITH_SYNC=$(KRYON_WITH_SYNC)
 BOX2D_A := $(KRYON_BUILD_DIR)/vendor/box2d/src/libbox2d.a
 LIBOQS_A := $(KRYON_BUILD_DIR)/vendor/liboqs/lib/liboqs.a
 CURL_A := $(KRYON_BUILD_DIR)/vendor/curl/lib/libcurl.a
@@ -49,8 +52,11 @@ CURL_CODEC_LDLIBS := $(strip \
   $(shell pkg-config --libs libbrotlicommon 2>/dev/null) \
   $(shell pkg-config --libs libzstd 2>/dev/null))
 LDLIBS += -Wl,--whole-archive $(KRYON_LIB) -Wl,--no-whole-archive \
-	$(BOX2D_A) $(LIBOQS_A) $(CURL_A) -lssl -lcrypto \
+	$(BOX2D_A) $(CURL_A) -lssl -lcrypto \
 	$(CMARK_EXT_A) $(CMARK_A) $(CURL_CODEC_LDLIBS) -lz
+ifeq ($(KRYON_WITH_SYNC),1)
+  LDLIBS += $(LIBOQS_A)
+endif
 CPPFLAGS += $(GTK_PKG_CFLAGS)
 CPPFLAGS += $(X11_PKG_CFLAGS)
 
@@ -69,14 +75,20 @@ SRCS := src/main.c src/rill_settings.c src/rill_shell.c src/rill_panel.c src/ril
 TEST_SRCS := tests/rill_shell_test.c src/rill_shell.c src/rill_panel.c src/platform_stub.c
 LINUX_LAUNCHER_TEST_SRCS := tests/rill_linux_launcher_test.c src/platform_linux.c src/rill_wayland.c $(WAYLAND_SRC)
 
-.PHONY: all clean run test visual-test windowed-smoke kryon FORCE
+.PHONY: all clean run test clean-text-api-check visual-test windowed-smoke kryon FORCE
 
 all: $(BIN)
 
 kryon: $(KRYON_LIB)
 
+clean-text-api-check:
+	python3 $(KRYON_DIR)/scripts/check-clean-text-api.py src include tests
+
+test: clean-text-api-check
+
 $(KRYON_LIB): FORCE
 	$(MAKE) -C $(KRYON_DIR) KRYON_BACKEND=$(KRYON_BACKEND) \
+		KRYON_WITH_SYNC=$(KRYON_WITH_SYNC) PLAN9PORT_DIR=$(abspath $(PLAN9PORT_DIR)) \
 		BUILD_ROOT=$(KRYON_BUILD_ROOT) $(KRYON_LIB)
 
 $(BUILD_DIR):
@@ -119,7 +131,7 @@ clean:
 $(BUILD_DIR)/rill_platform_test: tests/rill_platform_test.c src/platform_plan9.c src/rill_panel.c src/rill_settings.c $(wildcard include/*.h) | $(BUILD_DIR)
 	$(CC) -Iinclude $(CFLAGS) -o $@ tests/rill_platform_test.c src/platform_plan9.c src/rill_panel.c src/rill_settings.c
 
-$(BUILD_DIR)/rill_x11_protocol_test: tests/rill_x11_protocol_test.c src/rill_x11.c $(wildcard include/*.h) | $(BUILD_DIR)
+$(BUILD_DIR)/rill_x11_protocol_test: tests/rill_x11_protocol_test.c src/rill_x11.c $(wildcard include/*.h) $(KRYON_LIB) | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ tests/rill_x11_protocol_test.c src/rill_x11.c $(PLATFORM_LDLIBS)
 
 $(BUILD_DIR)/rill_xembed_test: tests/rill_xembed_test.c src/platform_linux.c src/rill_wayland.c $(wildcard include/*.h) $(WAYLAND_SRC) | $(BUILD_DIR)
@@ -183,6 +195,9 @@ install: $(BIN)
 	install -Dm755 scripts/rill-session $(DESTDIR)$(PREFIX)/bin/rill-session
 	install -Dm755 scripts/rill-window $(DESTDIR)$(PREFIX)/bin/rill-window
 	install -Dm644 session/rill.desktop $(DESTDIR)$(PREFIX)/share/xsessions/rill.desktop
+	install -Dm644 session/rill-xfce.desktop $(DESTDIR)$(PREFIX)/share/xsessions/rill-xfce.desktop
+	install -Dm644 session/applications/rill-settings.desktop $(DESTDIR)$(PREFIX)/share/applications/rill-settings.desktop
+	install -Dm644 session/applications/rill-run.desktop $(DESTDIR)$(PREFIX)/share/applications/rill-run.desktop
 
 session-test:
 	python3 tests/session_test.py
@@ -192,6 +207,10 @@ test: session-test
 .PHONY: session-smoke
 session-smoke: $(BIN)
 	xvfb-run -a -s '-screen 0 1280x800x24' python3 tests/session_smoke.py
+
+.PHONY: native-session-smoke
+native-session-smoke: $(BIN) $(WM_BIN) $(SESSIOND_BIN)
+	RILL_TEST_NATIVE=1 xvfb-run -a -s '-screen 0 1280x800x24' python3 tests/session_smoke.py
 
 .PHONY: plugin-smoke
 plugin-smoke: $(BIN)
@@ -208,18 +227,23 @@ $(WM_BIN): src/wm.c src/wm_compositor.c src/session.c include/session.h include/
 
 SESSIOND_BIN := $(BUILD_DIR)/rill-sessiond
 $(SESSIOND_BIN): src/rill_sessiond.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(shell pkg-config --cflags sm ice) -o $@ src/rill_sessiond.c $(shell pkg-config --libs sm ice)
+	$(CC) $(CFLAGS) $(shell pkg-config --cflags sm ice gio-unix-2.0) -o $@ src/rill_sessiond.c $(shell pkg-config --libs sm ice gio-unix-2.0)
 
 $(BUILD_DIR)/rill_sessiond_test: tests/rill_sessiond_test.c $(SESSIOND_BIN) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(shell pkg-config --cflags sm ice) -o $@ tests/rill_sessiond_test.c $(shell pkg-config --libs sm ice)
 
-.PHONY: sessiond-test
+.PHONY: sessiond-test session-lifecycle-test
 sessiond-test: $(BUILD_DIR)/rill_sessiond_test $(SESSIOND_BIN)
 	$(BUILD_DIR)/rill_sessiond_test $(abspath $(SESSIOND_BIN))
 
+session-lifecycle-test: $(SESSIOND_BIN)
+	python3 tests/session_lifecycle_test.py
+
+test: session-lifecycle-test
+
 all: $(WM_BIN) $(SESSIOND_BIN)
-install session-smoke plugin-smoke nested-smoke: $(SESSIOND_BIN)
-install session-smoke plugin-smoke nested-smoke: $(WM_BIN)
+install session-smoke native-session-smoke plugin-smoke nested-smoke: $(SESSIOND_BIN)
+install session-smoke native-session-smoke plugin-smoke nested-smoke: $(WM_BIN)
 
 $(BUILD_DIR)/wm_test: tests/wm_test.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ $< $(shell pkg-config --cflags --libs x11 xtst xcomposite xext xrandr)

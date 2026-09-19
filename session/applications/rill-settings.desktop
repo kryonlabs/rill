@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Rill Settings
+Comment=Configure the desktop and open system control panels
+Exec=rill --settings
+Icon=preferences-desktop
+Categories=Settings;DesktopSettings;
+X-Rill-ID=settings

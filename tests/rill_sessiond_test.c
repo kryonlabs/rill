@@ -14,6 +14,40 @@
 
 static int saw_save_done;
 static int saw_die;
+static int saw_cancel;
+static int cancel_next;
+static int request_phase2;
+
+static void
+client_complete(SmcConn connection, SmPointer data)
+{
+    (void)connection;
+    (void)data;
+}
+
+static void
+client_cancelled(SmcConn connection, SmPointer data)
+{
+    (void)connection;
+    (void)data;
+    saw_cancel++;
+}
+
+static void
+client_interact(SmcConn connection, SmPointer data)
+{
+    (void)data;
+    SmcInteractDone(connection, True);
+    SmcSaveYourselfDone(connection, True);
+}
+
+static void
+client_phase2(SmcConn connection, SmPointer data)
+{
+    (void)data;
+    request_phase2 = 0;
+    SmcSaveYourselfDone(connection, True);
+}
 
 static void
 client_save_yourself(SmcConn connection, SmPointer data, int save_type,
@@ -25,6 +59,15 @@ client_save_yourself(SmcConn connection, SmPointer data, int save_type,
     (void)fast;
     (void)shutdown;
     saw_save_done++;
+    if(shutdown && cancel_next) {
+        cancel_next = 0;
+        SmcInteractRequest(connection, SmDialogNormal, client_interact, NULL);
+        return;
+    }
+    if(shutdown && request_phase2) {
+        SmcRequestSaveYourselfPhase2(connection, client_phase2, NULL);
+        return;
+    }
     SmcSaveYourselfDone(connection, True);
 }
 
@@ -73,7 +116,7 @@ int
 main(int argc, char **argv)
 {
     char root[] = "/tmp/rill-sessiond-test.XXXXXX";
-    char autostart[256], entry[512], ran[512], env_file[512], out[512];
+    char autostart[256], entry[1024], ran[512], env_file[512], out[512], saved[512];
     char error[256] = "";
     char *client_id = NULL;
     SmcCallbacks callbacks;
@@ -135,11 +178,15 @@ main(int argc, char **argv)
              "echo SESSION_MANAGER=$SESSION_MANAGER > %s; exec sleep 60",
              env_file);
     snprintf(command, sizeof(command), "--autostart-dir=%s", autostart);
+    snprintf(saved, sizeof(saved), "%s/saved-session.ini", root);
     char *daemon_argv[] = {(char *)argv[1], (char *)"--no-default-autostart",
-                           command, (char *)"--", (char *)"sh", (char *)"-c",
+                           command, (char *)"--state-file", saved,
+                           (char *)"--", (char *)"sh", (char *)"-c",
                            entry, NULL};
     daemon = fork();
     if(daemon == 0) {
+        unsetenv("DBUS_SESSION_BUS_ADDRESS");
+        setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/tmp/rill-sessiond-no-system-bus", 1);
         char runtime[300];
         char home[300];
         snprintf(runtime, sizeof(runtime), "%s/runtime", root);
@@ -225,6 +272,10 @@ main(int argc, char **argv)
     setenv("SESSION_MANAGER", session_manager + 16, 1);
     {
         char mirror[600];
+        char *slash = strrchr(control, '/');
+        snprintf(mirror, sizeof(mirror), "%.*s/ICEauthority",
+                 (int)(slash - control), control);
+        setenv("ICEAUTHORITY", mirror, 1);
         snprintf(mirror, sizeof(mirror), "%s/runtime", root);
         setenv("XDG_RUNTIME_DIR", mirror, 1);
         snprintf(mirror, sizeof(mirror), "%s/home", root);
@@ -233,8 +284,11 @@ main(int argc, char **argv)
     memset(&callbacks, 0, sizeof(callbacks));
     callbacks.save_yourself.callback = client_save_yourself;
     callbacks.die.callback = client_die;
+    callbacks.save_complete.callback = client_complete;
+    callbacks.shutdown_cancelled.callback = client_cancelled;
     connection = SmcOpenConnection(NULL, NULL, 1, 0,
-                                   SmcSaveYourselfProcMask | SmcDieProcMask,
+                                   SmcSaveYourselfProcMask | SmcDieProcMask |
+                                   SmcSaveCompleteProcMask | SmcShutdownCancelledProcMask,
                                    &callbacks, NULL, &client_id,
                                    sizeof(error), error);
     if(connection == NULL) {
@@ -245,7 +299,58 @@ main(int argc, char **argv)
     for(int i = 0; i < 100 && (saw_save_done == 0 || saw_die != 0); i++)
         pump_ice(ice, 50);
 
-    /* Logout must save the client, deliver Die, and end the session. */
+    /* A save dialog can cancel logout without killing the desktop body. */
+    cancel_next = 1;
+    file = fopen(control, "w");
+    if(file == NULL)
+        fail("open control fifo for cancellable logout");
+    fputs("logout\n", file);
+    fclose(file);
+    for(int i = 0; i < 100 && !saw_cancel; i++)
+        pump_ice(ice, 50);
+    if(!saw_cancel || saw_die || kill(daemon, 0) != 0)
+        fail("logout did not preserve the session after cancellation");
+
+    /* A new client can disconnect without moving the callback data for
+       other clients. This caught the old compacted-array lifetime bug. */
+    char *second_id = NULL;
+    SmcConn second = SmcOpenConnection(NULL, (void *)1, 1, 0,
+        SmcSaveYourselfProcMask | SmcDieProcMask | SmcSaveCompleteProcMask |
+        SmcShutdownCancelledProcMask, &callbacks, NULL, &second_id,
+        sizeof(error), error);
+    if(second == NULL)
+        fail("second client registration");
+    for(int i = 0; i < 10; i++)
+        pump_ice(SmcGetIceConnection(second), 20);
+    SmcCloseConnection(connection, 0, NULL);
+    connection = second;
+    ice = SmcGetIceConnection(second);
+    free(client_id);
+    client_id = second_id;
+
+    const char *arguments[] = {"/bin/true", "two words", "semi;colon"};
+    SmPropValue restart_args[3];
+    for(int i = 0; i < 3; i++)
+        restart_args[i] = (SmPropValue){(int)strlen(arguments[i]), (char *)arguments[i]};
+    SmProp restart_property = {SmRestartCommand, SmLISTofARRAY8, 3, restart_args};
+    SmProp *properties[] = {&restart_property};
+    SmcSetProperties(connection, 1, properties);
+    IceFlush(ice);
+    /* A rejected power request must leave the session alive after saving. */
+    saw_cancel = 0;
+    file = fopen(control, "w");
+    if(file == NULL) fail("open power control");
+    fputs("shutdown\n", file);
+    fclose(file);
+    for(int i = 0; i < 100 && !saw_cancel; i++)
+        pump_ice(ice, 50);
+    if(!saw_cancel || saw_die || kill(daemon, 0) != 0)
+        fail("rejected power request did not preserve the session");
+    if(!file_contains(saved, "Command=/bin/true;two words;semi\\;colon;", 2))
+        fail("saved session did not preserve restart arguments");
+
+    /* Logout must complete phase two, deliver Die, and end the session. */
+    request_phase2 = 1;
     file = fopen(control, "w");
     if(file == NULL)
         fail("open control fifo");
@@ -257,6 +362,8 @@ main(int argc, char **argv)
         fail("client never completed a SaveYourself");
     if(!saw_die)
         fail("client never received Die at logout");
+    if(request_phase2)
+        fail("client never completed phase two");
     {
         pid_t reaped = 0;
         for(int i = 0; i < 100; i++) {

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Start Rill with the installed Xfce session services on an X11 display."""
+"""Start a supervised Rill X11 session, or the optional Xfce compatibility session."""
 import argparse
+import configparser
+import shlex
 import json
 import os
 from pathlib import Path
@@ -50,8 +52,28 @@ def prepare(env, binary):
     cache = Path(env.get('XDG_CACHE_HOME', home / '.cache'))
     if not original.is_absolute() or not cache.is_absolute():
         raise ValueError('XDG configuration and cache paths must be absolute')
-    profile = original / 'rill' / 'session'
+    mode = env.get('RILL_SESSION', 'rill')
+    if mode not in ('rill', 'xfce'):
+        raise ValueError('RILL_SESSION must be rill or xfce')
+    profile = original / 'rill' / ('session' if mode == 'xfce' else 'desktop')
     profile.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # Programs that use XDG_CONFIG_HOME directly need their existing defaults
+    # in the session profile as well as the XDG_CONFIG_DIRS fallback.
+    for name in ('user-dirs.dirs', 'user-dirs.locale', 'mimeapps.list',
+                 'gtk-3.0', 'gtk-4.0', 'fontconfig'):
+        source, target = original / name, profile / name
+        if source.exists() and not target.exists():
+            if source.is_dir():
+                shutil.copytree(source, target)
+            else:
+                shutil.copy2(source, target)
+    personal = profile / 'rill'
+    personal.mkdir(exist_ok=True)
+    for pattern in ('settings*', 'panel*', 'desktop-layout', 'wm-keys'):
+        for source in (original / 'rill').glob(pattern):
+            target = personal / source.name
+            if source.is_file() and not target.exists():
+                shutil.copy2(source, target)
     xfce = profile / 'xfce4'
     if not xfce.exists():
         source = original / 'xfce4'
@@ -95,21 +117,209 @@ def prepare(env, binary):
     temporary = channel.with_suffix('.tmp')
     tree.write(temporary, encoding='utf-8', xml_declaration=True)
     temporary.replace(channel)
+    if mode == 'rill':
+        # Applications commonly ignore XDG_CONFIG_DIRS for personal settings.
+        # Reuse their existing profiles; keep desktop/autostart overrides private.
+        for source in original.iterdir():
+            if source.name in ('rill', 'autostart'):
+                continue
+            target = profile / source.name
+            if not target.exists() and not target.is_symlink():
+                target.symlink_to(source, target_is_directory=source.is_dir())
     result = dict(env)
     result.update(XDG_CONFIG_HOME=str(profile), XDG_CACHE_HOME=str(cache / 'rill-session'),
                   XDG_CONFIG_DIRS=str(original) + ':' + env.get('XDG_CONFIG_DIRS', '/etc/xdg'),
-                  XDG_CURRENT_DESKTOP='XFCE', XDG_SESSION_DESKTOP='rill',
+                  XDG_CURRENT_DESKTOP='XFCE' if mode == 'xfce' else 'Rill:XFCE',
+                  RILL_SESSION=mode, XDG_SESSION_DESKTOP='rill',
                   XDG_SESSION_TYPE='x11', DESKTOP_SESSION='rill', GDK_BACKEND='x11')
+    if mode == 'rill':
+        prepare_services(result, binary, original)
     result.pop('SESSION_MANAGER', None)
     result.pop('WAYLAND_DISPLAY', None)
     result.pop('WAYLAND_SOCKET', None)
     return result
 
 
+
+def executable(command, env):
+    return shutil.which(command, path=env.get('PATH'))
+
+
+def choose_service(candidates, env):
+    for command in candidates:
+        path = executable(command[0], env)
+        if path:
+            return [path, *command[1:]]
+    return None
+
+
+def disabled_programs(env):
+    result = set()
+    directories = [Path(env['XDG_CONFIG_HOME']), *map(Path, env.get('XDG_CONFIG_DIRS', '/etc/xdg').split(':'))]
+    seen = set()
+    hidden = set()
+    for directory in directories:
+        for entry in (directory / 'autostart').glob('*.desktop'):
+            parser = configparser.ConfigParser(interpolation=None, strict=False)
+            try:
+                parser.read(entry)
+                values = parser['Desktop Entry']
+                if entry.name not in seen:
+                    if values.get('Hidden', '').lower() == 'true':
+                        hidden.add(entry.name)
+                    seen.add(entry.name)
+                if entry.name in hidden:
+                    arguments = shlex.split(values.get('Exec', ''))
+                    if arguments:
+                        result.add(Path(arguments[0]).name)
+            except (configparser.Error, KeyError, ValueError):
+                continue
+    return result
+
+
+def service_commands(env, binary):
+    services = [{'name': 'Window manager',
+                 'command': [env.get('RILL_WM', str(Path(binary).with_name('rill-wm')))],
+                 'restart': True, 'required': True},
+                {'name': 'Panel', 'command': [binary, '--panel', 'primary'],
+                 'restart': True, 'required': True}]
+    # Existing service providers remain selectable. No Xfce program is a
+    # prerequisite of the native session. Foreground commands allow supervision.
+    if env.get('RILL_SESSION_SERVICES', 'auto') == 'none':
+        return services
+    providers = {
+        'Settings': [['xfsettingsd', '--no-daemon']],
+        'Power': [['xfce4-power-manager', '--no-daemon'],
+                  ['mate-power-manager', '--no-daemon']],
+        'Authentication': [['/usr/libexec/polkit-mate-authentication-agent-1'],
+                           ['/usr/lib/policykit-1-gnome/polkit-gnome-authentication-agent-1'],
+                           ['/usr/libexec/polkit-gnome-authentication-agent-1'], ['lxpolkit']],
+        'Network': [['nm-applet']],
+        'Bluetooth': [['blueman-applet']],
+        'Removable media': [['udiskie', '--tray']],
+        'Locker': [['xfce4-screensaver', '--no-daemon'],
+                   ['mate-screensaver', '--no-daemon'], ['xscreensaver', '-no-splash']],
+    }
+    disabled = disabled_programs(env)
+    for name, candidates in providers.items():
+        command = choose_service([item for item in candidates if Path(item[0]).name not in disabled], env)
+        if command:
+            services.append({'name': name, 'command': command,
+                             'restart': True, 'required': False})
+    if not any(service['name'] == 'Locker' for service in services):
+        if 'xss-lock' not in disabled and executable('xss-lock', env) and executable('i3lock', env):
+            services.append({'name': 'Locker', 'command': [executable('xss-lock', env),
+                             '--transfer-sleep-lock', '--', executable('i3lock', env), '--nofork'],
+                             'restart': True, 'required': False})
+    return services
+
+
+def keyfile_string(value):
+    return str(value).replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r').replace(';', '\\;')
+
+
+def configured_services(env, binary, original):
+    services = service_commands(env, binary)
+    panels = original / 'rill' / 'panels.json'
+    if panels.exists():
+        entries = json.loads(panels.read_text())
+        if not isinstance(entries, list) or not entries:
+            raise ValueError('panels.json must contain at least one panel')
+        services = [service for service in services if service['name'] != 'Panel']
+        ids = set()
+        for panel in entries:
+            name = panel.get('id', '') if isinstance(panel, dict) else ''
+            if not isinstance(name, str) or not name or len(name) > 63 or not all(c.isascii() and (c.isalnum() or c in '-_') for c in name) or name in ids:
+                raise ValueError('each panel needs a unique id containing letters, digits, hyphens or underscores')
+            ids.add(name)
+            output = panel.get('output', '')
+            if not isinstance(output, str) or '\0' in output or len(output) > 127:
+                raise ValueError('panel output must be an XRandR output name')
+            command = [binary, '--panel', name]
+            if output:
+                command += ['--panel-output', output]
+            services.append({'name': 'Panel ' + name, 'command': command, 'restart': True, 'required': True})
+    configuration = original / 'rill' / 'services.json'
+    if configuration.exists():
+        overrides = json.loads(configuration.read_text())
+        if not isinstance(overrides, list):
+            raise ValueError('services.json must contain a list of services')
+        for service in overrides:
+            if not isinstance(service, dict) or not isinstance(service.get('name'), str):
+                raise ValueError('each service must have a name')
+            services = [item for item in services if item['name'] != service['name']]
+            if service.get('enabled', True):
+                command = service.get('command')
+                if not isinstance(command, list) or not command or not all(
+                        isinstance(arg, str) and '\0' not in arg for arg in command):
+                    raise ValueError('service command must be a nonempty list of arguments')
+                services.append(service)
+    return services
+
+
+def prepare_services(env, binary, original):
+    services = configured_services(env, binary, original)
+    path = Path(env['XDG_CONFIG_HOME']) / 'services.ini'
+    lines = []
+    for index, service in enumerate(services):
+        lines.extend([f'[Service {index}]',
+                      'Command=' + ';'.join(keyfile_string(arg) for arg in service['command']) + ';',
+                      'Restart=' + str(bool(service.get('restart', True))).lower(),
+                      'Required=' + str(bool(service.get('required', False))).lower(), ''])
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text('\n'.join(lines))
+    temporary.chmod(0o600)
+    temporary.replace(path)
+    env['RILL_SESSION_SERVICES_FILE'] = str(path)
+    env['RILL_SESSION_PROVIDERS'] = ', '.join(service['name'] for service in services)
+    env['RILL_SESSION_EXTERNAL_SETTINGS'] = '1' if any(service['name'] == 'Settings' for service in services) else '0'
+    # Rill owns these facilities. Mask system autostarts in the private profile;
+    # never overwrite an explicit user entry in that profile.
+    autostart = Path(env['XDG_CONFIG_HOME']) / 'autostart'
+    autostart.mkdir(exist_ok=True)
+    for name in ('xfce4-panel.desktop', 'xfdesktop.desktop', 'xfce4-notifyd.desktop',
+                 'xfce4-clipman-plugin-autostart.desktop'):
+        target = autostart / name
+        if not target.exists():
+            target.write_text('[Desktop Entry]\nType=Application\nHidden=true\n')
+
+
+def required_commands(env, binary):
+    if env.get('RILL_SESSION', 'rill') == 'xfce':
+        return ['dbus-run-session', 'xfce4-session',
+                env.get('RILL_WM', str(Path(binary).with_name('rill-wm'))),
+                'xfsettingsd', 'xfce4-panel', 'Thunar']
+    return ['dbus-run-session', str(Path(binary).with_name('rill-sessiond')),
+            env.get('RILL_WM', str(Path(binary).with_name('rill-wm')))]
+
+
+def session_command(env, binary):
+    if env.get('RILL_SESSION', 'rill') == 'xfce':
+        return ['dbus-run-session', '--', 'xfce4-session']
+    sessiond = str(Path(binary).with_name('rill-sessiond'))
+    command = ['dbus-run-session', '--', sessiond, '--restart-body', '--services',
+               env['RILL_SESSION_SERVICES_FILE'], '--state-file',
+               str(Path(env['XDG_CACHE_HOME']) / 'saved-session.ini')]
+    if env.get('RILL_RESTORE_SESSION') == '1':
+        command.append('--restore')
+    if env.get('RILL_NO_AUTOSTART') == '1':
+        command.append('--no-default-autostart')
+    command.append('--')
+    if env.get('RILL_SESSION_BODY'):
+        command.extend(['sh', '-c', env['RILL_SESSION_BODY']])
+    else:
+        command.extend([binary, '--desktop', '--external-panel'])
+    return command
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prepare', action='store_true', help='prepare the profile without starting a session')
+    parser.add_argument('--check', action='store_true', help='report installed session components without starting them')
+    parser.add_argument('--mode', choices=('rill', 'xfce'), help='session provider (default: rill)')
     args = parser.parse_args()
+    selected_env = dict(os.environ)
+    if args.mode:
+        selected_env['RILL_SESSION'] = args.mode
     here = Path(__file__).resolve()
     binary = os.environ.get('RILL_BIN') or shutil.which('rill')
     if binary is None:
@@ -117,16 +327,28 @@ def main():
         binary = str(candidates[0]) if len(candidates) == 1 else None
     if binary is None or not os.access(binary, os.X_OK):
         parser.error('rill is not installed; build it or set RILL_BIN')
+    if args.check:
+        check_env = dict(selected_env)
+        check_env.setdefault('XDG_CONFIG_HOME', str(Path(check_env['HOME']) / '.config'))
+        check_env.setdefault('XDG_CONFIG_DIRS', '/etc/xdg')
+        required = required_commands(check_env, str(Path(binary).resolve()))
+        services = configured_services(check_env, str(Path(binary).resolve()), Path(check_env['XDG_CONFIG_HOME']))
+        missing = [command for command in required if not executable(command, check_env)]
+        print(json.dumps({'session': check_env.get('RILL_SESSION', 'rill'),
+                          'missing_required': missing,
+                          'detected_providers': services,
+                          'locker_available': any(service['name'] == 'Locker' for service in services)
+                                              or bool(check_env.get('RILL_LOCK_COMMAND'))}, indent=2))
+        return 1 if missing else 0
     if not args.prepare:
         if not os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'):
             parser.error('start this session on an X11 display')
         if os.environ.get('SESSION_MANAGER'):
             parser.error('a session manager is already active; use the login-screen Rill session')
-        wm = os.environ.get('RILL_WM', str(Path(binary).resolve().with_name('rill-wm')))
-        for command in ('dbus-run-session', 'xfce4-session', wm, 'xfsettingsd', 'xfce4-panel', 'Thunar'):
+        for command in required_commands(selected_env, str(Path(binary).resolve())):
             if shutil.which(command) is None:
                 parser.error(f'missing required component: {command}')
-    env = prepare(os.environ, str(Path(binary).resolve()))
+    env = prepare(selected_env, str(Path(binary).resolve()))
     if 'PLAN9' not in env:
         for candidate in (here.parent.parent.parent / 'plan9port',
                           Path('/usr/local/plan9'), Path('/usr/lib/plan9')):
@@ -138,19 +360,12 @@ def main():
     if args.prepare:
         print(json.dumps({key: env[key] for key in ('XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_CONFIG_DIRS')}))
         return
-    sessiond = str(Path(binary).resolve().with_name('rill-sessiond'))
-    if os.environ.get('RILL_SESSION', 'xfce') == 'rill' and os.access(sessiond, os.X_OK):
-        # Rill's own session manager: XDG autostart plus XSMP supervision,
-        # launching the desktop body directly instead of xfce4-session.
-        body = os.environ.get('RILL_SESSION_BODY') or (
-            f'{wm} & exec {binary} --desktop --external-panel')
-        os.execvpe('dbus-run-session',
-                   ['dbus-run-session', '--', sessiond, '--', 'sh', '-c', body], env)
-    os.execvpe('dbus-run-session', ['dbus-run-session', '--', 'xfce4-session'], env)
+    command = session_command(env, str(Path(binary).resolve()))
+    os.execvpe(command[0], command, env)
 
 
 if __name__ == '__main__':
     try:
-        main()
+        sys.exit(main())
     except (OSError, ValueError, ET.ParseError) as error:
         sys.exit(f'rill-session: {error}')

@@ -59,6 +59,21 @@ int main(void)
         assert(strcmp(RillSettingsGet(&loaded, "clock-format", "bad"),
                       "%H:%M") == 0);
         assert(RillSettingsGetInteger(&loaded, "panel-height", 0) == 32);
+        RillSettings first = loaded, second = loaded;
+        RillSettings first_previous = loaded, second_previous = loaded;
+        RillSettingsSetInteger(&first, "panel-height", 40);
+        assert(RillSettingsMergeSave(&first, &first_previous, path));
+        RillSettingsSet(&second, "wallpaper", "/tmp/another image.png");
+        assert(RillSettingsMergeSave(&second, &second_previous, path));
+        assert(RillSettingsLoad(&loaded, path));
+        assert(RillSettingsGetInteger(&loaded, "panel-height", 0) == 40);
+        assert(strcmp(RillSettingsGet(&loaded, "wallpaper", ""), "/tmp/another image.png") == 0);
+        RillSettingsSet(&second, "invalid", "one\ntwo");
+        assert(!RillSettingsSave(&second, path));
+        assert(RillSettingsLoad(&loaded, path));
+        assert(RillSettingsGet(&loaded, "invalid", NULL) == NULL);
+        snprintf(window, sizeof(window), "%s/settings.lock", root);
+        unlink(window);
         put(path, "wallpaper = /tmp/photo with spaces.png\n# comment\n\nnoise-without-equals\n");
         assert(RillSettingsLoad(&loaded, path));
         assert(loaded.count == 1);

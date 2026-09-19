@@ -43,7 +43,7 @@ static Window root, support;
 static Client *clients, *focused, *dragged;
 static int screen_number, screen_w, screen_h, desktop, desktops = 4, showing_desktop;
 static int randr_event, have_randr, shape_event, have_shape, claiming, claim_failed;
-static int have_sync;
+static int have_sync, have_input_shape;
 static long ping_timeout_ms = 5000;
 static unsigned int numlock_mask;
 static unsigned long focus_order;
@@ -476,19 +476,37 @@ static void shape(Client *c)
 {
     if (!have_shape || !c->frame)
         return;
-    XShapeCombineShape(display, c->frame, ShapeBounding, c->border, c->title + c->border, c->window,
-                       ShapeBounding, ShapeSet);
-    if (c->border || c->title) {
-        int width = c->geometry.w + 2 * c->border,
-            height = c->geometry.h + c->title + 2 * c->border;
-        XRectangle pieces[4] = {{0, 0, width, c->title + c->border},
-                                {0, c->title + c->border, c->border, c->geometry.h},
-                                {width - c->border, c->title + c->border, c->border, c->geometry.h},
-                                {0, height - c->border, width, c->border}};
-        XShapeCombineRectangles(display, c->frame, ShapeBounding, 0, 0, pieces, 4, ShapeUnion,
-                                Unsorted);
+    /* The frame must preserve both visible and input-only holes. Decorations
+       stay interactive even when the client restricts its own input region. */
+    for (int region = 0; region < (have_input_shape ? 2 : 1); region++) {
+        int kind = region == 0 ? ShapeBounding : ShapeInput;
+        XShapeCombineShape(display, c->frame, kind, c->border, c->title + c->border,
+                           c->window, kind, ShapeSet);
+        if (c->border || c->title) {
+            int width = c->geometry.w + 2 * c->border,
+                height = c->geometry.h + c->title + 2 * c->border;
+            XRectangle pieces[4] = {{0, 0, width, c->title + c->border},
+                                    {0, c->title + c->border, c->border, c->geometry.h},
+                                    {width - c->border, c->title + c->border, c->border, c->geometry.h},
+                                    {0, height - c->border, width, c->border}};
+            XShapeCombineRectangles(display, c->frame, kind, 0, 0, pieces, 4,
+                                    ShapeUnion, Unsorted);
+        }
     }
 }
+
+static int wants_decoration(Client *c)
+{
+    unsigned long count;
+    unsigned long *motif = property(c->window, "_MOTIF_WM_HINTS", atom("_MOTIF_WM_HINTS"), &count);
+    int decorated = !c->special;
+    if (count >= 3 && (motif[0] & 2) && motif[2] == 0)
+        decorated = 0;
+    if (motif)
+        XFree(motif);
+    return decorated;
+}
+
 static void configure(Client *c)
 {
     Geometry g = c->normal;
@@ -512,6 +530,11 @@ static void configure(Client *c)
     g.w = max(1, g.w);
     g.h = max(1, g.h);
     c->geometry = g;
+    if (!c->special) {
+        unsigned long normal[4] = {(unsigned long)c->normal.x, (unsigned long)c->normal.y,
+                                   (unsigned long)c->normal.w, (unsigned long)c->normal.h};
+        set_cardinals(c->window, "_RILL_NORMAL_GEOMETRY", normal, 4);
+    }
     unsigned long extents[4] = {c->border, c->border, c->title + c->border, c->border};
     set_cardinals(c->window, "_NET_FRAME_EXTENTS", extents, 4);
     if (c->frame) {
@@ -838,12 +861,8 @@ static void manage(Window window)
     c->old_border = a.border_width;
     c->dock = has(window, "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_DOCK");
     c->special = c->dock || has(window, "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_DESKTOP");
-    c->decorated = !c->special;
-    unsigned long n, *motif = property(window, "_MOTIF_WM_HINTS", atom("_MOTIF_WM_HINTS"), &n);
-    if (n >= 3 && (motif[0] & 2) && motif[2] == 0)
-        c->decorated = 0;
-    if (motif)
-        XFree(motif);
+    c->decorated = wants_decoration(c);
+    unsigned long n;
     c->desktop = c->special ? -1 : (int)cardinal(window, "_NET_WM_DESKTOP", desktop);
     if (c->desktop >= desktops)
         c->desktop = desktop;
@@ -853,6 +872,12 @@ static void manage(Window window)
     if (parent && !c->special)
         c->desktop = parent->desktop;
     c->normal = (Geometry){a.x, a.y, max(1, a.width), max(1, a.height)};
+    unsigned long *saved = property(window, "_RILL_NORMAL_GEOMETRY", XA_CARDINAL, &n);
+    if (!c->special && n == 4 && saved[2] > 0 && saved[2] <= 65535 &&
+        saved[3] > 0 && saved[3] <= 65535)
+        c->normal = (Geometry){(int)saved[0], (int)saved[1], (int)saved[2], (int)saved[3]};
+    if (saved)
+        XFree(saved);
     if (c->decorated) {
         Geometry area_ = area(c, 1);
         if (parent && !(c->hints.flags & (USPosition | PPosition))) {
@@ -977,6 +1002,8 @@ static void unmanage(Client *c, int destroyed)
         }
         XDeleteProperty(display, c->window, atom("WM_STATE"));
         XDeleteProperty(display, c->window, atom("_NET_FRAME_EXTENTS"));
+        if (!stopping)
+            XDeleteProperty(display, c->window, atom("_RILL_NORMAL_GEOMETRY"));
         if (stopping)
             XMapWindow(display, c->window);
     }
@@ -2147,10 +2174,17 @@ static void event(XEvent *e)
                 title(c);
                 draw_frame(c);
             }
+            if (e->xproperty.atom == atom("_MOTIF_WM_HINTS")) {
+                c->decorated = wants_decoration(c);
+                configure(c);
+            }
             if (e->xproperty.atom == XA_WM_NORMAL_HINTS || e->xproperty.atom == XA_WM_HINTS ||
                 e->xproperty.atom == XA_WM_TRANSIENT_FOR) {
                 hints(c);
-                draw_frame(c);
+                if (e->xproperty.atom == XA_WM_NORMAL_HINTS)
+                    configure(c);
+                else
+                    draw_frame(c);
             }
             if (e->xproperty.atom == atom("_NET_WM_STRUT") ||
                 e->xproperty.atom == atom("_NET_WM_STRUT_PARTIAL"))
@@ -2291,6 +2325,9 @@ static int initialize(void)
                     PropModeReplace, (unsigned char *)names, sizeof(names) - 1);
     int error;
     have_shape = XShapeQueryExtension(display, &shape_event, &error);
+    int shape_major = 0, shape_minor = 0;
+    have_input_shape = have_shape && XShapeQueryVersion(display, &shape_major, &shape_minor) &&
+                       (shape_major > 1 || (shape_major == 1 && shape_minor >= 1));
     have_randr = XRRQueryExtension(display, &randr_event, &error);
     have_sync = XSyncInitialize(display, &error, &error);
     if (have_randr)

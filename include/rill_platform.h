@@ -13,6 +13,7 @@ typedef struct RillLauncher {
     char icon_path[512];
     char desktop_file[1024];
     int favorite;
+    char file_path[1024];
 } RillLauncher;
 
 typedef struct RillTask {
@@ -104,13 +105,22 @@ typedef struct RillPlatformServices {
     int (*clipboard_history)(const char **texts, int cap);
     /* Push a history entry back onto the CLIPBOARD selection. */
     int (*clipboard_select)(int index);
+    /* Actual XDG desktop directory, including localized user-dir overrides. */
+    const char *(*desktop_directory)(void);
+    /* Open an installed control panel for a named system category. */
+    int (*open_settings)(const char *category);
+    /* mkdir: destination is a basename in source; rename: destination is a
+       sibling basename; copy: destination is a directory; trash: no target.
+       Never overwrite an existing destination. Errors are returned to the UI. */
+    int (*file_operation)(const char *operation, const char *source,
+                          const char *destination, char *error, int error_size);
 } RillPlatformServices;
 
 int RillSettingsEnsureDirectory(const char *path);
 
 /* Small persisted key/value store ("key = value" lines) for shell settings. */
-#define RILL_SETTINGS_MAX 32
-#define RILL_SETTINGS_KEY 48
+#define RILL_SETTINGS_MAX 256
+#define RILL_SETTINGS_KEY 96
 #define RILL_SETTINGS_VALUE 256
 
 typedef struct RillSettings {
@@ -128,6 +138,8 @@ int RillSettingsGetInteger(const RillSettings *settings, const char *key,
 void RillSettingsSet(RillSettings *settings, const char *key, const char *value);
 void RillSettingsSetInteger(RillSettings *settings, const char *key, int value);
 int RillSettingsSave(const RillSettings *settings, const char *path);
+/* Merge keys changed since previous with changes made by another process. */
+int RillSettingsMergeSave(RillSettings *settings, RillSettings *previous, const char *path);
 
 const RillPlatformServices *RillPlatformCurrent(void);
 const RillPlatformServices *RillPlatformStub(void);

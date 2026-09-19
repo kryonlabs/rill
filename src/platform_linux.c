@@ -3,8 +3,12 @@
 
 #include <ctype.h>
 #include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
+#include <pthread.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -791,6 +795,18 @@ linux_list_tasks(RillTask *out, int cap)
     return count;
 }
 
+static int session_request(const char *action, const char *detail);
+
+static int
+native_session_request(const char *action, GVariant *value)
+{
+    char *text = g_variant_print(value, TRUE);
+    int ok = session_request(action, text);
+    g_free(text);
+    g_variant_unref(value);
+    return ok;
+}
+
 static int
 linux_launch(const RillLauncher *launcher)
 {
@@ -803,6 +819,20 @@ linux_launch(const RillLauncher *launcher)
     if(launcher == NULL || launcher->command[0] == '\0')
         return 0;
     command = launcher->command;
+    if(getenv("RILL_SESSION_CONTROL") != NULL && getenv("RILL_CONTAINED_X11") == NULL) {
+        if(launcher->desktop_file[0]) {
+            GDesktopAppInfo *app = g_desktop_app_info_new_from_filename(launcher->desktop_file);
+            if(app == NULL)
+                return 0;
+            g_object_unref(app);
+            return native_session_request("desktop", g_variant_ref_sink(g_variant_new_string(launcher->desktop_file)));
+        }
+        if(!g_shell_parse_argv(command, NULL, &argv, NULL))
+            return 0;
+        GVariant *arguments = g_variant_ref_sink(g_variant_new_strv((const char *const *)argv, -1));
+        g_strfreev(argv);
+        return native_session_request("launch", arguments);
+    }
     if(getenv("RILL_CONTAINED_X11") != NULL) {
         if(strcmp(command, "internal:terminal") == 0 ||
            strcmp(command, "host:ktrem") == 0 ||
@@ -1033,6 +1063,103 @@ linux_list_wallpapers(char (*paths)[512], int cap)
 }
 
 static int
+session_request(const char *action, const char *detail)
+{
+    const char *control = getenv("RILL_SESSION_CONTROL");
+    char legacy[512];
+    struct stat info;
+    int fd;
+
+    if(control == NULL || control[0] == '\0') {
+        const char *runtime = getenv("XDG_RUNTIME_DIR");
+        if(runtime == NULL || runtime[0] != '/')
+            return 0;
+        snprintf(legacy, sizeof(legacy), "%s/rill-session-%ld.control",
+                 runtime, (long)getuid());
+        control = legacy;
+    }
+    fd = open(control, O_WRONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW);
+    if(fd < 0)
+        return 0;
+    int ok = fstat(fd, &info) == 0 && S_ISFIFO(info.st_mode) &&
+             info.st_uid == getuid();
+    if(ok) {
+        char command[4096];
+        int length = snprintf(command, sizeof(command), "%s%s%s\n", action,
+                              detail != NULL ? " " : "", detail != NULL ? detail : "");
+        long limit = fpathconf(fd, _PC_PIPE_BUF);
+        if(length < 0 || (size_t)length >= sizeof(command) || limit < length) {
+            close(fd);
+            return 0;
+        }
+        sigset_t blocked, old, pending;
+        sigemptyset(&blocked);
+        sigaddset(&blocked, SIGPIPE);
+        if(pthread_sigmask(SIG_BLOCK, &blocked, &old) != 0) {
+            close(fd);
+            return 0;
+        }
+        sigpending(&pending);
+        int already_pending = sigismember(&pending, SIGPIPE);
+        ssize_t written = write(fd, command, (size_t)length);
+        if(written < 0 && errno == EPIPE && !already_pending) {
+            struct timespec timeout = {0, 0};
+            sigtimedwait(&blocked, NULL, &timeout);
+        }
+        pthread_sigmask(SIG_SETMASK, &old, NULL);
+        ok = written == length;
+    }
+    close(fd);
+    return ok;
+}
+
+static int
+lock_command(const char *command)
+{
+    int status = 0;
+    GError *error = NULL;
+    gboolean ok = g_spawn_command_line_sync(command, NULL, NULL, &status, &error);
+    if(ok)
+        ok = g_spawn_check_wait_status(status, &error);
+    g_clear_error(&error);
+    return ok;
+}
+
+static int
+linux_lock_session(void)
+{
+    const char *custom = getenv("RILL_LOCK_COMMAND");
+    if(custom != NULL && custom[0])
+        return lock_command(custom);
+    GDBusConnection *bus = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL);
+    const char *names[] = {"org.freedesktop.ScreenSaver", "org.xfce.ScreenSaver", "org.mate.ScreenSaver"};
+    const char *paths[] = {"/org/freedesktop/ScreenSaver", "/org/xfce/ScreenSaver", "/org/mate/ScreenSaver"};
+    if(bus != NULL) {
+        for(int i = 0; i < 3; i++) {
+            GVariant *reply = g_dbus_connection_call_sync(bus, names[i], paths[i], names[i],
+                "Lock", NULL, NULL, G_DBUS_CALL_FLAGS_NO_AUTO_START, 2000, NULL, NULL);
+            if(reply == NULL)
+                continue;
+            g_variant_unref(reply);
+            for(int attempt = 0; attempt < 20; attempt++) {
+                reply = g_dbus_connection_call_sync(bus, names[i], paths[i], names[i], "GetActive",
+                    NULL, G_VARIANT_TYPE("(b)"), G_DBUS_CALL_FLAGS_NO_AUTO_START, 1000, NULL, NULL);
+                gboolean active = FALSE;
+                if(reply != NULL) { g_variant_get(reply, "(b)", &active); g_variant_unref(reply); }
+                if(active) { g_object_unref(bus); return 1; }
+                g_usleep(50000);
+            }
+        }
+        g_object_unref(bus);
+    }
+    /* A successful fork is not proof that a lock request succeeded. */
+    if(lock_command("xscreensaver-command -lock") || lock_command("xflock4"))
+        return 1;
+    fprintf(stderr, "rill: no screen locker accepted the lock request\n");
+    return 0;
+}
+
+static int
 linux_session_action(const char *action)
 {
     const char *record = getenv("RILL_SESSION_ACTION_FILE");
@@ -1059,25 +1186,13 @@ linux_session_action(const char *action)
             return 1;
         }
         if(strcmp(action, "lock") == 0)
-            return g_spawn_command_line_async("xflock4", NULL) ||
-                   g_spawn_command_line_async("loginctl lock-session", NULL);
+            return linux_lock_session();
         /* Rill's own session manager coordinates the logout when running;
            fall back to the Xfce session otherwise. */
-        {
-            const char *runtime = getenv("XDG_RUNTIME_DIR");
-            char control[512];
-            FILE *fifo;
-            if(runtime != NULL && runtime[0] != '\0') {
-                snprintf(control, sizeof(control),
-                         "%s/rill-session-%ld.control", runtime, (long)getuid());
-                fifo = fopen(control, "a");
-                if(fifo != NULL) {
-                    fputs("logout\n", fifo);
-                    fclose(fifo);
-                    return 1;
-                }
-            }
-        }
+        if(session_request("logout", NULL))
+            return 1;
+        if(getenv("RILL_SESSION_CONTROL") != NULL)
+            return 0;
         return g_spawn_command_line_async("xfce4-session-logout", NULL);
     } else
         return 0;
@@ -1089,17 +1204,26 @@ linux_session_action(const char *action)
         fclose(file);
         return 1;
     }
+    if(getenv("RILL_SESSION_CONTROL") != NULL &&
+       (strcmp(action, "restart") == 0 || strcmp(action, "shutdown") == 0))
+        return session_request(action, NULL);
+    if(strcmp(action, "suspend") == 0 && !linux_lock_session()) {
+        fprintf(stderr, "rill: suspend cancelled because the screen could not be locked\n");
+        return 0;
+    }
     bus = g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, NULL);
     if(bus == NULL) {
         fprintf(stderr, "rill: cannot reach the system bus for %s\n", action);
         return 0;
     }
-    ok = g_dbus_connection_call_sync(bus, "org.freedesktop.login1",
+    GVariant *reply = g_dbus_connection_call_sync(bus, "org.freedesktop.login1",
                                      "/org/freedesktop/login1",
                                      "org.freedesktop.login1.Manager", method,
                                      g_variant_new("(b)", TRUE), NULL,
                                      G_DBUS_CALL_FLAGS_NONE, -1, NULL,
-                                     &error) != NULL;
+                                     &error);
+    ok = reply != NULL;
+    if(reply != NULL) g_variant_unref(reply);
     if(error != NULL) {
         fprintf(stderr, "rill: session action %s failed: %s\n", action,
                 error->message);
@@ -2191,21 +2315,175 @@ linux_tray_activate(const char *id, int secondary)
     return 0;
 }
 
+static const char *
+linux_desktop_directory(void)
+{
+    static char directory[1024];
+    const char *home = getenv("HOME");
+    const char *override = getenv("RILL_DESKTOP_DIR");
+    const char *config = getenv("XDG_CONFIG_HOME");
+    char path[1024], line[2048];
+    FILE *file;
+
+    directory[0] = '\0';
+    if(override != NULL && override[0] == '/') {
+        g_strlcpy(directory, override, sizeof(directory));
+        return directory;
+    }
+    if(home == NULL || home[0] != '/')
+        return directory;
+    snprintf(directory, sizeof(directory), "%s/Desktop", home);
+    if(config != NULL && config[0] == '/')
+        snprintf(path, sizeof(path), "%s/user-dirs.dirs", config);
+    else
+        snprintf(path, sizeof(path), "%s/.config/user-dirs.dirs", home);
+    file = fopen(path, "r");
+    if(file == NULL)
+        return directory;
+    while(fgets(line, sizeof(line), file) != NULL) {
+        char *entry = g_strstrip(line);
+        if(!g_str_has_prefix(entry, "XDG_DESKTOP_DIR="))
+            continue;
+        char *value = g_shell_unquote(entry + strlen("XDG_DESKTOP_DIR="), NULL);
+        if(value == NULL)
+            continue;
+        /* user-dirs.dirs is data, never a script to evaluate. */
+        if(g_str_has_prefix(value, "$HOME/"))
+            snprintf(directory, sizeof(directory), "%s/%s", home, value + 6);
+        else if(strcmp(value, "$HOME") == 0)
+            g_strlcpy(directory, home, sizeof(directory));
+        else if(value[0] == '/')
+            g_strlcpy(directory, value, sizeof(directory));
+        g_free(value);
+    }
+    fclose(file);
+    return directory;
+}
+
+static int
+compare_desktop_names(const void *a, const void *b)
+{
+    const RillLauncher *left = a, *right = b;
+    int result = g_utf8_collate(left->name, right->name);
+    return result != 0 ? result : strcmp(left->file_path, right->file_path);
+}
+
 static int
 linux_list_desktop_files(RillLauncher *out, int cap)
 {
-    const char *home = getenv("HOME");
-    char dir[1024];
-    GHashTable *seen;
-    int count;
+    const char *directory = linux_desktop_directory();
+    GFile *folder;
+    GFileEnumerator *enumerator;
+    GFileInfo *info;
+    int count = 0;
 
-    if(out == NULL || cap <= 0 || home == NULL || home[0] == '\0')
+    if(out == NULL || cap <= 0 || directory[0] == '\0')
         return 0;
-    snprintf(dir, sizeof(dir), "%s/Desktop", home);
-    seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-    count = scan_desktop_dir(dir, out, cap, 0, 0, dir, seen);
-    g_hash_table_destroy(seen);
+    folder = g_file_new_for_path(directory);
+    enumerator = g_file_enumerate_children(folder,
+        "standard::name,standard::display-name,standard::type,standard::icon,standard::is-hidden",
+        G_FILE_QUERY_INFO_NONE, NULL, NULL);
+    if(enumerator == NULL) {
+        g_object_unref(folder);
+        return 0;
+    }
+    while(count < cap && (info = g_file_enumerator_next_file(enumerator, NULL, NULL))) {
+        const char *name = g_file_info_get_name(info);
+        char *path = g_build_filename(directory, name, NULL);
+        RillLauncher *item = &out[count];
+        if(g_file_info_get_is_hidden(info) || strlen(path) >= sizeof(item->file_path)) {
+            g_free(path);
+            g_object_unref(info);
+            continue;
+        }
+        memset(item, 0, sizeof(*item));
+        if(g_str_has_suffix(name, ".desktop")) {
+            if(!read_desktop_launcher(path, name, item)) {
+                g_free(path);
+                g_object_unref(info);
+                continue;
+            }
+        } else {
+            char *hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, path, -1);
+            snprintf(item->id, sizeof(item->id), "file-%.40s", hash);
+            g_free(hash);
+            g_strlcpy(item->name, g_file_info_get_display_name(info), sizeof(item->name));
+            g_strlcpy(item->category, "files", sizeof(item->category));
+            g_strlcpy(item->description,
+                      g_file_info_get_file_type(info) == G_FILE_TYPE_DIRECTORY ? "Folder" : "File",
+                      sizeof(item->description));
+            GIcon *icon = g_file_info_get_icon(info);
+            if(G_IS_THEMED_ICON(icon)) {
+                const char *const *names = g_themed_icon_get_names(G_THEMED_ICON(icon));
+                for(int i = 0; names[i] && !item->icon_path[0]; i++)
+                    lookup_icon_path(names[i], item->icon_path, sizeof(item->icon_path));
+            }
+        }
+        g_strlcpy(item->file_path, path, sizeof(item->file_path));
+        g_free(path);
+        g_object_unref(info);
+        count++;
+    }
+    g_object_unref(enumerator);
+    g_object_unref(folder);
+    qsort(out, (size_t)count, sizeof(*out), compare_desktop_names);
     return count;
+}
+
+static int
+linux_file_operation(const char *operation, const char *source,
+                     const char *destination, char *message, int message_size)
+{
+    GFile *file = NULL, *target = NULL, *parent = NULL;
+    GError *error = NULL;
+    gboolean ok = FALSE;
+
+    if(message != NULL && message_size > 0)
+        message[0] = '\0';
+    if(operation == NULL || source == NULL || source[0] != '/')
+        goto invalid;
+    file = g_file_new_for_path(source);
+    if(strcmp(operation, "trash") == 0) {
+        ok = g_file_trash(file, NULL, &error);
+    } else if(strcmp(operation, "mkdir") == 0 || strcmp(operation, "rename") == 0) {
+        if(destination == NULL || destination[0] == '\0' ||
+           strcmp(destination, ".") == 0 || strcmp(destination, "..") == 0 ||
+           strchr(destination, '/') != NULL)
+            goto invalid;
+        parent = strcmp(operation, "mkdir") == 0 ? g_object_ref(file) : g_file_get_parent(file);
+        if(parent == NULL)
+            goto invalid;
+        target = g_file_get_child(parent, destination);
+        if(strcmp(operation, "mkdir") == 0)
+            ok = g_file_make_directory(target, NULL, &error);
+        else
+            ok = g_file_move(file, target, G_FILE_COPY_NONE, NULL, NULL, NULL, &error);
+    } else if(strcmp(operation, "copy") == 0) {
+        if(destination == NULL || destination[0] != '/')
+            goto invalid;
+        char *basename = g_file_get_basename(file);
+        parent = g_file_new_for_path(destination);
+        target = g_file_get_child(parent, basename);
+        g_free(basename);
+        /* Directories are opened in the file manager for recursive operations. */
+        ok = g_file_copy(file, target, G_FILE_COPY_NOFOLLOW_SYMLINKS,
+                         NULL, NULL, NULL, &error);
+    } else
+        goto invalid;
+    goto done;
+invalid:
+    g_set_error_literal(&error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                        "Choose a valid name without slashes.");
+done:
+    if(error != NULL) {
+        if(message != NULL && message_size > 0)
+            g_strlcpy(message, error->message, (gsize)message_size);
+        g_error_free(error);
+    }
+    g_clear_object(&target);
+    g_clear_object(&parent);
+    g_clear_object(&file);
+    return ok;
 }
 
 static int
@@ -2217,6 +2495,8 @@ linux_open_path(const char *path)
 
     if(path == NULL || path[0] == '\0')
         return 0;
+    if(getenv("RILL_SESSION_CONTROL") != NULL && getenv("RILL_CONTAINED_X11") == NULL)
+        return native_session_request("open", g_variant_ref_sink(g_variant_new_string(path)));
     if(strstr(path, "://") != NULL)
         uri = g_strdup(path);
     else
@@ -2464,6 +2744,45 @@ linux_clipboard_select(int index)
     return 1;
 }
 
+static int
+linux_open_settings(const char *category)
+{
+    static const struct { const char *category; const char *commands[5]; } panels[] = {
+        {"display", {"xfce4-display-settings", "lxrandr", "arandr", "mate-display-properties", NULL}},
+        {"keyboard", {"xfce4-keyboard-settings", "mate-keyboard-properties", "lxqt-config-input", NULL}},
+        {"mouse", {"xfce4-mouse-settings", "mate-mouse-properties", "lxqt-config-input", NULL}},
+        {"appearance", {"xfce4-appearance-settings", "lxappearance", "mate-appearance-properties", NULL}},
+        {"defaults", {"xfce4-mime-settings", "mate-default-applications-properties", NULL}},
+        {"accessibility", {"xfce4-accessibility-settings", "mate-at-properties", NULL}},
+        {"power", {"xfce4-power-manager-settings", "mate-power-preferences", NULL}},
+        {"network", {"nm-connection-editor", "connman-gtk", NULL}},
+        {"bluetooth", {"blueman-manager", NULL}},
+        {"audio", {"pavucontrol", "mate-volume-control", NULL}},
+        {"terminal", {"xdg-terminal-exec", "x-terminal-emulator", "kapsule", "xterm", NULL}},
+    };
+    if(category == NULL)
+        return 0;
+    for(size_t i = 0; i < sizeof(panels) / sizeof(panels[0]); i++) {
+        if(strcmp(category, panels[i].category) != 0)
+            continue;
+        for(int j = 0; panels[i].commands[j] != NULL; j++) {
+            char *program = g_find_program_in_path(panels[i].commands[j]);
+            if(program == NULL)
+                continue;
+            RillLauncher launcher = {0};
+            g_strlcpy(launcher.name, category, sizeof(launcher.name));
+            char *quoted = g_shell_quote(program);
+            g_strlcpy(launcher.command, quoted, sizeof(launcher.command));
+            gboolean ok = linux_launch(&launcher);
+            g_free(quoted);
+            g_free(program);
+            if(ok)
+                return 1;
+        }
+    }
+    return 0;
+}
+
 static const RillPlatformServices services = {
     "xlibre",
     linux_list_launchers,
@@ -2490,7 +2809,10 @@ static const RillPlatformServices services = {
     linux_xsettings_publish,
     linux_xsettings_read,
     linux_clipboard_history,
-    linux_clipboard_select
+    linux_clipboard_select,
+    linux_desktop_directory,
+    linux_open_settings,
+    linux_file_operation
 };
 
 const RillPlatformServices *

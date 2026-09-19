@@ -1,181 +1,89 @@
 # Desktop compatibility status
 
-Rill is a developing desktop shell, not yet a complete replacement for Xfce.
-The current implementation provides useful X11 integration, optional Wayland
-window management requests, and native Plan 9 launcher/task/settings support.
-It does not certify every Xfce panel plugin. An X11 login session is available
-using the installed Xfce session services; the native Wayland and Plan 9
-desktop integrations remain incomplete.
+Status: 2026-09-19. Rill now supplies a usable independent X11 session with its
+own manager, WM, desktop and dock panel. Full Xfce parity is not established.
+Optional installed providers still supply device settings, power policy,
+authentication, networking, Bluetooth, removable-media and screen-lock services.
+Native Wayland and complete native Plan 9 desktop integration remain unfinished.
 
-## Implemented behavior
+## Implemented and tested
 
-| Area | XLibre / X11 | Wayland | Plan 9 |
+| Area | Current behavior |
+| --- | --- |
+| Session | Default native login, private cookie-authenticated XSMP, XDG autostart precedence/filtering, bounded WM/panel/desktop/service restart, cancellable logout and phase-two save, restart-command persistence and opt-in restoration. Restart/shutdown participate in the same save transaction; rejected power requests cancel. |
+| Panel | Separate X11 dock, work-area reservation, shaped menus, named monitor/output selection, multiple configured panels, top/bottom placement, height/autohide, Shift-drag item reordering and persisted properties. |
+| Desktop | XDG user-folder discovery, ordinary files and folders, desktop-only launchers, live refresh, double-click, persistent dragged positions, rename/new folder/confirmed Trash, Home/File System/Trash shortcuts and context/window-list menus. |
+| Settings | Standalone preferences window, wallpaper picker with scrolling/slideshow, clock/panel preferences, atomic Linux saves, concurrent-key merging and live updates across processes. System categories open installed control panels and report missing providers. |
+| Window manager | Decorations including live Motif changes, workspaces, struts, modal relationships, focus prevention, native move/resize, MRU Alt-Tab, configurable shortcuts, minimize/maximize/fullscreen, bounding/input shapes, saved normal geometry across WM crashes, XRender shadows/damage repainting. |
+| Desktop services | Notifications, text clipboard history/re-serving, StatusNotifier and XEmbed trays, battery indicator and default audio-sink volume. Native session supervises detected optional service providers. Lock commands are checked and Rill's Suspend action requires a successful lock. |
+| Compatibility session | `rill-session --mode xfce` uses the real Xfce session/panel and retains GTK plugin and layout support. Existing preferences are copied into a separate profile. |
+
+See [session configuration](session.md) for provider choices, profiles, panel
+configuration, saved sessions and controls. The native profile does **not**
+translate arbitrary Xfce panel plugin layouts into Rill widgets. Existing Xfce
+layouts remain available through compatibility mode.
+
+The system settings links are integration with existing tools. They do not mean
+Rill reimplements RandR/input configuration, power management, a PAM screen locker,
+polkit, NetworkManager or accessibility infrastructure. A missing provider is
+reported; it is not replaced by a decorative control or a successful-fork claim.
+
+## Backend boundaries
+
+| Capability | X11 / XLibre | Wayland | Plan 9 |
 | --- | --- | --- | --- |
-| Application discovery | XDG desktop files through GIO, localized names, desktop visibility, TryExec, user overrides | Same Linux discovery | Native launcher registry |
-| Launching | GIO desktop launching, terminal entries, working directory and field codes | Preserves Wayland and session environment | Native commands |
-| Task discovery / focus / close | EWMH client operations | Optional wlr foreign-toplevel protocol | rio `/dev/wsys` labels and `wctl` |
-| Workspaces | EWMH pager; four workspaces in Rill WM mode | No workspace protocol adapter yet | No desktop workspace abstraction |
-| Panel configuration | Persistent item order and layout | Same portable model | Native settings with interrupted-save recovery |
-| Desktop surface | `--desktop` under an existing WM | Native desktop surface unavailable | Full desktop integration still needs end-to-end verification |
-| Xfce plugins | `--desktop --xfce-panel` uses the real installed Xfce panel | Companion mode is currently unavailable | Linux plugin binaries cannot load natively |
-| Renderer | plan9port/libdraw | Currently Xwayland via plan9port | Native libdraw target |
+| Application discovery and launch | XDG/GIO, localized names, overrides, field codes and working directories | Same Linux discovery; preserves environment | Native registry/commands |
+| Task focus/close | EWMH | Optional wlr foreign-toplevel adapter | rio labels/wctl |
+| Desktop/panel/WM | Native X11 session described above | No native renderer/layer-shell/session implementation | Native libdraw build; full desktop/session integration incomplete |
+| Unchanged Xfce GTK plugins | Real installed Xfce panel in compatibility mode | Not certified | Cannot execute Linux binaries natively |
+| Rendering | plan9port/libdraw plus XRender WM compositor | Current application rendering depends on Xwayland | Native libdraw |
 
-Launcher and platform-task storage grows dynamically. Rill's built-in app-host
-slots and some UI caches still have fixed limits.
+`rill-wm` is the standalone session WM. The older `rill --wm` and `--windowed`
+paths use experimental capture/input forwarding and are not equivalent to it.
 
-`--wm` is an experimental X11 manager: it publishes supporting-WM properties,
-handles basic client discovery, focus, close and workspace requests, and
-preserves clients while switching workspaces. `--windowed` starts Xvfb and
-captures redirected client pixmaps. Neither mode is a complete xfwm4 replacement.
+## Outstanding work
 
-## Xfce plugin compatibility
+- Vertical/deskbar native panels, a graphical multi-panel editor, full Xfce
+  layout migration into native widgets, and an independent GTK plugin host.
+- Native system-settings controls, graphical WM shortcuts, comprehensive
+  preference migration, accessibility of Rill's own custom UI, and a built-in
+  authenticated locker. Retaining supported external providers remains necessary.
+- External drag/drop, file clipboard operations, multiselection and full file
+  manager/removable-media/trash management. Recursive operations and default-app
+  selection remain with the installed file manager/control panels.
+- Per-item D-Bus tray menus and more complete audio/device controls.
+- Broader transient/group placement and stacking, xfwm4 theme compatibility,
+  compositor vsync/frame pacing/fullscreen bypass and sustained-load benchmarks.
+- Physical multi-monitor/hotplug/mixed-DPI/multi-seat checks, real lock and
+  suspend/resume/lid tests, non-XSMP unsaved-work handling and broad application
+  regressions. Command restoration is not universal document-state restoration.
+- Native Wayland desktop and full Plan 9 session/clipboard/plumbing integration.
 
-Use the real Xfce panel as the compatibility host:
-
-```sh
-build/linux-x86_64/rill --desktop --xfce-panel
-```
-
-Run this in an X11 session with a window manager and session D-Bus. It makes
-Rill the desktop surface, hides Rill's panel, and starts `xfce4-panel`.
-The panel owns its GTK plugins, wrappers and Xfconf configuration. Rill's
-“Add XFCE Plugin” action opens the installed panel's item chooser.
-The companion panel has its own lifecycle; Rill does not yet supervise the
-complete session or stop an existing panel when it exits.
-
-This gives plugins their existing host API rather than emulating that API in
-Rill. It does not embed GTK plugin widgets into Rill's own panel. Installed
-plugin dependencies, Xfce versions and display-backend support still matter.
-All 37 plugin modules installed on the test system loaded successfully,
-including after panel resizing, orientation changes and restart. This does not
-cover every available third-party plugin or every plugin function. See
-[the recorded plugin validation](xfce-plugins.md). Native Plan 9 cannot execute
-Linux GTK modules; that requires porting their dependencies or a separate
-Linux execution/display bridge, neither of which is implemented here.
-
-## Work required for replacement parity
-
-1. **Session lifecycle:** X11 now has a display-manager entry and an Xfce-backed
-   session with desktop XSMP registration. Startup, crash restart and logout
-   have passed integration tests. `rill-sessiond` additionally provides an
-   independent session manager (XSMP server with cookie auth, XDG autostart,
-   body supervision, fifo-coordinated logout; covered by a parity test), and
-   `RILL_SESSION=rill rill-session` starts a session without xfce4-session.
-   The end-session dialog performs log out through Rill's own manager when
-   running and restart/shutdown/suspend through logind; power actions still
-   need validation on real hardware. Saved-session restoration and
-   cancellation with unsaved applications still need end-to-end validation.
-   Native Wayland and Plan 9 session lifecycles remain to be implemented.
-2. **Complete X11 window management:** ICCCM focus protocols, transient/modal
-   relationships, size hints, interactive resize, minimize/maximize/fullscreen,
-   stacking rules, Alt-Tab, struts/workareas, multi-monitor layout and hotplug.
-   Validate against XLibre itself, not only Xvfb.
-3. **Native Wayland desktop:** renderer/window-system integration, layer-shell
-   panel and background surfaces, output scaling and hotplug, keyboard/input
-   routing, workspace protocols, compositor-specific capability reporting and
-   real-compositor integration tests. The wlr task adapter alone is insufficient.
-4. **Desktop services:** StatusNotifier and legacy XEmbed tray hosting, a
-   desktop notification server (banner toasts, default-action activation,
-   expiry and replacement), a clipboard manager with history and
-   owner-independent re-serving, session lock/log out/restart/shutdown/
-   suspend, a battery charge indicator and default-sink volume control
-   (pactl) work, deferring to the installed Xfce services when they own the
-   names or selections. Per-item D-Bus tray menus, display/input
-   configuration, power/battery management beyond the charge display, audio
-   beyond sink volume, networking, removable media, shortcuts, screen locking
-   itself, authentication agents and accessibility integration remain.
-5. **Desktop and panel UX:** wallpaper/output configuration, icon placement,
-   drag/drop, context actions, file operations, panel preferences, plugin
-   properties, multiple panels, auto-hide, per-output positioning and migration
-   from existing Xfce configuration. Rill's settings app already picks
-   wallpapers from platform directories with an optional slideshow; the panel
-   supports top/bottom placement, adjustable height, auto-hide, a clock
-   calendar, show-desktop and session action items and per-item width
-   properties; the desktop carries a right-click menu, a middle-click window
-   list, wheel workspace switching and icons for Desktop-directory entries,
-   favorites and Home / File System / Trash with click selection and
-   double-click activation. Icon dragging/free placement, non-entry desktop
-   files, wallpaper/output settings beyond the picker and the
-   xfsettingsd-backed inputs remain to be reimplemented. Resource and language
-   items are still decorative; do not interpret their drawings as working
-   services.
-6. **Plan 9 integration:** build and launch the whole application against the
-   intended Kryon revision in Taiji, verify live rio focus/close behavior, native
-   app-host availability, clipboard/plumbing and desktop lifecycle. Decide and
-   implement whether Linux-only plugins use a remote host or native alternatives.
-7. **Compatibility certification:** inventory Xfce plugins and dependencies;
-   test creation, configuration, resize/orientation, removal, crash recovery and
-   upgrades on each supported display backend. “All plugins” is not established
-   by a single panel smoke test.
+See [the remaining roadmap](xfce-replacement-roadmap.md) and [WM details](wm.md).
 
 ## Verification
 
-```sh
-make test                 # shell state, launcher behavior, portable platform fixtures
-make protocol-test        # Xvfb WM, workspace, close, client capacity and focus
-make wayland-test         # isolated protocol server: discover/focus/close
-make visual-test          # opaque window/menu compositing
-make windowed-smoke       # contained X11 application capture
-make xfce-smoke           # real Xfce panel plus desktop application launch
-make session-smoke        # real session startup, desktop crash restart, logout
-make plugin-smoke         # every installed plugin: load, resize, orientation, restart
-```
+`make test` covers the shell, platform adapters, launcher discovery, desktop
+files/file-operation failures, settings save/merge, tray/XSETTINGS/clipboard
+protocols, XSMP cancellation/phase two/power rejection, exact autostart matching,
+service recovery, process cleanup and command restoration.
 
-`wayland-test` needs Wayland server development files; the application only
-needs client development files and `wayland-scanner` for the optional adapter.
-X11 integration tests need Xvfb and the utilities named by their scripts.
-`xfce-smoke` additionally needs xfwm4, xfce4-panel, xfconf-query, xmessage and
-D-Bus. It uses a private display, bus and temporary configuration.
+`make native-session-smoke` uses a private X11 display and bus to exercise native
+login, dock properties, desktop double-click/drag/persistence, standalone settings,
+live panel updates, panel reordering, named monitor placement, crash restart and
+logout. It disables hardware agents and access to the real system bus.
+`make wm-test` exercises real X clients, native input and compositor pixels,
+including live decorations, input shapes and post-crash normal geometry.
 
-The Linux checks above passed on 2026-09-05, including the real Xfce panel
-and desktop-launch smoke test. Kryon libdraw smoke tests also passed for
-blending, gradient clipping, rotated text and rectangle intersection.
+Additional checks are `make protocol-test`, `make wayland-test`, `make visual-test`,
+`make windowed-smoke`, `make session-smoke`, `make xfce-smoke`, `make plugin-smoke`
+and `make nested-smoke`. Tests require the relevant Xvfb/Xephyr/D-Bus utilities.
+The Wayland test verifies the optional task protocol, not a native desktop.
 
-On native Plan 9, `mk test` builds the panel persistence test. Native compilation
-of shell/panel/settings/rio modules and the save/load/recovery runtime test have
-passed in a Taiji VM. This is not a full native desktop test.
+Historical testing loaded all 37 installed Xfce plugin modules and exercised
+resizing, orientation and restart. This is evidence of compatibility-host
+integration, not certification of every plugin function, third-party plugin,
+hardware dependency or backend. See [the recorded plugin report](xfce-plugins.md).
 
-## X11 login session
-
-The `rill-session` launcher runs the real Xfce session manager with Rill WM,
-xfsettingsd, xfce4-panel, Thunar and Rill. Rill registers through XSMP, persists
-its panel settings independently and requests immediate restart after a crash.
-The Xfce session manager provides the installed autostart and logout services.
-The login entry is explicitly X11-only; it does not advertise native Wayland.
-
-Build with the SM and ICE development libraries in addition to the existing
-Linux dependencies. The launcher requires Python 3, D-Bus and the Xfce
-components listed above. The plan9port runtime must be available: source-tree
-launches discover the sibling `plan9port`; installations can set `PLAN9` and
-`DEVDRAW` or install plan9port under `/usr/local/plan9` or `/usr/lib/plan9`.
-
-```sh
-make
-make install PREFIX=/usr             # package/system install; needs write access
-# Or package into a staging root:
-make install PREFIX=/usr DESTDIR=/path/to/package-root
-```
-
-Select “Rill (X11, Xfce services)” at the login screen. From a fresh X11 display
-without an active session manager, `scripts/rill-session` also starts it.
-`--prepare` only prepares the profile and prints its paths.
-
-The first launch copies existing `xfce4` preferences to
-`$XDG_CONFIG_HOME/rill/session/xfce4` (default `~/.config/rill/session/xfce4`).
-Subsequent launches retain that copy. Original Xfce preferences remain intact;
-changes made in Rill's session are separate. Other user autostart entries and
-system XDG configuration remain in the search path. Session cache lives under
-`$XDG_CACHE_HOME/rill-session`. The generated Rill failsafe startup list is
-owned by the launcher. Login-provided SSH/GPG agents are inherited; the launcher
-disables Xfce's agent replacement in this profile.
-
-The session uses its own D-Bus session bus. It does not replace an already
-running session manager. Installing the entry does not change the current
-desktop or select Rill as the default session.
-
-The Xfce session configuration follows the installed default schema and the
-[upstream session documentation](https://docs.xfce.org/xfce/xfce4-session/advanced).
-
-The standalone X11 WM now lives in `src/wm.c`; its tested behavior and outstanding
-xfwm4 compatibility work are tracked in [wm.md](wm.md). This does not add a native
-Wayland compositor or replace Plan 9 rio.
+Native Plan 9 module compilation and panel-save recovery were previously tested
+in Taiji; this change has not been certified as a complete native Plan 9 desktop.

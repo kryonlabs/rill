@@ -32,7 +32,8 @@ adapters.
   no other server is running, shows banners with summary and body, invokes the
   default action on clicks, and honors replacement ids and expiry timeouts.
   Lock, log out, restart, shut down and suspend are available from the
-  end-session dialog (locking uses xflock4 or loginctl). The panel's resource
+  end-session dialog. Locking checks the screen saver or locker command result;
+  Suspend requires a successful lock. The panel's resource
   item shows battery charge and charging state from the platform's
   power-supply data, and a volume item controls the default audio sink through
   pactl: the mouse wheel changes the level, clicking toggles mute.
@@ -48,9 +49,10 @@ adapters.
 - Run dialog (`rill --run-dialog`, bound to Alt+F2 in Rill WM) matching
   installed applications and running typed commands, with recent history.
 - Desktop icons from launchers marked `X-Rill-Favorite=true`, entries in the
-  user's Desktop directory, and Home / File System / Trash shortcuts. Icons
-  select on click and open on double-click; Trash opens through the default
-  file handler.
+  user's configured XDG desktop folder (including ordinary files and folders),
+  and Home / File System / Trash shortcuts. Icons select on click, open on
+  double-click, and retain dragged positions. Rename, new-folder and confirmed
+  Trash actions are available from the desktop context menu.
 - Desktop context menu (right-click) with Applications, Terminal, Files,
   Settings, wallpaper and session entries; middle-click opens a window list
   that focuses any task; the mouse wheel over the desktop switches workspaces.
@@ -59,11 +61,14 @@ adapters.
 - Linux X11 window-manager mode with `--wm`.
 - Contained windowed mode with `--windowed`, which starts a private Xvfb
   display and mirrors real X11 client windows into Rill.
-- `rill-sessiond`, an independent session manager: an XSMP server secured by
-  a MIT-MAGIC-COOKIE-1 in the ICE authority file, XDG autostart execution
-  (Hidden/TryExec/OnlyShowIn filtering, XFCE entries included), session-body
-  supervision and logout coordination through a control fifo. Sessions can
-  run without xfce4-session via `RILL_SESSION=rill rill-session`.
+- Native X11 login through `rill-sessiond`, with authenticated XSMP,
+  XDG autostart overrides, independent desktop/WM/panel service supervision,
+  cancellable save-before-logout, and opt-in saved-command restoration.
+- Standalone dock panels with named output selection and reserved work areas.
+  Configure multiple panels through `panels.json`; Shift-drag reorders items.
+- A standalone `rill --settings` window, live shared preference updates and
+  links to installed system control panels. File saves are atomic on Linux
+  and merge changes from separate desktop/panel processes.
 - An XSETTINGS provider (the xfsettingsd core): Rill owns the
   `_XSETTINGS_S<n>` selection and broadcasts the imported GTK theme/font
   values (with overrides from the Rill settings file) to every X11
@@ -113,19 +118,27 @@ Rill's desktop with the real installed Xfce panel and its plugin host. This
 requires an existing window manager and session D-Bus. It suppresses Rill's
 own panel; GTK plugins are hosted by Xfce, not embedded into Rill widgets.
 
-An X11 login session is also available through `scripts/rill-session`, with
-Xfce session services and Rill crash restart/logout integration. `make install`
-installs its login entry. The separate session profile imports existing Xfce
-preferences on first launch. All 37 locally installed Xfce plugin modules passed
-load, resize/orientation and panel-restart checks; see the
-[plugin validation](docs/xfce-plugins.md).
+`scripts/rill-session` now defaults to Rill's own manager, WM, desktop and
+panel. `--mode xfce` selects the compatibility session and real Xfce panel.
+`make install` installs both login entries and the Settings launcher.
+Optional installed providers supply settings, power, authentication, networking,
+Bluetooth, removable-media and screen-lock services. No Xfce executable is a
+hard prerequisite of native mode, but these service implementations are still
+needed for their respective features.
 
-Full Xfce replacement parity is not implemented. Native Wayland desktop surfaces,
-native session lifecycles, many desktop services and exhaustive plugin testing
-remain. See [the compatibility report](docs/compatibility.md) for the platform
-matrix, remaining work and verification commands.
+See [session setup and configuration](docs/session.md),
+[the compatibility report](docs/compatibility.md) and
+[the remaining roadmap](docs/xfce-replacement-roadmap.md).
+Full Xfce replacement parity, native Wayland desktop surfaces and complete
+native Plan 9 integration remain unfinished.
 
 ## Build
+
+Rill uses the current Kryon checkout at `../kryon`. Update that checkout to
+Kryon's latest `master` before building. The build generates Kryon's runtime
+and headers under Rill's `build/` directory. Kryon's optional sync support is
+disabled by default; use `KRYON_WITH_SYNC=1` when building with sync-enabled
+embedded app hosts.
 
 The default backend is `libdraw` so the Linux build exercises the same visual
 path intended for Plan 9:
@@ -181,7 +194,8 @@ scripts/rill-window --size 1280x800
 ```
 
 This starts a real Xephyr X server in one host X11/XLibre window, then runs the
-Rill session, our `rill-wm` window manager, Xfce panel/plugins and applications on its separate display.
+Rill session, `rill-wm`, Rill's panel and applications on its separate display.
+Use `RILL_SESSION=xfce` for the real Xfce panel and its GTK plugins.
 Closing the outer window stops the nested session; logging out closes it too.
 The window is resizable and Rill follows the inner display size.
 
@@ -216,6 +230,7 @@ Use `RILL_WM=xfwm4 scripts/rill-window` for the previous WM, or
 The older `rill --wm` is an experimental capture path; it is separate from
 `rill-wm`.
 
-New sessions import your existing Xfce panel layout, pinned launchers and wallpaper.
-With no existing layout, Rill creates a single 26-pixel top panel; it does not
-add a bottom dock. Imported layouts and later Rill customizations are preserved.
+The compatibility session preserves your Xfce panel layout and pinned launchers.
+Native sessions preserve existing Rill panel files, import theme/background
+preferences and default to one 26-pixel top panel. Xfce plugin layouts are not
+translated into native Rill panel items.

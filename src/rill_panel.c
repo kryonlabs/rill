@@ -34,6 +34,7 @@ static const RillPanelPlugin left_plugins[] = {
 static const RillPanelPlugin right_plugins[] = {
     {RILL_PANEL_WORKSPACES, "workspaces", "", "", 0, 42, 42, 0},
     {RILL_PANEL_SEPARATOR, "sep-status", "", "", 0, 0, 8, 0},
+    {RILL_PANEL_TRAY, "tray", "", "", 0, 72, 80, 0},
     {RILL_PANEL_SHOW_DESKTOP, "show-desktop", "", "", 0, 26, 28, 0},
     {RILL_PANEL_CLOCK, "clock", "", "", 0, 60, 64, 0},
     {RILL_PANEL_VOLUME, "volume", "", "", 0, 58, 60, 0},

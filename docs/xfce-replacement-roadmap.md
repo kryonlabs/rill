@@ -1,108 +1,53 @@
 # Roadmap to a complete Xfce alternative
 
-Status: 2026-09-06.
+Status: 2026-09-19. The current implementation and its limits are recorded in
+[compatibility.md](compatibility.md). Native X11 is the first usable replacement
+path. [session.md](session.md) describes configuration and retained providers.
 
-Rill has its own desktop shell and X11 window manager, but several essential
-parts still come from Xfce. Matching its appearance does not establish full
-replacement parity. Xfce also supplies panels, settings, session management,
-file management and desktop services.
+## Completed in this update
 
-The goal is a complete desktop on XLibre/X11, Wayland and Plan 9, preserving
-the user's existing panel layout and supporting unchanged Xfce plugins where
-the required execution environment is available.
+- Rill's default X11 login uses its own session manager, WM, desktop and dock.
+  The real Xfce session remains a separate compatibility choice.
+- Independently supervised services, private authenticated XSMP, correct XDG
+  autostart overrides, save/interaction/phase-two cancellation, saved restart
+  commands and opt-in restoration. Power rejection preserves the session.
+  Launched applications survive desktop/panel crashes and exit on logout.
+- Native shaped panel surfaces and work-area reservation, named output/monitor
+  selection, multiple configured panels, persistent Shift-drag item ordering,
+  correctly sized tray allocations and focus restoration after menus.
+- XDG desktop folder discovery, ordinary files/folders, refresh, repaired
+  double-click launching, persistent icon dragging, rename/new-folder/Trash
+  actions and overwrite refusal.
+- Standalone Settings, links to installed device/service controls, concurrent
+  preference merging, live updates, and migration of existing Rill/user-folder/
+  GTK/MIME preferences into the private profile.
+- Lock result checking and lock-before-suspend for Rill's Suspend action.
+  Installed lock/power/authentication/network providers are detected and supervised.
+- Dynamic decoration hints, propagated input shapes and normal window geometry
+  recovery after a WM crash, covered by real X11 interaction tests.
+- Current Kryon text/font/frame APIs and generated build headers, optional sync
+  dependencies and the downstream clean-text API check.
 
-## Current foundation
+## Remaining implementation and validation
 
-- Rill provides the desktop surface and the standalone `rill-wm` X11 window
-  manager, including decorations, native input, workspaces, window states and
-  XRender compositing with drop shadows and damage-region repaints. The MRU
-  Alt+Tab switcher, configurable key bindings, focus-stealing prevention,
-  `_NET_WM_PING`/`_NET_WM_SYNC_REQUEST` handling and imported xfwm4
-  preferences (button layout, double-click action, focus model) are in place.
-- A complete nested X11 session runs inside a Xephyr window. Xephyr remains
-  the nested X server; it is not a server implemented by Rill.
-- Existing Xfce panel settings, pinned launchers and wallpaper are imported.
-  With no existing layout, the default is one top panel; placement, height and
-  auto-hide are configurable and persisted.
-- Rill's own panel covers the applications menu, task buttons with urgency
-  flashing, the workspace pager, a clock with calendar, show-desktop and
-  session action buttons, item width properties and StatusNotifier tray
-  hosting (the real Xfce panel keeps precedence when it is running).
-- Shell settings persist independently: wallpaper with slideshow, clock
-  format, panel placement/height/auto-hide, recently used applications and run
-  history. The end-session dialog performs log out through the session manager
-  and power actions through logind; `rill --run-dialog` (Alt+F2) matches
-  applications and runs typed commands.
-- The desktop carries a right-click menu, a middle-click window list, wheel
-  workspace switching and icons for Desktop-directory entries, favorites and
-  Home / File System / Trash.
-- The compatible session still uses `xfce4-panel` (as a compatibility host and
-  fallback), `xfsettingsd`, Xfconf and Thunar; `xfce4-session` has a Rill
-  replacement in `rill-sessiond`, and the XSETTINGS broadcast that xfsettingsd
-  provides is reimplemented (import plus overrides). The remaining
-  xfsettingsd inputs and Thunar itself are not reimplemented.
-- All 37 installed Xfce plugin modules passed loading, panel resizing,
-  orientation changes and panel restart in the tested X11 session.
-- Integration tests passed application startup, native terminal keyboard
-  input, nested desktop resizing, desktop crash restart and logout.
-
-The plugin result verifies module loading and lifecycle integration. It does
-not certify every plugin function, hardware dependency, third-party plugin,
-or Wayland and Plan 9 compatibility.
-
-## Remaining work
-
-| Area | Missing work |
+| Area | Work still needed |
 | --- | --- |
-| Window manager | xfwm4 theme/settings pixel compatibility, dynamic decoration changes, full transient/group stacking behavior, complete input-shape handling, crash geometry recovery, a graphical shortcut/settings interface (shortcuts are configurable through the wm-keys file today) and extensive multi-monitor/hotplug testing beyond the fake-monitor suite. |
-| Compositor | Smooth frame pacing/vsync, GPU/fullscreen bypass and performance certification under sustained load. Shadows and damage-region repaints are implemented. |
-| Panel and plugins | Multiple panels, vertical/deskbar modes, per-output positioning, drag reordering and the compatibility host for unchanged Xfce plugins. StatusNotifier and legacy XEmbed tray hosting work; per-item D-Bus menus do not. |
-| Settings | Complete controls for displays, scaling, keyboard, mouse, themes, fonts and accessibility, with compatible preference import. Rill's settings file covers wallpaper/slideshow, clock format and panel placement, and Rill provides the XSETTINGS broadcast (theme/font import with overrides) that xfsettingsd performed; display/keyboard/mouse inputs still depend on Xfconf. |
-| Session | `rill-sessiond` covers XSMP registration, XDG autostart, body supervision and fifo-coordinated logout. Remaining: saved-session restoration, crash supervision beyond the body process, and cancellation with unsaved applications. Power actions go through logind. |
-| Desktop and files | Icon dragging/free placement, non-entry desktop files, drag-and-drop, file operations and trash/removable-media management. Thunar remains the file manager. |
-| Everyday services | Notification serving, clipboard history/re-serving, StatusNotifier and XEmbed trays, lock/logout/suspend/restart/shutdown, battery display and sink volume control are implemented. Remaining: screen-lock UI, networking, authentication agents, accessibility and per-item D-Bus tray menus. |
-| Wayland | Native rendering and desktop surfaces, compositor integration, output scaling/hotplug, input routing, workspaces and real-compositor testing. Current rendering largely depends on Xwayland; the optional task protocol adapter is not a compositor. |
-| Plan 9 | Complete native desktop/session integration, rio behavior, clipboard/plumbing and application testing. Unchanged Linux GTK plugin binaries need a Linux execution/display bridge; native alternatives require ports. Neither path is complete. |
-| Compatibility validation | Broader application and plugin coverage, configuration migration, updates, plugin removal/crash recovery, accessibility, mixed-DPI displays and sustained workloads on each supported backend. |
-
-## Recommended implementation order
-
-1. **Finish X11 window-manager reliability.** Resolve focus, stacking, resize,
-   restoration and monitor edge cases. Test on XLibre itself as well as private
-   Xvfb and Xephyr displays.
-2. **Complete settings and session integration.** Make configuration, login,
-   locking, suspend, logout and recovery dependable before replacing their
-   existing service implementations.
-3. **Build the Rill panel with Xfce plugin compatibility.** Preserve imported
-   layouts and pinned launchers. Validate actual plugin behavior as well as
-   successful loading, retaining the real Xfce panel as a fallback while the
-   replacement matures.
-4. **Complete desktop behavior and services.** Finish file interactions,
-   notifications, clipboard, trays and everyday device/service controls.
-5. **Implement native Wayland and Plan 9 support.** Give each backend explicit
-   capability reporting and its own integration tests. Define how Linux-only
-   plugins are handled on Plan 9 rather than implying native binary support.
-6. **Validate replacement parity.** Track requirements against repeatable
-   tests and real use. Keep working Xfce components available until their
-   replacements meet the required behavior.
+| Native panel | Vertical/deskbar layouts, graphical panel/output management, complete Xfce layout/plugin migration, independent unchanged-plugin hosting and D-Bus tray menus. The real Xfce host remains available. |
+| Native settings | Display/scaling/input/theme/font/accessibility controls, graphical WM shortcuts, complete preference import and provider-independent persistence. The current System page opens installed control panels. |
+| Files | External drag/drop, file clipboard, multiselection, recursive operations and complete removable-media/trash integration. The installed file manager remains responsible for browsing and advanced operations. |
+| Session and services | Non-XSMP unsaved-document handling, broader application restore coverage, arbitrary client restart-style support, native lock UI/authentication, accessible custom controls and device-service integration beyond selected providers. |
+| WM/compositor | Full transient/group stacking and placement, xfwm4 theme compatibility, frame pacing/vsync/fullscreen bypass and sustained-load profiling. |
+| Hardware certification | Real lock/suspend/resume/lid behavior, polkit interaction, networking, physical output hotplug, mixed DPI, multi-seat and application/game regressions. Private Xvfb tests cannot certify these. |
+| Wayland | Native renderer/window integration, layer-shell desktop/panel surfaces, output scaling/hotplug, input/workspaces and real-compositor tests. A task adapter is not a compositor or desktop backend. |
+| Plan 9 | Full native desktop/session/rio, clipboard/plumbing and end-to-end app testing. Linux GTK plugin binaries require a separate execution/display bridge or ports. |
 
 ## Completion criteria
 
-- Users can log in, launch and manage applications, configure the desktop,
-  lock, suspend, recover and log out without missing essential behavior.
-- Existing panel layouts and preferences migrate without unwanted panels or
-  lost launcher configuration.
-- Plugin compatibility claims identify the tested versions, functions and
-  supported backends, including any required Xfce or Linux host dependencies.
-- Each advertised platform passes native end-to-end tests; X11 results are
-  not presented as evidence of native Wayland or Plan 9 support.
-- Remaining behavioral differences and retained Xfce components are documented.
+Users must be able to log in, launch and manage applications, configure devices,
+lock, suspend, recover and log out without missing essential behavior. Existing
+preferences and plugins must migrate without losing configuration. Each supported
+backend needs its own end-to-end evidence, and claims must identify retained
+providers and the tested applications, versions and hardware.
 
-Full xfwm4 or Xfce 1:1 parity has not yet been achieved.
-
-## References
-
-- [Xfce component overview](https://www.xfce.org/projects)
-- [Rill desktop compatibility status](compatibility.md)
-- [Rill WM behavior and remaining gaps](wm.md)
-- [Recorded Xfce plugin validation](xfce-plugins.md)
+The current X11 work resolves substantial lifecycle and interaction gaps. It does
+not establish Xfce/xfwm4 1:1 parity or native Wayland/Plan 9 completion.

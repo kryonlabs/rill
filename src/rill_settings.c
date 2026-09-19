@@ -7,6 +7,9 @@
 #else
 #include <sys/stat.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/file.h>
 #endif
 
 void
@@ -69,15 +72,98 @@ int
 RillSettingsSave(const RillSettings *settings, const char *path)
 {
     FILE *file;
-    int i;
-    if(settings == NULL || path == NULL || path[0] == '\0') return 0;
-    file = fopen(path, "w");
-    if(file == NULL) return 0;
-    fprintf(file, "# Rill settings\n");
-    for(i = 0; i < settings->count; i++)
-        fprintf(file, "%s = %s\n", settings->keys[i], settings->values[i]);
-    fclose(file);
-    return 1;
+    int ok = 1;
+    char temporary[1200];
+    if(settings == NULL || path == NULL || path[0] == '\0' ||
+       strlen(path) + 12 >= sizeof(temporary)) return 0;
+#ifdef KRYON_NATIVE_PLAN9
+    snprintf(temporary, sizeof(temporary), "%s.tmp", path);
+    file = fopen(temporary, "w");
+#else
+    snprintf(temporary, sizeof(temporary), "%s.XXXXXX", path);
+    int fd = mkstemp(temporary);
+    if(fd < 0) return 0;
+    file = fdopen(fd, "w");
+    if(file == NULL) close(fd);
+#endif
+    if(file == NULL) { remove(temporary); return 0; }
+    if(fprintf(file, "# Rill settings\n") < 0) ok = 0;
+    for(int i = 0; i < settings->count && ok; i++) {
+        /* The line-based format cannot represent embedded line breaks. */
+        if(strpbrk(settings->keys[i], "\r\n=") || strpbrk(settings->values[i], "\r\n")) {
+            ok = 0;
+            break;
+        }
+        ok = fprintf(file, "%s = %s\n", settings->keys[i], settings->values[i]) >= 0;
+    }
+    if(fflush(file) != 0) ok = 0;
+#ifndef KRYON_NATIVE_PLAN9
+    if(ok && fsync(fileno(file)) != 0) ok = 0;
+#endif
+    if(fclose(file) != 0) ok = 0;
+#ifdef KRYON_NATIVE_PLAN9
+    if(ok) {
+        char backup[1200];
+        Dir change;
+        Dir *existing = dirstat((char *)path);
+        int moved = existing != nil;
+        free(existing);
+        snprintf(backup, sizeof(backup), "%s.old", path);
+        if(moved) {
+            remove(backup);
+            nulldir(&change);
+            const char *base = strrchr(backup, '/');
+            change.name = (char *)(base ? base + 1 : backup);
+            if(dirwstat((char *)path, &change) < 0) ok = 0;
+        }
+        if(ok) {
+            nulldir(&change);
+            const char *base = strrchr(path, '/');
+            change.name = (char *)(base ? base + 1 : path);
+            if(dirwstat(temporary, &change) >= 0) { remove(backup); return 1; }
+            if(moved) dirwstat(backup, &change);
+        }
+    }
+#else
+    if(ok && rename(temporary, path) == 0) return 1;
+#endif
+    remove(temporary);
+    return 0;
+}
+
+int
+RillSettingsMergeSave(RillSettings *settings, RillSettings *previous, const char *path)
+{
+    if(settings == NULL || previous == NULL || path == NULL || !path[0]) return 0;
+#ifndef KRYON_NATIVE_PLAN9
+    char lock_path[1200];
+    if(strlen(path) + 6 >= sizeof(lock_path)) return 0;
+    snprintf(lock_path, sizeof(lock_path), "%s.lock", path);
+    int lock = open(lock_path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if(lock < 0) return 0;
+    if(flock(lock, LOCK_EX) != 0) { close(lock); return 0; }
+#endif
+    RillSettings *latest = malloc(sizeof(*latest));
+    int ok = 0;
+    if(latest != NULL) {
+        RillSettingsLoad(latest, path);
+        for(int i = 0; i < settings->count; i++) {
+            const char *old = RillSettingsGet(previous, settings->keys[i], NULL);
+            if(old == NULL || strcmp(old, settings->values[i]) != 0)
+                RillSettingsSet(latest, settings->keys[i], settings->values[i]);
+        }
+        ok = RillSettingsSave(latest, path);
+        if(ok) {
+            *settings = *latest;
+            *previous = *latest;
+        }
+        free(latest);
+    }
+#ifndef KRYON_NATIVE_PLAN9
+    flock(lock, LOCK_UN);
+    close(lock);
+#endif
+    return ok;
 }
 
 int
@@ -93,6 +179,13 @@ RillSettingsLoad(RillSettings *settings, const char *path)
     RillSettingsInit(settings);
     if(path == NULL || path[0] == '\0') return 0;
     file = fopen(path, "r");
+#ifdef KRYON_NATIVE_PLAN9
+    if(file == NULL) {
+        char backup[1200];
+        snprintf(backup, sizeof(backup), "%s.old", path);
+        file = fopen(backup, "r");
+    }
+#endif
     if(file == NULL) return 0;
     while(fgets(line, sizeof(line), file) != NULL) {
         if(line[0] == '#' || line[0] == '\n') continue;

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Run Program
+Comment=Launch an application or command
+Exec=rill --run-dialog
+Icon=system-run
+Categories=Utility;

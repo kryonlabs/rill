@@ -161,6 +161,16 @@ int main(int argc, char **argv)
     pump();
     check(parent(w) != root, "client reparented into decoration frame");
     check(value(w, "_NET_FRAME_EXTENTS", XA_CARDINAL, 2) == 31, "title extents");
+    unsigned long motif[5] = {2, 0, 0, 0, 0};
+    XChangeProperty(d, w, atom("_MOTIF_WM_HINTS"), atom("_MOTIF_WM_HINTS"), 32,
+                    PropModeReplace, (unsigned char *)motif, 5);
+    pump();
+    check(value(w, "_NET_FRAME_EXTENTS", XA_CARDINAL, 2) == 0,
+          "client can remove decorations after mapping");
+    XDeleteProperty(d, w, atom("_MOTIF_WM_HINTS"));
+    pump();
+    check(value(w, "_NET_FRAME_EXTENTS", XA_CARDINAL, 2) == 31,
+          "deleting decoration hint restores frame");
     check(value(root, "_NET_ACTIVE_WINDOW", XA_WINDOW, 0) == w, "new client focused");
     check(contains(root, "_NET_CLIENT_LIST", XA_WINDOW, w), "client list contains app");
     int x, y;
@@ -396,6 +406,25 @@ int main(int argc, char **argv)
         XDestroyImage(shot);
     XDestroyWindow(d, popup);
     pump();
+    XRectangle input_region = {0, 0, 40, 40};
+    XShapeCombineRectangles(d, w, ShapeInput, 0, 0, &input_region, 1, ShapeSet, Unsorted);
+    pump();
+    int rectangle_count, ordering, has_input_hole = 1, title_interactive = 0;
+    XRectangle *rectangles = XShapeGetRectangles(d, parent(w), ShapeInput, &rectangle_count, &ordering);
+    int border = value(w, "_NET_FRAME_EXTENTS", XA_CARDINAL, 0);
+    int title_height = value(w, "_NET_FRAME_EXTENTS", XA_CARDINAL, 2);
+    for (int i = 0; i < rectangle_count; i++) {
+        XRectangle r = rectangles[i];
+        if (border + 60 >= r.x && border + 60 < r.x + r.width &&
+            title_height + 60 >= r.y && title_height + 60 < r.y + r.height)
+            has_input_hole = 0;
+        if (20 >= r.x && 20 < r.x + r.width && 10 >= r.y && 10 < r.y + r.height)
+            title_interactive = 1;
+    }
+    XFree(rectangles);
+    check(has_input_hole && title_interactive, "frame preserves client input holes and title input");
+    XShapeCombineMask(d, w, ShapeInput, 0, 0, None, ShapeSet);
+    pump();
     XRectangle shape = {0, 0, 40, 40};
     XShapeCombineRectangles(d, w, ShapeBounding, 0, 0, &shape, 1, ShapeSet, Unsorted);
     pump();
@@ -619,6 +648,21 @@ int main(int argc, char **argv)
     pump();
     check(value(root, "_NET_ACTIVE_WINDOW", XA_WINDOW, 0) == w,
           "pointer entry focuses a window in follows-mouse mode");
+    position(w, &original_x, &original_y);
+    int normal_width = attrs(w).width, normal_height = attrs(w).height;
+    send(w, "_NET_WM_STATE", 1, atom("_NET_WM_STATE_MAXIMIZED_HORZ"),
+         atom("_NET_WM_STATE_MAXIMIZED_VERT"), 0, 0);
+    kill(manager, SIGKILL);
+    waitpid(manager, NULL, 0);
+    manager = 0;
+    pump();
+    start(argv[1]);
+    send(w, "_NET_ACTIVE_WINDOW", 2, 0, 0, 0, 0);
+    send(w, "_NET_WM_STATE", 0, atom("_NET_WM_STATE_MAXIMIZED_HORZ"),
+         atom("_NET_WM_STATE_MAXIMIZED_VERT"), 0, 0);
+    position(w, &x, &y);
+    check(x == original_x && y == original_y && attrs(w).width == normal_width &&
+          attrs(w).height == normal_height, "WM crash preserves pre-maximize geometry");
     XDestroyWindow(d, w);
     XDestroyWindow(d, dock);
     pump();

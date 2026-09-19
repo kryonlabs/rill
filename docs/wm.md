@@ -42,7 +42,8 @@ xfce4-session and Thunar. Their code and APIs have not been reimplemented.
 - Transient/modal dialogs, parent minimize/restore, panel struts/work areas,
   basic monitor-aware maximization/fullscreen and display resize handling.
 - ICCCM delete/take-focus messages, EWMH state/move/resize requests, Motif
-  undecorated hints at startup, shaped windows and ARGB frame visuals.
+  undecorated hints including changes after mapping, bounding/input-shaped
+  windows and ARGB frame visuals.
 - XComposite/XDamage/XFixes/XRender compositing, window opacity and
   override-redirect menus. Repaints are batched into the accumulated damage
   region instead of redrawing the whole screen, and framed windows, menus and
@@ -50,7 +51,8 @@ xfce4-session and Thunar. Their code and APIs have not been reimplemented.
   and desktop surfaces stay flat). Compositing disables itself if required
   extensions are unavailable or another compositor owns the selection.
 - XSMP registration, session restart support and graceful exit that returns
-  live application windows to the root window.
+  live application windows to the root window. Saved normal client geometry
+  survives WM crashes, including crashes while maximized or fullscreen.
 
 ## Controls
 
@@ -113,7 +115,9 @@ make nested-smoke
 reparenting, state transitions and normal geometry restoration, size hints,
 workspaces, modal focus, keyboard/menu actions, pointer movement and cancel,
 shaped/ARGB compositing, popup pixels, protocol timestamps and graceful WM
-restart/adoption. Session tests run with private configuration and buses.
+restart/adoption, live decoration changes, input holes and normal geometry
+recovery after forcibly terminating the WM. Session tests run with private
+configuration and buses.
 `RILL_TEST_REAL_APPS=1` additionally launches xterm, Mousepad and Thunar and
 checks keyboard delivery by executing a command in the terminal.
 
@@ -133,8 +137,9 @@ Rill WM is not yet a 1:1 xfwm4 replacement. These gaps remain explicit:
   not themed decoration pixmaps or a graphical settings interface.
 - Detailed placement policies, full transient/group stacking behavior and
   application-specific compatibility.
-- Comprehensive session geometry restoration after a WM crash, dynamic
-  decoration changes and full input-shape handling.
+- Broader application/session restoration and dynamic window-type changes.
+  Motif decoration changes, frame input shapes and normal geometry recovery
+  after a crash are implemented and tested.
 - Compositor smooth frame pacing/vsync, GPU/fullscreen bypass and performance
   certification under sustained load.
 - Full multi-monitor/hotplug, mixed-DPI and multi-seat validation, accessibility
