@@ -3213,6 +3213,118 @@ linux_keyboard_set_repeat(int delay, int rate)
     return ok;
 }
 
+/* Removable media through GIO's volume monitor and udisksctl actions. */
+static int
+linux_removable_volumes(RillVolume *out, int cap)
+{
+    GVolumeMonitor *monitor;
+    GList *volumes, *item;
+    int count = 0;
+
+    if(out == NULL || cap <= 0)
+        return 0;
+    monitor = g_volume_monitor_get();
+    if(monitor == NULL)
+        return 0;
+    volumes = g_volume_monitor_get_volumes(monitor);
+    for(item = volumes; item != NULL && count < cap; item = item->next) {
+        GVolume *volume = item->data;
+        char *name = g_volume_get_name(volume);
+        char *device = g_volume_get_identifier(volume,
+            G_VOLUME_IDENTIFIER_KIND_UNIX_DEVICE);
+        GMount *mount = g_volume_get_mount(volume);
+        RillVolume *entry = &out[count];
+        memset(entry, 0, sizeof(*entry));
+        snprintf(entry->name, sizeof(entry->name), "%s",
+                 name != NULL ? name : "Drive");
+        snprintf(entry->device, sizeof(entry->device), "%s",
+                 device != NULL ? device : "");
+        entry->can_eject = g_volume_can_eject(volume) != 0;
+        if(mount != NULL) {
+            GFile *root = g_mount_get_root(mount);
+            entry->mounted = 1;
+            if(root != NULL) {
+                char *path = g_file_get_path(root);
+                if(path != NULL)
+                    snprintf(entry->mount_path, sizeof(entry->mount_path), "%s", path);
+                g_free(path);
+                g_object_unref(root);
+            }
+            g_object_unref(mount);
+        }
+        g_free(name);
+        g_free(device);
+        if(entry->device[0] != '\0')
+            count++;
+    }
+    g_list_free_full(volumes, g_object_unref);
+    g_object_unref(monitor);
+    return count;
+}
+
+static int
+linux_removable_command(const char *action, const char *device,
+                        char *error, int error_size)
+{
+    char command[320];
+    char output[1024];
+
+    if(error != NULL && error_size > 0)
+        error[0] = '\0';
+    if(device == NULL || device[0] == '\0' || strchr(device, '\'') != NULL) {
+        if(error != NULL && error_size > 0)
+            snprintf(error, (size_t)error_size, "No device for this volume.");
+        return 0;
+    }
+    snprintf(command, sizeof(command),
+             "udisksctl %s -b '%s' 2>&1", action, device);
+    FILE *pipe = popen(command, "r");
+    if(pipe == NULL) {
+        if(error != NULL && error_size > 0)
+            snprintf(error, (size_t)error_size, "udisksctl is not available.");
+        return 0;
+    }
+    output[0] = '\0';
+    size_t received = fread(output, 1, sizeof(output) - 1, pipe);
+    output[received] = '\0';
+    int status = pclose(pipe);
+    if(status != 0 && error != NULL && error_size > 0)
+        snprintf(error, (size_t)error_size, "%s", output);
+    return status == 0;
+}
+
+static int
+linux_removable_mount(const char *device, char *path, int path_size,
+                      char *error, int error_size)
+{
+    if(!linux_removable_command("mount", device, error, error_size))
+        return 0;
+    /* Recover the mount point from the volume monitor after mounting. */
+    if(path != NULL && path_size > 0)
+        path[0] = '\0';
+    RillVolume volumes[8];
+    int count = linux_removable_volumes(volumes, 8);
+    for(int i = 0; i < count; i++)
+        if(strcmp(volumes[i].device, device) == 0 && volumes[i].mounted) {
+            if(path != NULL && path_size > 0)
+                snprintf(path, (size_t)path_size, "%s", volumes[i].mount_path);
+            return 1;
+        }
+    return 1;
+}
+
+static int
+linux_removable_unmount(const char *device, char *error, int error_size)
+{
+    return linux_removable_command("unmount", device, error, error_size);
+}
+
+static int
+linux_removable_eject(const char *device, char *error, int error_size)
+{
+    return linux_removable_command("power-off", device, error, error_size);
+}
+
 /* panels.json lives in the user's original configuration root so both native
  * and compatibility sessions see the same panel list. */
 static char *
@@ -3420,7 +3532,11 @@ static const RillPlatformServices services = {
     linux_keyboard_set_repeat,
     linux_panel_config_load,
     linux_panel_config_store,
-    linux_session_diagnostics
+    linux_session_diagnostics,
+    linux_removable_volumes,
+    linux_removable_mount,
+    linux_removable_unmount,
+    linux_removable_eject
 };
 
 const RillPlatformServices *

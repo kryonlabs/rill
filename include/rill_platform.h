@@ -83,6 +83,15 @@ typedef struct RillDisplayMode {
     int height;
 } RillDisplayMode;
 
+/* One removable volume reported by the platform's volume monitor. */
+typedef struct RillVolume {
+    char name[96];
+    char device[128];
+    char mount_path[512];
+    int mounted;
+    int can_eject;
+} RillVolume;
+
 typedef struct RillPlatformServices {
     const char *name;
     int (*list_launchers)(RillLauncher *out, int cap);
@@ -187,6 +196,13 @@ typedef struct RillPlatformServices {
     /* Supervised-service report from the session manager, plus screen-lock
      * readiness; empty text when unavailable. */
     int (*session_diagnostics)(char *text, int size);
+    /* Removable volumes through the platform's volume monitor. */
+    int (*removable_volumes)(RillVolume *out, int cap);
+    /* Mount returns the mount path; unmount/eject operate by device. */
+    int (*removable_mount)(const char *device, char *path, int path_size,
+                           char *error, int error_size);
+    int (*removable_unmount)(const char *device, char *error, int error_size);
+    int (*removable_eject)(const char *device, char *error, int error_size);
 } RillPlatformServices;
 
 int RillSettingsEnsureDirectory(const char *path);

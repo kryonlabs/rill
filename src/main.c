@@ -72,6 +72,7 @@ typedef struct RillPanelConfig {
     int edge;
     int size;
     int autohide;
+    int deskbar;
 } RillPanelConfig;
 
 typedef struct RillTrayEntry {
@@ -120,6 +121,8 @@ typedef struct RillVisualState {
     int panel_bottom;
     /* 0 top, 1 bottom, 2 left, 3 right; 2 and 3 draw a vertical panel. */
     int panel_edge;
+    /* Deskbar: a tall top/bottom panel rendering wrapped icon-cell rows. */
+    int panel_deskbar;
     int panel_autohide;
     int panel_hidden;
     int calendar_open;
@@ -198,6 +201,13 @@ typedef struct RillVisualState {
     double trash_next_scan;
     int trash_badge;
     double trash_next_badge;
+    /* Removable drives dialog state. */
+    int drives_open;
+    RillVolume drive_entries[8];
+    int drive_count;
+    int drive_selected;
+    char drive_error[256];
+    double drive_next_scan;
     /* Desktop keyboard interaction state. */
     char type_buffer[32];
     double type_last;
@@ -324,6 +334,8 @@ typedef struct RillRuntimeOptions {
     int panel_edge;
     int panel_size;
     int panel_autohide;
+    /* -1 unset, 0 horizontal/vertical by edge, 1 deskbar (wrapped rows). */
+    int panel_deskbar;
     char launch_command[512];
 } RillRuntimeOptions;
 
@@ -511,6 +523,7 @@ parse_runtime_options(int argc, char **argv, RillRuntimeOptions *options)
     options->mode = RILL_MODE_SHELL;
     options->panel_edge = -1;
     options->panel_autohide = -1;
+    options->panel_deskbar = -1;
     snprintf(options->panel_id, sizeof(options->panel_id), "primary");
     for(int i = 1; i < argc; i++) {
         if(collect_command) {
@@ -549,6 +562,11 @@ parse_runtime_options(int argc, char **argv, RillRuntimeOptions *options)
         }
         if(strcmp(argv[i], "--panel-autohide") == 0 && i + 1 < argc) {
             options->panel_autohide = strcmp(argv[++i], "1") == 0 ? 1 : 0;
+            continue;
+        }
+        if(strcmp(argv[i], "--panel-orientation") == 0 && i + 1 < argc) {
+            if(strcmp(argv[++i], "deskbar") == 0)
+                options->panel_deskbar = 1;
             continue;
         }
         if(strcmp(argv[i], "--xfce-panel") == 0) {
@@ -1753,15 +1771,43 @@ select_desktop_item(RillVisualState *visuals, int index, int control, int shift)
 
 static int ascii_contains_fold(const char *haystack, const char *needle);
 
+/* Accessibility: report selection changes through the shell status line. */
+static void
+announce_desktop_selection(RillShellState *shell, RillVisualState *visuals)
+{
+    if(shell == NULL)
+        return;
+    int count = 0;
+    const char *focused_name = NULL;
+    for(int i = 0; i < visuals->desktop_entry_count; i++)
+        if(visuals->desktop_selection[i]) {
+            count++;
+            if(i == visuals->desktop_selected && visuals->desktop_entries[i] != NULL)
+                focused_name = visuals->desktop_entries[i]->name;
+        }
+    char message[192];
+    if(count == 0)
+        snprintf(message, sizeof(message), "Selection cleared");
+    else if(count == 1)
+        snprintf(message, sizeof(message), "Selected %s",
+                 focused_name != NULL ? focused_name : "1 item");
+    else
+        snprintf(message, sizeof(message), "Selected %d items%s%s", count,
+                 focused_name != NULL ? ", focused " : "",
+                 focused_name != NULL ? focused_name : "");
+    RillShellSetStatus(shell, message);
+}
+
 /* Focus the nearest icon in a direction for spatial keyboard navigation. */
 static void
-focus_nearest_icon(RillVisualState *visuals, int dx, int dy)
+focus_nearest_icon(RillShellState *shell, RillVisualState *visuals, int dx, int dy)
 {
     if(visuals->desktop_entry_count <= 0)
         return;
     int from = visuals->desktop_selected;
     if(from < 0 || from >= visuals->desktop_entry_count) {
         select_desktop_item(visuals, 0, 0, 0);
+        announce_desktop_selection(shell, visuals);
         return;
     }
     Rectangle origin = visuals->desktop_bounds[from];
@@ -1788,13 +1834,15 @@ focus_nearest_icon(RillVisualState *visuals, int dx, int dy)
             best = i;
         }
     }
-    if(best >= 0)
+    if(best >= 0) {
         select_desktop_item(visuals, best, 0, 0);
+        announce_desktop_selection(shell, visuals);
+    }
 }
 
 /* Type-to-select: extend the buffer and focus the first matching label. */
 static void
-desktop_type_select(RillVisualState *visuals, int key)
+desktop_type_select(RillShellState *shell, RillVisualState *visuals, int key)
 {
     if(key < 32 || key >= 127)
         return;
@@ -1811,6 +1859,7 @@ desktop_type_select(RillVisualState *visuals, int key)
         const RillLauncher *item = visuals->desktop_entries[i];
         if(item != NULL && ascii_contains_fold(item->name, visuals->type_buffer)) {
             select_desktop_item(visuals, i, 0, 0);
+            announce_desktop_selection(shell, visuals);
             break;
         }
     }
@@ -2037,8 +2086,10 @@ process_desktop_mouse(RillShellState *shell,
             if(visuals->desktop_selection[i])
                 visuals->desktop_selected = i;
         }
-        if(!down)
+        if(!down) {
             visuals->desktop_rubber_band = 0;
+            announce_desktop_selection(shell, visuals);
+        }
     }
     if(!over || !point_on_desktop_icon_grid(shell, visuals, mouse))
         return;
@@ -2123,13 +2174,13 @@ process_desktop_mouse(RillShellState *shell,
     if(IsKeyPressed(KEY_ESCAPE))
         visuals->type_buffer[0] = '\0';
     if(IsKeyPressed(KEY_LEFT))
-        focus_nearest_icon(visuals, -1, 0);
+        focus_nearest_icon(shell, visuals, -1, 0);
     if(IsKeyPressed(KEY_RIGHT))
-        focus_nearest_icon(visuals, 1, 0);
+        focus_nearest_icon(shell, visuals, 1, 0);
     if(IsKeyPressed(KEY_UP))
-        focus_nearest_icon(visuals, 0, -1);
+        focus_nearest_icon(shell, visuals, 0, -1);
     if(IsKeyPressed(KEY_DOWN))
-        focus_nearest_icon(visuals, 0, 1);
+        focus_nearest_icon(shell, visuals, 0, 1);
     if(IsKeyPressed(KEY_HOME) && visuals->desktop_entry_count > 0)
         select_desktop_item(visuals, 0, 0, 0);
     if(IsKeyPressed(KEY_END) && visuals->desktop_entry_count > 0)
@@ -2138,11 +2189,12 @@ process_desktop_mouse(RillShellState *shell,
         int typed;
         while((typed = GetCharPressed()) > 0)
             if(!control && !shift)
-                desktop_type_select(visuals, typed);
+                desktop_type_select(shell, visuals, typed);
     }
     if(control && IsKeyPressed(KEY_A)) {
         memset(visuals->desktop_selection, 1, visuals->desktop_entry_count);
         visuals->desktop_selected = visuals->desktop_entry_count > 0 ? 0 : -1;
+        announce_desktop_selection(shell, visuals);
     }
     if(control && (IsKeyPressed(KEY_C) || IsKeyPressed(KEY_X)))
         copy_desktop_files(shell, visuals, platform, IsKeyPressed(KEY_X));
@@ -3444,13 +3496,95 @@ draw_side_panel(RillShellState *shell, const RillPlatformServices *platform,
         open_panel_context(visuals, 1, -1);
 }
 
-/* Dispatches to the horizontal or vertical renderer for the active edge. */
+/* Deskbar: a tall top/bottom bar laying the icon cells out in wrapped rows,
+ * so a large panel stays usable without stretching every item. */
+static void
+draw_deskbar_panel(RillShellState *shell, const RillPlatformServices *platform,
+                   RillVisualState *visuals)
+{
+    char clock_text[32];
+    time_t now = time(NULL);
+    struct tm *local = localtime(&now);
+    if(local != NULL)
+        strftime(clock_text, sizeof(clock_text), visuals->clock_format, local);
+    else
+        snprintf(clock_text, sizeof(clock_text), "--:--");
+
+    int screen_w = GetScreenWidth();
+    int size = visuals->panel_height;
+    int panel_y = visuals->panel_bottom ? GetScreenHeight() - size : 0;
+    int rows = size >= 60 ? 3 : 2;
+    int cell = size / rows;
+    if(visuals->panel_autohide) {
+        Vector2 mouse = GetMousePosition();
+        int at_edge = visuals->panel_bottom ? mouse.y >= GetScreenHeight() - 4 :
+                                               mouse.y <= 3;
+        Rectangle bar = {0, (float)panel_y, (float)screen_w, (float)size};
+        visuals->panel_hidden = !at_edge && !CheckCollisionPointRec(mouse, bar) &&
+                                shell->menu_open == 0 && !visuals->calendar_open &&
+                                visuals->panel_drag_index < 0;
+    } else
+        visuals->panel_hidden = 0;
+    int shown = visuals->panel_hidden ? 3 : size;
+    int shown_y = visuals->panel_bottom ? GetScreenHeight() - shown : 0;
+    include_panel_popup((Rectangle){0, (float)shown_y, (float)screen_w, (float)shown});
+    plan9_overlay_rect((Rectangle){0, (float)shown_y, (float)screen_w, (float)shown});
+    DrawRectangle(0, shown_y, screen_w, shown, panel_color());
+    DrawRectangle(0, visuals->panel_bottom ? shown_y : shown_y + shown - 1,
+                  screen_w, 1, Fade(BLACK, 0.72f));
+    if(visuals->panel_hidden) {
+        if(platform != NULL && platform->xembed_tray_layout != NULL &&
+           platform->xembed_tray_count != NULL && platform->xembed_tray_count())
+            platform->xembed_tray_layout(0, 0, size, 0);
+        return;
+    }
+    int x = 4, row = 0;
+    for(int i = 0; i < visuals->left_panel_count; i++) {
+        if(x + cell > screen_w - 8)
+            break;
+        draw_panel_cell(&visuals->left_panel[i], shell, platform, visuals,
+                        x, shown_y + row * cell, cell, clock_text, 0, i);
+        x += cell + 1;
+        if(x + cell > screen_w * 3 / 4 && row + 1 < rows) {
+            x = 4;
+            row++;
+        }
+    }
+    x = screen_w - 4;
+    row = 0;
+    for(int i = visuals->right_panel_count - 1; i >= 0; i--) {
+        const RillPanelPlugin *plugin = &visuals->right_panel[i];
+        int height = plugin->kind == RILL_PANEL_TASK_LIST ||
+                     plugin->kind == RILL_PANEL_TRAY ? cell * 2 + 1 : cell;
+        int use_cell = height > cell ? cell : cell;
+        if(x - use_cell < 4)
+            break;
+        x -= use_cell;
+        draw_panel_cell(plugin, shell, platform, visuals, x,
+                        shown_y + row * cell, use_cell, clock_text, 1, i);
+        x -= 1;
+        if(x - use_cell < screen_w / 4 && row + 1 < rows) {
+            row++;
+            x = screen_w - 4;
+        }
+    }
+    finish_panel_drag(visuals);
+    if(CheckCollisionPointRec(GetMousePosition(),
+                              (Rectangle){0, (float)shown_y, (float)screen_w,
+                                          (float)shown}) &&
+       IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && !visuals->panel_context_open)
+        open_panel_context(visuals, 1, -1);
+}
+
+/* Dispatches to the horizontal, deskbar or vertical renderer. */
 static void
 draw_panel_any(RillShellState *shell, const RillPlatformServices *platform,
                RillVisualState *visuals)
 {
     if(visuals->panel_edge >= 2)
         draw_side_panel(shell, platform, visuals);
+    else if(visuals->panel_deskbar)
+        draw_deskbar_panel(shell, platform, visuals);
     else
         draw_top_panel(shell, platform, visuals);
 }
@@ -3976,7 +4110,7 @@ draw_desktop_context_menu(RillShellState *shell,
     int x = visuals->desktop_menu_x, y = visuals->desktop_menu_y;
     int trash_icon = item != NULL && strcmp(item->id, "desktop-trash") == 0;
     int height = item != NULL ? (count > 0 ? (trash_icon ? 284 : 316) :
-                                  trash_icon ? 116 : 52) : 340;
+                                  trash_icon ? 116 : 52) : 372;
     clamp_menu_origin(visuals, &x, &y, 230, height);
     Rectangle menu = {(float)x, (float)y, 230, (float)height};
     draw_menu_panel(menu);
@@ -4046,10 +4180,11 @@ draw_desktop_context_menu(RillShellState *shell,
         }
     } else {
         const char *labels[] = {"Applications", "Terminal", "Open Desktop Folder", "New Folder...",
-                                "Paste", "Select All", "Arrange Icons", "Refresh", "Settings", "Log Out"};
+                                "Paste", "Select All", "Arrange Icons", "Removable Drives...",
+                                "Refresh", "Settings", "Log Out"};
         const char *icons[] = {"all", "terminal", "files", "files", "files", "all",
-                               "all", "all", "settings", "power"};
-        for(int i = 0; i < 10; i++) {
+                               "all", "files", "all", "settings", "power"};
+        for(int i = 0; i < 11; i++) {
             if(!draw_menu_row((Rectangle){x + 6, y + 6 + i * 32, 218, 28}, labels[i], icons[i]))
                 continue;
             shell->menu_open = 0;
@@ -4073,9 +4208,13 @@ draw_desktop_context_menu(RillShellState *shell,
                 RillSettingsInit(&visuals->desktop_layout);
                 RillSettingsSave(&visuals->desktop_layout, visuals->desktop_layout_path);
                 break;
-            case 7: visuals->desktop_files_scanned = 0; break;
-            case 8: open_launcher_id(shell, platform, "settings"); break;
-            case 9: visuals->logout_open = 1; break;
+            case 7:
+                visuals->drives_open = 1;
+                visuals->drive_next_scan = 0;
+                break;
+            case 8: visuals->desktop_files_scanned = 0; break;
+            case 9: open_launcher_id(shell, platform, "settings"); break;
+            case 10: visuals->logout_open = 1; break;
             }
         }
     }
@@ -4391,6 +4530,107 @@ draw_trash_dialog(RillShellState *shell, RillVisualState *visuals,
         visuals->trash_selected = -1;
         visuals->trash_next_scan = 0;
     }
+}
+
+static void
+draw_drives_dialog(RillShellState *shell, RillVisualState *visuals,
+                   const RillPlatformServices *platform)
+{
+    if(!visuals->drives_open)
+        return;
+    if(platform->removable_volumes == NULL ||
+       GetTime() >= visuals->drive_next_scan) {
+        visuals->drive_next_scan = GetTime() + 5.0;
+        visuals->drive_count = platform->removable_volumes != NULL ?
+            platform->removable_volumes(visuals->drive_entries, 8) : 0;
+        if(visuals->drive_count < 0)
+            visuals->drive_count = 0;
+        if(visuals->drive_selected >= visuals->drive_count)
+            visuals->drive_selected = visuals->drive_count - 1;
+    }
+    Rectangle panel = {GetScreenWidth() / 2 - 260, GetScreenHeight() / 2 - 150, 520, 300};
+    draw_menu_panel(panel);
+    Text((TextProps){.bounds = {panel.x + 16, panel.y + 12, 300, 24},
+                     .text = "Removable Drives", .font = Text16,
+                     .class_name = LabelPrimary});
+    char heading[96];
+    snprintf(heading, sizeof(heading), visuals->drive_count == 1 ?
+             "%d volume" : "%d volumes", visuals->drive_count);
+    Text((TextProps){.bounds = {panel.x + 330, panel.y + 14, 170, 20},
+                     .text = heading, .font = Text12, .class_name = LabelMuted,
+                     .align = TextAlignEnd});
+    if(visuals->drive_count == 0)
+        draw_text_fit((TextProps){
+            .bounds = {panel.x + 16, panel.y + 52, 488, 0},
+            .text = "No removable volumes are connected.", .font = Text12,
+            .class_name = LabelMuted});
+    int visible = visuals->drive_count < 6 ? visuals->drive_count : 6;
+    for(int i = 0; i < visible; i++) {
+        const RillVolume *volume = &visuals->drive_entries[i];
+        Rectangle row = {panel.x + 12, panel.y + 44 + i * 32, 496, 28};
+        if(CheckCollisionPointRec(GetMousePosition(), row)) {
+            DrawRectangleRec(row, panel_item_hover_color());
+            visuals->drive_selected = i;
+        }
+        if(visuals->drive_selected == i)
+            DrawRectangleRec(row, Fade(GetThemeLink(), 0.25f));
+        char label[320];
+        snprintf(label, sizeof(label), "%s  (%s, %s)", volume->name,
+                 volume->device, volume->mounted ? "mounted" : "not mounted");
+        draw_text_fit((TextProps){.bounds = {row.x + 10, row.y + 6, 330, 0},
+                                  .text = label, .font = Text12,
+                                  .class_name = LabelPrimary, .wrap = TextWrapNone});
+        draw_text_fit((TextProps){.bounds = {row.x + 346, row.y + 6, 140, 0},
+                                  .text = volume->mount_path, .font = Text12,
+                                  .class_name = LabelMuted, .wrap = TextWrapNone});
+    }
+    if(visuals->drive_error[0])
+        draw_text_fit((TextProps){.bounds = {panel.x + 16, panel.y + 244, 488, 40},
+                                  .text = visuals->drive_error, .font = Text12,
+                                  .class_name = LabelPrimary});
+    int selected = visuals->drive_selected;
+    int acted = 0;
+    if(selected >= 0 && visuals->drive_entries[selected].mounted &&
+       draw_settings_button((Rectangle){panel.x + 12, panel.y + 262, 78, 28}, "Open", 0)) {
+        if(platform->open_path != NULL)
+            platform->open_path(visuals->drive_entries[selected].mount_path);
+    }
+    if(selected >= 0 && !visuals->drive_entries[selected].mounted &&
+       draw_settings_button((Rectangle){panel.x + 96, panel.y + 262, 84, 28},
+                            "Mount", 0) && platform->removable_mount != NULL) {
+        char mounted_path[512];
+        if(platform->removable_mount(visuals->drive_entries[selected].device,
+                                     mounted_path, sizeof(mounted_path),
+                                     visuals->drive_error,
+                                     sizeof(visuals->drive_error)))
+            RillShellSetStatus(shell, "Volume mounted");
+        visuals->drive_next_scan = 0;
+        acted = 1;
+    }
+    if(selected >= 0 && visuals->drive_entries[selected].mounted &&
+       draw_settings_button((Rectangle){panel.x + 96, panel.y + 262, 100, 28},
+                            "Unmount", 0) && platform->removable_unmount != NULL) {
+        if(platform->removable_unmount(visuals->drive_entries[selected].device,
+                                       visuals->drive_error,
+                                       sizeof(visuals->drive_error)))
+            RillShellSetStatus(shell, "Volume unmounted");
+        visuals->drive_next_scan = 0;
+        acted = 1;
+    }
+    if(selected >= 0 && visuals->drive_entries[selected].can_eject &&
+       draw_settings_button((Rectangle){panel.x + 204, panel.y + 262, 78, 28},
+                            "Eject", 0) && platform->removable_eject != NULL) {
+        if(platform->removable_eject(visuals->drive_entries[selected].device,
+                                     visuals->drive_error,
+                                     sizeof(visuals->drive_error)))
+            RillShellSetStatus(shell, "Drive powered off");
+        visuals->drive_next_scan = 0;
+        acted = 1;
+    }
+    (void)acted;
+    if(draw_settings_button((Rectangle){panel.x + 388, panel.y + 262, 120, 28},
+                            "Close", 0) || IsKeyPressed(KEY_ESCAPE))
+        visuals->drives_open = 0;
 }
 
 static void
@@ -5010,6 +5250,8 @@ parse_panel_config(RillVisualState *visuals, const char *json)
                     snprintf(current.id, sizeof(current.id), "%s", value);
                 else if(strcmp(key, "output") == 0)
                     snprintf(current.output, sizeof(current.output), "%s", value);
+                else if(strcmp(key, "orientation") == 0)
+                    current.deskbar = strcmp(value, "deskbar") == 0;
                 else if(strcmp(key, "edge") == 0) {
                     for(int edge = 0; edge < 4; edge++)
                         if(strcmp(value, panel_edge_names[edge]) == 0)
@@ -5041,10 +5283,11 @@ serialize_panel_config(const RillVisualState *visuals, char *json, int size)
         const RillPanelConfig *entry = &visuals->panel_entries[i];
         offset += snprintf(json + offset, (size_t)(size - offset),
                            "  {\"id\": \"%s\", \"output\": \"%s\", "
-                           "\"edge\": \"%s\", \"size\": %d, \"autohide\": %s}%s\n",
+                           "\"edge\": \"%s\", \"size\": %d, \"autohide\": %s%s%s}%s\n",
                            entry->id, entry->output, panel_edge_names[entry->edge],
                            entry->size, entry->autohide ? "true" : "false",
-                           i + 1 < visuals->panel_entry_count ? "," : "");
+                           entry->deskbar ? ", \"orientation\": \"deskbar\"" : "",
+                           "", i + 1 < visuals->panel_entry_count ? "," : "");
     }
     snprintf(json + offset, (size_t)(size - offset), "]\n");
 }
@@ -5521,6 +5764,9 @@ draw_panels_settings(RillShellState *shell, Rectangle content,
         if(draw_settings_button((Rectangle){row.x + row.width - 128, row.y + 15, 30, 24},
                                 "+", 0) && entry->size < 64)
             entry->size += 2;
+        if(draw_settings_button((Rectangle){row.x + row.width - 260, row.y + 15, 52, 24},
+                                entry->deskbar ? "Desk" : "Bar", entry->deskbar))
+            entry->deskbar = !entry->deskbar;
         if(draw_settings_button((Rectangle){row.x + row.width - 94, row.y + 15, 44, 24},
                                 "Hide", entry->autohide))
             entry->autohide = !entry->autohide;
@@ -6355,6 +6601,8 @@ main(int argc, char **argv)
         visuals.panel_height = options.panel_size > 64 ? 64 : options.panel_size;
     if(options.panel_autohide >= 0)
         visuals.panel_autohide = options.panel_autohide;
+    if(options.panel_deskbar >= 0)
+        visuals.panel_deskbar = options.panel_deskbar;
     if(options.mode == RILL_MODE_RUN) {
         /* A command argument runs immediately; otherwise the dialog opens. */
         if(options.launch_command[0] != '\0') {
@@ -6503,6 +6751,7 @@ main(int argc, char **argv)
             visuals.properties_open = 0;
             visuals.logout_open = 0;
             visuals.trash_open = 0;
+            visuals.drives_open = 0;
             visuals.tray_menu_open = 0;
             visuals.volume_menu_open = 0;
             visuals.file_action[0] = '\0';
@@ -6510,8 +6759,8 @@ main(int argc, char **argv)
         popup_input_blocked = shell.menu_open != 0 || visuals.panel_context_open ||
                               visuals.calendar_open || visuals.clipboard_popup_open ||
                               visuals.properties_open || visuals.logout_open ||
-                              visuals.trash_open || visuals.tray_menu_open ||
-                              visuals.volume_menu_open;
+                              visuals.trash_open || visuals.drives_open ||
+                              visuals.tray_menu_open || visuals.volume_menu_open;
         if(!test_scene_active(&test))
             process_window_mouse(&shell);
         if(!test_scene_active(&test) && options.mode != RILL_MODE_PANEL &&
@@ -6562,6 +6811,7 @@ main(int argc, char **argv)
             draw_file_dialog(&shell, &visuals, platform);
             draw_file_transfer(&visuals, platform);
             draw_trash_dialog(&shell, &visuals, platform);
+            draw_drives_dialog(&shell, &visuals, platform);
             if(visuals.wallpaper_slideshow && visuals.wallpaper_count > 1 &&
                GetTime() >= visuals.wallpaper_next_swap) {
                 int current = -1;

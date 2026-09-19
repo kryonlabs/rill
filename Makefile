@@ -244,7 +244,7 @@ $(WM_BIN): src/wm.c src/wm_compositor.c src/session.c include/session.h include/
 
 SESSIOND_BIN := $(BUILD_DIR)/rill-sessiond
 $(SESSIOND_BIN): src/rill_sessiond.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(shell pkg-config --cflags sm ice gio-unix-2.0) -o $@ src/rill_sessiond.c $(shell pkg-config --libs sm ice gio-unix-2.0)
+	$(CC) $(CFLAGS) $(X11_PKG_CFLAGS) $(shell pkg-config --cflags sm ice gio-unix-2.0) -o $@ src/rill_sessiond.c $(shell pkg-config --libs sm ice gio-unix-2.0) $(X11_PKG_LIBS)
 
 $(BUILD_DIR)/rill_sessiond_test: tests/rill_sessiond_test.c $(SESSIOND_BIN) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(shell pkg-config --cflags sm ice) -o $@ tests/rill_sessiond_test.c $(shell pkg-config --libs sm ice)

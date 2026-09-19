@@ -88,9 +88,10 @@ supported policy. Private Xvfb tests do not establish this.
 - [ ] Preserve file selections on clipboard-owner exit/desktop crash and expand
   testing to GVfs network mounts, large trees, ACLs/xattrs, permissions and
   disconnects. Current clipboard tests cover local files and separate owners.
-- [ ] Full removable-media mount/eject/unmount and volume errors beyond the
-  implemented Trash management. The installed file manager still handles
-  browsing and advanced media operations.
+- [x] Removable-media mount/unmount/eject with volume listing and errors
+  through the desktop's Removable Drives dialog; actions use udisksctl, so
+  privileged operations may still require an authentication provider. The
+  installed file manager keeps advanced browsing.
 
 Acceptance: real Thunar and another file manager can copy, cut, paste and drag
 files both ways; cancellation/conflicts never silently overwrite or remove data;
@@ -103,9 +104,10 @@ errors identify completed and unfinished work.
   WM-shortcut editor with conflict detection and reset. Remaining device
   categories keep the documented provider contract through installed control
   panels.
-- [ ] Full keyboard traversal, accessible names/roles/states/actions, screen-reader
-  navigation, selection announcements, high contrast and large text throughout
-  Rill's own custom desktop, menus, panels and dialogs.
+- [ ] Full keyboard traversal and accessible names/roles/states/actions; desktop
+  selection changes are already announced through the shell status line, and
+  screen-reader navigation, high contrast and large text throughout Rill's own
+  custom desktop, menus, panels and dialogs remain open.
 - [ ] Complete preference migration beyond the current copied/linked profiles,
   with documented ownership and a reversible reset/export path.
 
@@ -118,7 +120,8 @@ reader. Opening an installed control panel does not establish native support.
 ### Panels, trays and plugins
 
 - [x] Vertical (left/right edge) orientation with appropriate item layout and
-  struts. Deskbar (wrapped multi-row horizontal) layout is still open.
+  struts, and deskbar orientation (tall top/bottom bars rendering wrapped
+  icon-cell rows).
 - [x] Graphical creation/removal of panels, monitor selection and geometry
   editing through the Settings panels page; changes apply at the next login.
 - [ ] Full native migration of existing Xfce panel/plugin layouts.
@@ -149,8 +152,10 @@ WM restarts, with measured rendering behavior.
 
 ## 3. Broaden session recovery
 
-- [ ] Non-XSMP unsaved-document handling and clear user interaction when a client
-  cannot participate in logout saving.
+- [x] Non-XSMP unsaved-document handling: after XSMP clients accept the logout,
+  every remaining window is asked to close through the window manager so the
+  applications' own save prompts decide about unsaved work, with a bounded
+  wait before cleanup instead of a silent kill.
 - [ ] Arbitrary XSMP client restart styles and wider application-restore coverage.
 - [ ] Persist/restore application state where applications support it, not merely
   their restart commands and working directories.

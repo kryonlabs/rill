@@ -244,8 +244,13 @@ def configured_services(env, binary, original):
             autohide = panel.get('autohide', False)
             if not isinstance(autohide, bool):
                 raise ValueError('panel autohide must be true or false')
+            orientation = panel.get('orientation', '')
+            if orientation not in ('', 'horizontal', 'vertical', 'deskbar'):
+                raise ValueError('panel orientation must be horizontal, vertical or deskbar')
             command = [binary, '--panel', name, '--panel-edge', edge,
                        '--panel-size', str(size), '--panel-autohide', '1' if autohide else '0']
+            if orientation:
+                command += ['--panel-orientation', orientation]
             if output:
                 command += ['--panel-output', output]
             services.append({'name': 'Panel ' + name, 'command': command, 'restart': True, 'required': True})

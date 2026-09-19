@@ -43,16 +43,17 @@ paths use experimental capture/input forwarding and are not equivalent to it.
 
 ## Outstanding work
 
-- Deskbar (wrapped multi-row) panel layout, full Xfce layout migration into
-  native widgets, and an independent GTK plugin host.
+- Deskbar panel layout is available; full Xfce layout migration into
+  native widgets and an independent GTK plugin host remain open.
 - Remaining native system-settings categories (layouts, touchpad gestures,
   theme/font/default-app/power) and accessibility of Rill's own custom UI;
   retaining supported external providers remains necessary.
-- Transfer undo, batch rollback, GVfs/network/ACL coverage and full
-  removable-media management. Background recursive transfers, interactive
-  conflict choices, file clipboard operations, external XDND drag/drop and
-  Trash management are implemented; advanced browsing and default-app
-  selection remain with the installed file manager/control panels.
+- Transfer undo, batch rollback and GVfs/network/ACL coverage. Background
+  recursive transfers, interactive conflict choices, file clipboard operations,
+  external XDND drag/drop, Trash management and removable-media
+  mount/unmount/eject through the Removable Drives dialog are implemented;
+  advanced browsing and default-app selection remain with the installed file
+  manager/control panels.
 - Tray menu live refresh on item updates, and more complete network and
   Bluetooth controls.
 - Themed decoration pixmaps beyond imported themerc colors, compositor

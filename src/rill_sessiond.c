@@ -4,6 +4,8 @@
 #include <X11/SM/SMlib.h>
 #include <X11/ICE/ICElib.h>
 #include <X11/ICE/ICEutil.h>
+#include <X11/Xlib.h>
+#include <X11/Xatom.h>
 #include <gio/gdesktopappinfo.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -78,6 +80,118 @@ static char *auth_cookie;
 static void begin_save(int shutdown);
 static void cancel_logout(void);
 static void write_status(void);
+static gint64 now_ms(void);
+
+/* Non-XSMP applications cannot join the save transaction. After XSMP clients
+ * accepted Die, ask every remaining window OWNED BY THIS SESSION to close
+ * through the window manager: their own save prompts are the user
+ * interaction, so logout waits a bounded time instead of discarding work
+ * silently. Windows are matched through _NET_WM_PID against the processes
+ * this manager supervises, so a foreign DISPLAY is never touched. */
+static int
+remaining_window_count(Display *display, Atom client_list, Window **windows)
+{
+    Atom actual;
+    int format;
+    unsigned long count = 0, remaining = 0;
+    unsigned char *data = NULL;
+    if(XGetWindowProperty(display, DefaultRootWindow(display), client_list, 0,
+                          1024, False, XA_WINDOW, &actual, &format, &count,
+                          &remaining, &data) != Success || data == NULL)
+        return 0;
+    if(windows != NULL) {
+        *windows = malloc((count > 0 ? count : 1) * sizeof(Window));
+        if(*windows != NULL)
+            memcpy(*windows, data, count * sizeof(Window));
+    }
+    XFree(data);
+    return (int)count;
+}
+
+static long
+window_pid(Display *display, Atom pid_atom, Window window)
+{
+    Atom actual;
+    int format;
+    unsigned long count = 0, remaining = 0;
+    unsigned char *data = NULL;
+    long pid = -1;
+    if(XGetWindowProperty(display, window, pid_atom, 0, 1, False, XA_CARDINAL,
+                          &actual, &format, &count, &remaining,
+                          &data) == Success && data != NULL && count > 0)
+        pid = (long)((unsigned long *)data)[0];
+    if(data != NULL)
+        XFree(data);
+    return pid;
+}
+
+static void
+close_remaining_windows(void)
+{
+    Display *display = XOpenDisplay(NULL);
+    if(display == NULL)
+        return;
+    Atom client_list = XInternAtom(display, "_NET_CLIENT_LIST", False);
+    Atom close_window = XInternAtom(display, "_NET_CLOSE_WINDOW", False);
+    Atom pid_atom = XInternAtom(display, "_NET_WM_PID", False);
+    Window *windows = NULL;
+    int total = remaining_window_count(display, client_list, &windows);
+    Window *ours = malloc((size_t)(total > 0 ? total : 1) * sizeof(Window));
+    int count = 0;
+    for(int i = 0; i < total && ours != NULL; i++) {
+        long pid = window_pid(display, pid_atom, windows[i]);
+        int supervised = 0;
+        for(guint p = 0; p < processes->len && !supervised; p++) {
+            SessionProcess *process = g_ptr_array_index(processes, p);
+            if(process->pid > 0 && (long)process->pid == pid)
+                supervised = 1;
+            else if(process->pid > 0 && pid > 0 && kill(pid, 0) == 0 &&
+                    getsid((pid_t)pid) == (pid_t)process->pid)
+                supervised = 1;
+        }
+        if(supervised)
+            ours[count++] = windows[i];
+    }
+    free(windows);
+    if(count > 0) {
+        fprintf(stderr, "rill-sessiond: asking %d window(s) outside XSMP to close\n",
+                count);
+        for(int i = 0; i < count; i++) {
+            XEvent event;
+            memset(&event, 0, sizeof(event));
+            event.xclient.type = ClientMessage;
+            event.xclient.window = ours[i];
+            event.xclient.message_type = close_window;
+            event.xclient.format = 32;
+            event.xclient.data.l[0] = 0;
+            event.xclient.data.l[1] = CurrentTime;
+            XSendEvent(display, ours[i], False, NoEventMask, &event);
+        }
+        XFlush(display);
+        /* Bounded grace period: apps showing their own unsaved-work prompts
+         * may keep their windows until the user answers them. */
+        gint64 deadline = now_ms() + 8000;
+        while(now_ms() < deadline) {
+            Window *left = NULL;
+            int still = remaining_window_count(display, client_list, &left);
+            int remaining_ours = 0;
+            for(int i = 0; i < still; i++) {
+                long pid = window_pid(display, pid_atom, left != NULL ? left[i] : None);
+                for(guint p = 0; p < processes->len && !remaining_ours; p++) {
+                    SessionProcess *process = g_ptr_array_index(processes, p);
+                    if(process->pid > 0 && (long)process->pid == pid)
+                        remaining_ours = 1;
+                }
+            }
+            free(left);
+            if(remaining_ours == 0)
+                break;
+            g_usleep(100000);
+        }
+    }
+    free(ours);
+    XCloseDisplay(display);
+}
 
 static gint64
 now_ms(void)
@@ -1224,8 +1338,12 @@ main(int argc, char **argv)
     }
     /* Give cooperative clients a chance to act on Die before cleaning up
      * only the process groups this manager actually launched. */
-    if(finishing)
+    if(finishing) {
         g_usleep(100000);
+        /* Applications outside XSMP are asked to close so their own save
+         * prompts decide about unsaved work, instead of a silent kill. */
+        close_remaining_windows();
+    }
     stop_processes();
     for(int i = 0; i < MAX_CLIENTS; i++) {
         if(clients[i].connection != NULL)
