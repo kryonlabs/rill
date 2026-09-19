@@ -1,53 +1,191 @@
-# Roadmap to a complete Xfce alternative
+# Remaining work for a complete Xfce replacement
 
-Status: 2026-09-19. The current implementation and its limits are recorded in
-[compatibility.md](compatibility.md). Native X11 is the first usable replacement
-path. [session.md](session.md) describes configuration and retained providers.
+Updated 2026-09-19. **Full replacement parity is not complete.** The supported
+replacement path today is the native X11 session; the real Xfce session remains
+an explicit compatibility option. Device services and several control panels
+still come from installed providers.
 
-## Completed in this update
+This is the implementation backlog, ordered by what most affects daily use.
+See [session configuration](session.md), [compatibility status](compatibility.md)
+and [window-manager details](wm.md) for the implemented behavior.
 
-- Rill's default X11 login uses its own session manager, WM, desktop and dock.
-  The real Xfce session remains a separate compatibility choice.
-- Independently supervised services, private authenticated XSMP, correct XDG
-  autostart overrides, save/interaction/phase-two cancellation, saved restart
-  commands and opt-in restoration. Power rejection preserves the session.
-  Launched applications survive desktop/panel crashes and exit on logout.
-- Native shaped panel surfaces and work-area reservation, named output/monitor
-  selection, multiple configured panels, persistent Shift-drag item ordering,
-  correctly sized tray allocations and focus restoration after menus.
-- XDG desktop folder discovery, ordinary files/folders, refresh, repaired
-  double-click launching, persistent icon dragging, rename/new-folder/Trash
-  actions and overwrite refusal.
-- Standalone Settings, links to installed device/service controls, concurrent
-  preference merging, live updates, and migration of existing Rill/user-folder/
-  GTK/MIME preferences into the private profile.
-- Lock result checking and lock-before-suspend for Rill's Suspend action.
-  Installed lock/power/authentication/network providers are detected and supervised.
-- Dynamic decoration hints, propagated input shapes and normal window geometry
-  recovery after a WM crash, covered by real X11 interaction tests.
-- Current Kryon text/font/frame APIs and generated build headers, optional sync
-  dependencies and the downstream clean-text API check.
+## Completed foundation
 
-## Remaining implementation and validation
+- An independent X11 session manager, WM, desktop and shaped dock panels.
+- Authenticated XSMP, XDG autostart precedence, independently supervised services,
+  bounded crash recovery, cancellable logout and save/phase-two interactions.
+  Applications launched through Rill survive desktop and panel crashes.
+- Multiple panels configured by name/output, work-area reservation, horizontal
+  top/bottom placement, autohide and persistent Shift-drag item ordering.
+- XDG desktop folder discovery, ordinary files/folders, application launching,
+  selection, persistent icon placement, rename, new folders and confirmed Trash.
+- Multiple desktop selection with Control-click, Shift ranges, a selection
+  rectangle and Select All; moving selected icons together.
+- File cut/copy/paste interoperating with file-manager clipboard formats,
+  background recursive copy/move/Trash, progress and cancellation. Copies preserve
+  symbolic links, reject existing destinations and stage each top-level item
+  before publishing it. Rill clears its own cut clipboard after a successful move.
+- Standalone Settings, installed system-control-panel launchers, concurrent
+  preference merging, live panel updates and existing application preferences.
+- Notifications, text clipboard history, StatusNotifier and XEmbed tray hosting,
+  basic volume and battery indicators.
+- Lock-result checking and lock-before-suspend for Rill's own Suspend action.
+- Dynamic decoration hints, input shapes and normal-window-geometry recovery
+  after a WM crash.
+- Current Kryon text/font/frame APIs and an upstream Linux libdraw fix for real
+  key releases, modifier shortcuts, focus state and Delete/Backspace distinction.
 
-| Area | Work still needed |
-| --- | --- |
-| Native panel | Vertical/deskbar layouts, graphical panel/output management, complete Xfce layout/plugin migration, independent unchanged-plugin hosting and D-Bus tray menus. The real Xfce host remains available. |
-| Native settings | Display/scaling/input/theme/font/accessibility controls, graphical WM shortcuts, complete preference import and provider-independent persistence. The current System page opens installed control panels. |
-| Files | External drag/drop, file clipboard, multiselection, recursive operations and complete removable-media/trash integration. The installed file manager remains responsible for browsing and advanced operations. |
-| Session and services | Non-XSMP unsaved-document handling, broader application restore coverage, arbitrary client restart-style support, native lock UI/authentication, accessible custom controls and device-service integration beyond selected providers. |
-| WM/compositor | Full transient/group stacking and placement, xfwm4 theme compatibility, frame pacing/vsync/fullscreen bypass and sustained-load profiling. |
-| Hardware certification | Real lock/suspend/resume/lid behavior, polkit interaction, networking, physical output hotplug, mixed DPI, multi-seat and application/game regressions. Private Xvfb tests cannot certify these. |
-| Wayland | Native renderer/window integration, layer-shell desktop/panel surfaces, output scaling/hotplug, input/workspaces and real-compositor tests. A task adapter is not a compositor or desktop backend. |
-| Plan 9 | Full native desktop/session/rio, clipboard/plumbing and end-to-end app testing. Linux GTK plugin binaries require a separate execution/display bridge or ports. |
+## 1. Make daily use dependable
 
-## Completion criteria
+### Screen locking and power
 
-Users must be able to log in, launch and manage applications, configure devices,
-lock, suspend, recover and log out without missing essential behavior. Existing
-preferences and plugins must migrate without losing configuration. Each supported
-backend needs its own end-to-end evidence, and claims must identify retained
-providers and the tested applications, versions and hardware.
+- [ ] Install/configure a supported locker and expose its readiness clearly in
+  Settings. The development machine currently reports **no detected locker**.
+- [ ] Validate lock, unlock, authentication failure, idle timeout, lid close,
+  suspend/resume and logout on real hardware.
+- [ ] Keep a working locker and polkit provider alive across session failures.
+- [ ] Decide whether a native PAM-authenticated locker is required or supported
+  provider integration is the product boundary; implement and audit accordingly.
+- [ ] Test inhibitor handling and rejected power requests with real logind/polkit.
 
-The current X11 work resolves substantial lifecycle and interaction gaps. It does
-not establish Xfce/xfwm4 1:1 parity or native Wayland/Plan 9 completion.
+Acceptance: the session cannot report a successful lock while the desktop remains
+accessible; lid/idle/manual suspend must resume to a locked screen under the
+supported policy. Private Xvfb tests do not establish this.
+
+### File operations and desktop interaction
+
+- [ ] External drag/drop: XDND source and target, URI lists, copy/move negotiation,
+  dropping onto folders, cancellation and protocol completion after actual I/O.
+- [ ] Add keyboard spatial navigation, type-to-select, configurable single-click
+  activation and accessible selection announcements.
+- [ ] Add conflict choices (skip, rename, replace with explicit confirmation),
+  duplicate-in-place, retry and a queue for multiple transfer jobs. Current
+  behavior refuses collisions and permits one active transfer per process.
+- [ ] Recover abandoned staging directories after a desktop crash; expose any
+  cleanup failure. Graceful cancellation cleans staging data, but a killed
+  process can leave a hidden `.transfer-*` directory.
+- [ ] Improve cross-filesystem moves and partial-result reporting. A completed
+  destination can remain if source cleanup fails; multiple top-level items are
+  committed individually, not as one atomic batch. No undo is implemented.
+- [ ] Preserve file selections on clipboard-owner exit/desktop crash and expand
+  testing to GVfs network mounts, large trees, ACLs/xattrs, permissions and
+  disconnects. Current clipboard tests cover local files and separate owners.
+- [ ] Complete removable-media mount/eject/unmount, Trash count/restore/empty and
+  volume errors. The installed file manager handles browsing and advanced media
+  operations today.
+
+Acceptance: real Thunar and another file manager can copy, cut, paste and drag
+files both ways; cancellation/conflicts never silently overwrite or remove data;
+errors identify completed and unfinished work.
+
+### Settings and accessibility
+
+- [ ] Native display configuration, scaling and output placement, with timed
+  rollback for an unusable display setup.
+- [ ] Native keyboard/layout/repeat, mouse/touchpad, theme/font/default-app,
+  audio and power preferences, or an explicitly supported provider contract.
+- [ ] A graphical WM-shortcut editor with conflict detection and reset.
+- [ ] Full keyboard traversal, accessible names/roles/states/actions, screen-reader
+  navigation, selection announcements, high contrast and large text throughout
+  Rill's own custom desktop, menus, panels and dialogs.
+- [ ] Complete preference migration beyond the current copied/linked profiles,
+  with documented ownership and a reversible reset/export path.
+
+Acceptance: essential settings can be changed without editing configuration
+files, survive relogin, and can be reached and operated with a keyboard and screen
+reader. Opening an installed control panel does not establish native support.
+
+## 2. Complete panel and window-manager behavior
+
+### Panels, trays and plugins
+
+- [ ] Vertical and deskbar orientation, appropriate item layout and struts.
+- [ ] Graphical creation/removal of panels, monitor selection and geometry editing;
+  the current panel list is `panels.json` and changes require login/restart.
+- [ ] Full native migration of existing Xfce panel/plugin layouts.
+- [ ] Independent hosting of unchanged GTK plugins, or explicit supported plugin
+  replacements. Compatibility mode still uses the real Xfce panel.
+- [ ] StatusNotifier D-Bus menus, submenu/toggle/disabled states and lifecycle
+  updates; secondary activation is not a substitute for a complete item menu.
+- [ ] More complete audio-device, network, Bluetooth and battery controls.
+
+Acceptance: representative existing panel layouts migrate without losing their
+settings; panels follow hotplug and orientation changes; tray menus operate the
+real application actions.
+
+### Window manager and compositor
+
+- [ ] Broader transient/group stacking, placement, dialogs, focus-stealing and
+  application-startup activation regressions.
+- [ ] xfwm4 theme compatibility or a documented migration to Rill themes.
+- [ ] Frame pacing/vsync, fullscreen bypass and sustained-load benchmarks.
+- [ ] Physical output hotplug, mixed DPI, multi-seat and fullscreen-game testing.
+
+Acceptance: common terminals, editors, browsers, file managers and games keep
+correct focus, geometry, stacking and input across workspace/output changes and
+WM restarts, with measured rendering behavior.
+
+## 3. Broaden session recovery
+
+- [ ] Non-XSMP unsaved-document handling and clear user interaction when a client
+  cannot participate in logout saving.
+- [ ] Arbitrary XSMP client restart styles and wider application-restore coverage.
+- [ ] Persist/restore application state where applications support it, not merely
+  their restart commands and working directories.
+- [ ] Better user-facing diagnostics for missing/crashing optional services and
+  failed asynchronous application launches.
+- [ ] Explicit behavior for in-progress file transfers during logout/recovery.
+  Graceful desktop exit currently cancels and joins its active transfer.
+
+Acceptance: cancellation preserves the session; recovery does not duplicate
+services or abandon owned processes; restore and unsaved-work claims identify the
+applications and protocols actually covered.
+
+## 4. Other desktop backends
+
+### Native Wayland
+
+- [ ] Native renderer/window integration and layer-shell desktop/panel surfaces.
+- [ ] Output scale/hotplug, input, workspaces, clipboard, drag/drop and session
+  integration, with real-compositor end-to-end tests.
+- [ ] Decide and document supported compositors/protocols or a native compositor.
+
+The existing foreign-toplevel task adapter is not a Wayland desktop or compositor.
+Current Linux rendering through plan9port relies on X11/Xwayland.
+
+### Native Plan 9
+
+- [ ] Full native desktop/session/rio integration, clipboard/plumbing, input
+  semantics, file operations and end-to-end app tests.
+- [ ] Validate stack/memory limits and saved-setting recovery on the real target.
+- [ ] Define ports/replacements or an execution/display bridge for Linux GTK
+  plugins; their binaries cannot run natively on Plan 9.
+
+The latest physical-keyboard fix applies to Linux X11. It does not add key-release
+or modifier parity to the native Plan 9 rune transport.
+
+## Verification and completion gates
+
+The automated suite covers recursive file transfers, symlinks, collision refusal,
+self-copy through a symlink, cancellation cleanup, cross-process clipboard
+formats, desktop multiple selection and cut/copy/paste, desktop crash recovery,
+XSMP transactions, panels, WM input/shapes/geometry and compositor rendering.
+
+```sh
+make test
+make native-session-smoke session-smoke
+make wm-test protocol-test wayland-test
+make visual-test windowed-smoke
+```
+
+Before calling Rill a complete Xfce replacement:
+
+- [ ] Record supported distribution, dependencies, applications and hardware.
+- [ ] Run a fresh-user installation and upgrade/migration test.
+- [ ] Validate login, settings, file operations, everyday apps, lock, suspend,
+  resume, recovery and logout together on real hardware.
+- [ ] Complete accessibility testing with actual assistive technology.
+- [ ] Keep backend-specific claims separate and list retained external providers.
+
+No full-parity release or hardware certification is implied by the passing
+isolated X11 tests. See [session.md](session.md) for the tested build and setup.

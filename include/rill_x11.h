@@ -75,6 +75,8 @@ typedef struct RillX11Manager {
 void RillX11SyncDesktop(void);
 void DesktopSurfaceInput(int active);
 int DesktopSurfacePointer(Vector2 *position, int *down, int *over);
+int DesktopSurfaceModifiers(int *control, int *shift);
+int DesktopSurfaceButtons(int *left, int *middle, int *right);
 int RillX11SetDesktop(const char *title);
 int PanelSurfaceInit(const char *title, const char *output);
 int PanelSurfaceBegin(int height, int bottom);

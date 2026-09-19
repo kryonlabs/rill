@@ -2420,6 +2420,7 @@ linux_list_desktop_files(RillLauncher *out, int cap)
             }
         }
         g_strlcpy(item->file_path, path, sizeof(item->file_path));
+        item->is_directory = g_file_info_get_file_type(info) == G_FILE_TYPE_DIRECTORY;
         g_free(path);
         g_object_unref(info);
         count++;
@@ -2812,7 +2813,13 @@ static const RillPlatformServices services = {
     linux_clipboard_select,
     linux_desktop_directory,
     linux_open_settings,
-    linux_file_operation
+    linux_file_operation,
+    StartFileTransfer,
+    PollFileTransfer,
+    CancelFileTransfer,
+    FinishFileTransfers,
+    CopyFilesToClipboard,
+    PasteFilesFromClipboard
 };
 
 const RillPlatformServices *

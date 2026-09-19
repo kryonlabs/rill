@@ -24,7 +24,7 @@ else
 endif
 ifeq ($(UNAME_S),Linux)
   PLATFORM := linux
-  PLATFORM_SRC := src/platform_linux.c src/rill_wayland.c src/session.c
+  PLATFORM_SRC := src/platform_linux.c src/files.c src/rill_wayland.c src/session.c
   ifneq ($(shell pkg-config --exists wayland-client && command -v wayland-scanner),)
     WAYLAND_SRC := build/protocols/toplevel-protocol.c
     CPPFLAGS += -DRILL_HAS_WAYLAND -Ibuild/protocols $(shell pkg-config --cflags wayland-client)
@@ -73,7 +73,7 @@ TEST_BIN := $(BUILD_DIR)/rill_shell_test
 LINUX_LAUNCHER_TEST_BIN := $(BUILD_DIR)/rill_linux_launcher_test
 SRCS := src/main.c src/rill_settings.c src/rill_shell.c src/rill_panel.c src/rill_x11.c $(PLATFORM_SRC) $(WAYLAND_SRC)
 TEST_SRCS := tests/rill_shell_test.c src/rill_shell.c src/rill_panel.c src/platform_stub.c
-LINUX_LAUNCHER_TEST_SRCS := tests/rill_linux_launcher_test.c src/platform_linux.c src/rill_wayland.c $(WAYLAND_SRC)
+LINUX_LAUNCHER_TEST_SRCS := tests/rill_linux_launcher_test.c src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC)
 
 .PHONY: all clean run test clean-text-api-check visual-test windowed-smoke kryon FORCE
 
@@ -134,16 +134,16 @@ $(BUILD_DIR)/rill_platform_test: tests/rill_platform_test.c src/platform_plan9.c
 $(BUILD_DIR)/rill_x11_protocol_test: tests/rill_x11_protocol_test.c src/rill_x11.c $(wildcard include/*.h) $(KRYON_LIB) | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ tests/rill_x11_protocol_test.c src/rill_x11.c $(PLATFORM_LDLIBS)
 
-$(BUILD_DIR)/rill_xembed_test: tests/rill_xembed_test.c src/platform_linux.c src/rill_wayland.c $(wildcard include/*.h) $(WAYLAND_SRC) | $(BUILD_DIR)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ tests/rill_xembed_test.c src/platform_linux.c src/rill_wayland.c $(WAYLAND_SRC) \
+$(BUILD_DIR)/rill_xembed_test: tests/rill_xembed_test.c src/platform_linux.c src/files.c src/rill_wayland.c $(wildcard include/*.h) $(WAYLAND_SRC) | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ tests/rill_xembed_test.c src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) \
 		$(GTK_PKG_LIBS) $(PLATFORM_LDLIBS) $(shell pkg-config --libs wayland-client 2>/dev/null)
 
-$(BUILD_DIR)/rill_xsettings_test: tests/rill_xsettings_test.c src/platform_linux.c src/rill_wayland.c $(wildcard include/*.h) $(WAYLAND_SRC) | $(BUILD_DIR)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ tests/rill_xsettings_test.c src/platform_linux.c src/rill_wayland.c $(WAYLAND_SRC) \
+$(BUILD_DIR)/rill_xsettings_test: tests/rill_xsettings_test.c src/platform_linux.c src/files.c src/rill_wayland.c $(wildcard include/*.h) $(WAYLAND_SRC) | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ tests/rill_xsettings_test.c src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) \
 		$(GTK_PKG_LIBS) $(PLATFORM_LDLIBS) $(shell pkg-config --libs wayland-client 2>/dev/null)
 
-$(BUILD_DIR)/rill_clipboard_test: tests/rill_clipboard_test.c src/platform_linux.c src/rill_wayland.c $(wildcard include/*.h) $(WAYLAND_SRC) | $(BUILD_DIR)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ tests/rill_clipboard_test.c src/platform_linux.c src/rill_wayland.c $(WAYLAND_SRC) \
+$(BUILD_DIR)/rill_clipboard_test: tests/rill_clipboard_test.c src/platform_linux.c src/files.c src/rill_wayland.c $(wildcard include/*.h) $(WAYLAND_SRC) | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ tests/rill_clipboard_test.c src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) \
 		$(GTK_PKG_LIBS) $(PLATFORM_LDLIBS) $(shell pkg-config --libs wayland-client 2>/dev/null)
 
 .PHONY: platform-test protocol-test xembed-test xsettings-test clipboard-test
@@ -163,6 +163,15 @@ clipboard-test: $(BUILD_DIR)/rill_clipboard_test
 	xvfb-run -a $(BUILD_DIR)/rill_clipboard_test
 
 test: platform-test xembed-test xsettings-test clipboard-test sessiond-test
+
+$(BUILD_DIR)/files_test: tests/files_test.c src/files.c include/files.h | $(BUILD_DIR)
+	$(CC) -Iinclude $(GTK_PKG_CFLAGS) $(CFLAGS) -o $@ tests/files_test.c src/files.c $(GTK_PKG_LIBS) -lX11
+
+.PHONY: files-test
+files-test: $(BUILD_DIR)/files_test
+	xvfb-run -a $(BUILD_DIR)/files_test
+
+test: files-test
 
 build/protocols/toplevel-client.h: protocols/wlr-foreign-toplevel-management-unstable-v1.xml
 	mkdir -p build/protocols

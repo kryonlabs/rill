@@ -42,8 +42,20 @@ Desktop icon positions are stored in `rill/desktop-layout` within the active
 profile. The desktop rescans its XDG desktop folder every two seconds and on F5.
 Drag icons to place them, use F2 to rename or Delete to request moving an item
 to Trash, and right-click for file/folder actions. Trash requires confirmation.
-Name collisions report an error without overwriting the destination. The default
-file manager handles opening files, Trash browsing and recursive operations.
+Control-click toggles selection, Shift-click selects a range, dragging empty
+space selects a rectangle, and Ctrl+A selects all icons. Drag selected icons as
+a group. Ctrl+C/Ctrl+X copies/cuts files; Ctrl+V pastes into a selected folder or
+the desktop. Ctrl+Shift+N creates a folder. The context menu exposes these actions.
+
+File transfers run in the background with progress and Cancel. Recursive copies
+preserve symbolic links and basic metadata, refuse collisions and stage each
+item before publishing it. Cancel removes that transfer's staging data. Items
+already completed remain in place; there is no batch rollback or undo. A desktop
+crash can leave hidden staging directories, and a cross-filesystem move whose
+source cleanup fails can leave a completed destination plus remaining source
+data. The dialog reports the failure and completed count. The installed file
+manager still handles browsing, external drag/drop and advanced media/Trash
+management.
 
 ## Panels
 
@@ -132,13 +144,15 @@ Real suspend/resume, lid behavior and lock security need hardware validation.
 
 ## Verification
 
-The 2026-09-19 build was checked against Kryon master commit
-`f772ba1fe62577c3800f9e04b4ab99f1924ea680`. It includes the upstream libdraw fix
-that honors the configured exit key, so Escape closes desktop popups without
-terminating the desktop. UI labels use `Text(TextProps)` with the active font.
+The 2026-09-19 file-operation update was tested with the committed Kryon
+keyboard fix `edf2e5ab` (on top of `16304d06`). The build also includes the earlier
+libdraw exit-key fix, so Escape closes desktop popups without terminating the
+desktop. UI labels use `Text(TextProps)` with the active font. The regression
+suite passed; the file-transfer tests also passed AddressSanitizer and
+UndefinedBehaviorSanitizer with GTK process-lifetime leak detection disabled.
 
 ```sh
-make test                  # platform, settings, XSMP and process lifecycle tests
+make test                  # files, clipboard, settings, XSMP and process lifecycle tests
 make wm-test               # native input, shapes, geometry recovery, compositor
 make native-session-smoke  # Rill dock, desktop input, settings, crashes and logout
 make session-smoke         # Xfce compatibility session

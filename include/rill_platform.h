@@ -1,6 +1,8 @@
 #ifndef RILL_PLATFORM_H
 #define RILL_PLATFORM_H
 
+#include "files.h"
+
 #define RILL_MAX_LAUNCHERS 32
 #define RILL_MAX_TASKS 32
 
@@ -14,6 +16,7 @@ typedef struct RillLauncher {
     char desktop_file[1024];
     int favorite;
     char file_path[1024];
+    int is_directory;
 } RillLauncher;
 
 typedef struct RillTask {
@@ -114,6 +117,13 @@ typedef struct RillPlatformServices {
        Never overwrite an existing destination. Errors are returned to the UI. */
     int (*file_operation)(const char *operation, const char *source,
                           const char *destination, char *error, int error_size);
+    int (*file_transfer_start)(const char *operation, const char *const *sources,
+                               int count, const char *destination);
+    int (*file_transfer_poll)(FileTransferStatus *status);
+    void (*file_transfer_cancel)(void);
+    void (*file_transfer_finish)(void);
+    int (*file_clipboard_copy)(const char *const *paths, int count, int cut);
+    int (*file_clipboard_paste)(const char *destination);
 } RillPlatformServices;
 
 int RillSettingsEnsureDirectory(const char *path);

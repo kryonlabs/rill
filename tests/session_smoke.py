@@ -39,7 +39,7 @@ with tempfile.TemporaryDirectory(prefix='rill-session-') as directory:
     for name in ('SESSION_MANAGER', 'WAYLAND_DISPLAY', 'WAYLAND_SOCKET', 'DBUS_SESSION_BUS_ADDRESS'):
         env.pop(name, None)
     if native:
-        env.update(RILL_SESSION_SERVICES='none', RILL_NO_AUTOSTART='1')
+        env.update(RILL_SESSION_SERVICES='none', RILL_NO_AUTOSTART='1', RILL_FILE_DEBUG='1')
         (work / 'Desktop').mkdir()
         desktop_probe = work / 'desktop-opened'
         app_log = work / 'launched-applications'
@@ -246,6 +246,61 @@ with tempfile.TemporaryDirectory(prefix='rill-session-') as directory:
                 subprocess.run(['xdotool', 'mousemove', '400', '410', 'click', '--repeat', '2',
                                 '--delay', '150', '1'], env=client_env, check=True)
                 wait_for(desktop_probe.exists, 'desktop icon position was not restored', seconds=8)
+                # Clipboard actions must use actual desktop selection, and
+                # recursive copies must remain usable while the shell runs.
+                first_file = work / 'Desktop/X-note.txt'
+                second_file = work / 'Desktop/Y-note.txt'
+                destination = work / 'Desktop/Z-target'
+                first_file.write_text('first selected file\n')
+                second_file.write_text('second selected file\n')
+                destination.mkdir()
+                time.sleep(2.5)
+
+                def select_files():
+                    subprocess.run(['xdotool', 'mousemove', '65', '455', 'mousedown', '1',
+                                    'sleep', '.12', 'mouseup', '1', 'sleep', '.15',
+                                    'keydown', 'ctrl', 'mousemove', '65', '549', 'mousedown', '1',
+                                    'sleep', '.15', 'mouseup', '1', 'keyup', 'ctrl', 'sleep', '.15'],
+                                   env=client_env, check=True)
+
+                def shortcut(key):
+                    subprocess.run(['xdotool', 'keydown', 'ctrl', 'keydown', key, 'sleep', '.1',
+                                    'keyup', key, 'keyup', 'ctrl', 'sleep', '.1'],
+                                   env=client_env, check=True)
+
+                select_files()
+                shortcut('c')
+                subprocess.run(['xdotool', 'mousemove', '65', '643', 'click', '1', 'sleep', '.2'],
+                               env=client_env, check=True)
+                shortcut('v')
+                wait_for(lambda: (destination / first_file.name).exists() and
+                         (destination / second_file.name).exists(),
+                         'multiple selected desktop files were not pasted into the folder', seconds=10)
+                assert (destination / first_file.name).read_text() == first_file.read_text()
+                assert (destination / second_file.name).read_text() == second_file.read_text()
+                (destination / first_file.name).unlink()
+                (destination / second_file.name).unlink()
+                subprocess.run(['xdotool', 'mousemove', '10', '427', 'mousedown', '1',
+                                'sleep', '.15', 'mousemove', '112', '609', 'sleep', '.15',
+                                'mouseup', '1', 'sleep', '.2', 'mousemove', '65', '455',
+                                'mousedown', '1', 'sleep', '.15', 'mousemove', '165', '455',
+                                'sleep', '.15', 'mouseup', '1', 'sleep', '.2'],
+                               env=client_env, check=True)
+                import hashlib
+                first_id = 'file-' + hashlib.sha256(str(first_file).encode()).hexdigest()[:40]
+                second_id = 'file-' + hashlib.sha256(str(second_file).encode()).hexdigest()[:40]
+                wait_for(lambda: first_id + ' = 128 ' in layout.read_text() and
+                         second_id + ' = 128 ' in layout.read_text(),
+                         'rectangle-selected icons did not move together', seconds=8)
+                shortcut('x')
+                subprocess.run(['xdotool', 'mousemove', '65', '643', 'click', '1', 'sleep', '.2'],
+                               env=client_env, check=True)
+                shortcut('v')
+                wait_for(lambda: not first_file.exists() and not second_file.exists() and
+                         (destination / first_file.name).exists() and
+                         (destination / second_file.name).exists(),
+                         'cut and paste did not move both selected desktop files', seconds=10)
+                print('Desktop multiple/rectangle selection, group dragging, copy/paste and cut/paste passed')
                 fd = os.open(client_env['RILL_SESSION_CONTROL'], os.O_WRONLY | os.O_NONBLOCK)
                 os.write(fd, b'logout\n')
                 os.close(fd)

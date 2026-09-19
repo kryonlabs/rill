@@ -12,7 +12,7 @@ Native Wayland and complete native Plan 9 desktop integration remain unfinished.
 | --- | --- |
 | Session | Default native login, private cookie-authenticated XSMP, XDG autostart precedence/filtering, bounded WM/panel/desktop/service restart, cancellable logout and phase-two save, restart-command persistence and opt-in restoration. Restart/shutdown participate in the same save transaction; rejected power requests cancel. |
 | Panel | Separate X11 dock, work-area reservation, shaped menus, named monitor/output selection, multiple configured panels, top/bottom placement, height/autohide, Shift-drag item reordering and persisted properties. |
-| Desktop | XDG user-folder discovery, ordinary files and folders, desktop-only launchers, live refresh, double-click, persistent dragged positions, rename/new folder/confirmed Trash, Home/File System/Trash shortcuts and context/window-list menus. |
+| Desktop | XDG user-folder discovery, ordinary files and folders, desktop-only launchers, live refresh, double-click, persistent dragged positions, multiple/range/rectangle selection, grouped icon dragging, cut/copy/paste, cancellable recursive transfers, rename/new folder/confirmed Trash, Home/File System/Trash shortcuts and context/window-list menus. |
 | Settings | Standalone preferences window, wallpaper picker with scrolling/slideshow, clock/panel preferences, atomic Linux saves, concurrent-key merging and live updates across processes. System categories open installed control panels and report missing providers. |
 | Window manager | Decorations including live Motif changes, workspaces, struts, modal relationships, focus prevention, native move/resize, MRU Alt-Tab, configurable shortcuts, minimize/maximize/fullscreen, bounding/input shapes, saved normal geometry across WM crashes, XRender shadows/damage repainting. |
 | Desktop services | Notifications, text clipboard history/re-serving, StatusNotifier and XEmbed trays, battery indicator and default audio-sink volume. Native session supervises detected optional service providers. Lock commands are checked and Rill's Suspend action requires a successful lock. |
@@ -48,9 +48,10 @@ paths use experimental capture/input forwarding and are not equivalent to it.
 - Native system-settings controls, graphical WM shortcuts, comprehensive
   preference migration, accessibility of Rill's own custom UI, and a built-in
   authenticated locker. Retaining supported external providers remains necessary.
-- External drag/drop, file clipboard operations, multiselection and full file
-  manager/removable-media/trash management. Recursive operations and default-app
-  selection remain with the installed file manager/control panels.
+- External drag/drop, transfer conflict choices/undo, crash-time staging recovery
+  and full file manager/removable-media/trash management. Background recursive
+  transfers and file clipboard operations are implemented; advanced browsing and
+  default-app selection remain with the installed file manager/control panels.
 - Per-item D-Bus tray menus and more complete audio/device controls.
 - Broader transient/group placement and stacking, xfwm4 theme compatibility,
   compositor vsync/frame pacing/fullscreen bypass and sustained-load benchmarks.

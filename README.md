@@ -135,7 +135,8 @@ native Plan 9 integration remain unfinished.
 ## Build
 
 Rill uses the current Kryon checkout at `../kryon`. Update that checkout to
-Kryon's latest `master` before building. The build generates Kryon's runtime
+Kryon's latest `master` before building. The desktop file shortcuts require
+Kryon's Linux libdraw keyboard fix `edf2e5ab` or a descendant. The build generates Kryon's runtime
 and headers under Rill's `build/` directory. Kryon's optional sync support is
 disabled by default; use `KRYON_WITH_SYNC=1` when building with sync-enabled
 embedded app hosts.

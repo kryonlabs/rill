@@ -1219,6 +1219,8 @@ find_named_window(Display *display, Window root, const char *title, int depth)
 }
 
 static Window desktop_window;
+static unsigned int desktop_pointer_mask;
+static unsigned int desktop_pointer_pressed;
 
 int
 DesktopSurfacePointer(Vector2 *position, int *down, int *over)
@@ -1237,8 +1239,31 @@ DesktopSurfacePointer(Vector2 *position, int *down, int *over)
                       &root_x, &root_y, &x, &y, &mask))
         return 0;
     *position = (Vector2){root_x, root_y};
+    desktop_pointer_pressed = mask & ~desktop_pointer_mask;
+    desktop_pointer_mask = mask;
     *down = (mask & Button1Mask) != 0;
     *over = child == desktop_window;
+    return 1;
+}
+
+int
+DesktopSurfaceModifiers(int *control, int *shift)
+{
+    if(desktop_window == None)
+        return 0;
+    *control = (desktop_pointer_mask & ControlMask) != 0;
+    *shift = (desktop_pointer_mask & ShiftMask) != 0;
+    return 1;
+}
+
+int
+DesktopSurfaceButtons(int *left, int *middle, int *right)
+{
+    if(desktop_window == None)
+        return 0;
+    *left = (desktop_pointer_pressed & Button1Mask) != 0;
+    *middle = (desktop_pointer_pressed & Button2Mask) != 0;
+    *right = (desktop_pointer_pressed & Button3Mask) != 0;
     return 1;
 }
 
