@@ -233,7 +233,8 @@ plan9_list_launchers(RillLauncher *out, int cap)
                  "Configure the desktop", "Settings", "internal:settings", 1);
     if(cap > 3)
         launcher(&out[3], "about", "About Rill",
-                 "Desktop information", "System", "internal:about", 0);
+                 "Desktop information", "System",
+                 "window -m -dx 500 -dy 460 rill --about", 0);
     return cap < 4 ? cap : 4;
 }
 

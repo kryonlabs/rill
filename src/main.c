@@ -321,7 +321,8 @@ typedef enum RillRunMode {
     RILL_MODE_WINDOWED,
     RILL_MODE_PANEL,
     RILL_MODE_RUN,
-    RILL_MODE_SETTINGS
+    RILL_MODE_SETTINGS,
+    RILL_MODE_ABOUT
 } RillRunMode;
 
 typedef struct RillRuntimeOptions {
@@ -376,6 +377,10 @@ static int
 rill_note(void *context, char *note)
 {
     (void)context;
+    if(strncmp(note, "sys: fp:", 8) == 0)
+        /* The kernel delivers stray unmasked floating-point traps from
+         * library math; they must not take down the desktop. */
+        return 1;
     if(strcmp(note, "interrupt") != 0 && strcmp(note, "hangup") != 0)
         return 0;
     rill_stop_requested = 1;
@@ -588,6 +593,10 @@ parse_runtime_options(int argc, char **argv, RillRuntimeOptions *options)
         }
         if(strcmp(argv[i], "--settings") == 0) {
             options->mode = RILL_MODE_SETTINGS;
+            continue;
+        }
+        if(strcmp(argv[i], "--about") == 0) {
+            options->mode = RILL_MODE_ABOUT;
             continue;
         }
         if(strcmp(argv[i], "--run-dialog") == 0) {
@@ -6783,7 +6792,7 @@ main(int argc, char **argv)
     RillShellRefresh(&shell, platform);
     RillShellSetStatus(&shell, startup_status);
     memset(&control, 0, sizeof(control));
-    if(options.mode != RILL_MODE_SETTINGS)
+    if(options.mode != RILL_MODE_SETTINGS && options.mode != RILL_MODE_ABOUT)
         rill_control_init(&control);
 
     SetSingleInstance(0);
@@ -6791,6 +6800,8 @@ main(int argc, char **argv)
         InitWindow(480, 240, "Rill run dialog");
     else if(options.mode == RILL_MODE_SETTINGS)
         InitWindow(540, 440, "Rill Settings");
+    else if(options.mode == RILL_MODE_ABOUT)
+        InitWindow(500, 460, "About Rill");
     else
         InitWindow(RILL_WIDTH, RILL_HEIGHT, window_title);
     SetExitKey(0); /* Escape cancels UI; it must never terminate the desktop. */
@@ -7039,7 +7050,8 @@ main(int argc, char **argv)
         if(!test_scene_active(&test))
             process_window_mouse(&shell);
         if(!test_scene_active(&test) && options.mode != RILL_MODE_PANEL &&
-           options.mode != RILL_MODE_SETTINGS && options.mode != RILL_MODE_RUN)
+           options.mode != RILL_MODE_SETTINGS && options.mode != RILL_MODE_RUN &&
+           options.mode != RILL_MODE_ABOUT)
             process_desktop_mouse(&shell, platform, &visuals);
         /* This compositor draws each window immediately, including its text.
          * Deferring widgets to EndTree would paint them over later windows. */
@@ -7052,6 +7064,8 @@ main(int argc, char **argv)
         } else if(options.mode == RILL_MODE_SETTINGS) {
             draw_settings_app(&shell, (Rectangle){0, 0, GetScreenWidth(), GetScreenHeight()},
                               &visuals, platform);
+        } else if(options.mode == RILL_MODE_ABOUT) {
+            draw_about_app((Rectangle){0, 0, GetScreenWidth(), GetScreenHeight()});
         } else {
             if(options.mode != RILL_MODE_PANEL) {
                 draw_wallpaper(&visuals);
