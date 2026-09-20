@@ -22,8 +22,8 @@ stub_list_launchers(RillLauncher *out, int cap)
 {
     if(out == NULL || cap <= 0)
         return 0;
-    launcher(&out[0], "terminal", "Terminal Emulator", "Use the command line",
-             "Accessories", "host:ktrem", 1);
+    launcher(&out[0], "terminal", "Terminal", "Use the command line",
+             "Accessories", "host:t9", 1);
     if(cap > 1)
         launcher(&out[1], "files", "File Manager",
                  "Browse the file system", "Accessories", "host:shelf", 1);

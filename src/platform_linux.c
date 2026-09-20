@@ -837,8 +837,7 @@ linux_launch(const RillLauncher *launcher)
     }
     if(getenv("RILL_CONTAINED_X11") != NULL) {
         if(strcmp(command, "internal:terminal") == 0 ||
-           strcmp(command, "host:ktrem") == 0 ||
-           strcmp(command, "host:kterm") == 0)
+           strcmp(command, "host:t9") == 0)
             command = "xterm";
         else if(strcmp(command, "internal:files") == 0 ||
                 strcmp(command, "host:shelf") == 0)
@@ -3559,10 +3558,10 @@ static const RillPlatformServices services = {
     linux_panel_config_store,
     linux_session_diagnostics,
     linux_removable_volumes,
+    linux_xfce_panel_config_load,
     linux_removable_mount,
     linux_removable_unmount,
-    linux_removable_eject,
-    linux_xfce_panel_config_load
+    linux_removable_eject
 };
 
 const RillPlatformServices *

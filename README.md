@@ -65,7 +65,7 @@ adapters.
 - Desktop context menu (right-click) with Applications, Terminal, Files,
   Settings, wallpaper and session entries; middle-click opens a window list
   that focuses any task; the mouse wheel over the desktop switches workspaces.
-- Kryon app hosts such as ktrem and Shelf can be exposed through `.desktop`
+- Kryon app hosts such as t9 and Shelf can be exposed through `.desktop`
   launchers using `Exec=host:<id>`.
 - Linux X11 window-manager mode with `--wm`.
 - Contained windowed mode with `--windowed`, which starts a private Xvfb
@@ -108,7 +108,7 @@ Rill reads ordinary `Desktop Entry` application files with `Type=Application`,
 `Name`, `Exec`, `Icon`, `Comment`, and `Categories`. It honors localized names, `TryExec`, desktop visibility and user overrides.
 Hidden and `NoDisplay` entries are skipped; terminal applications are supported.
 GIO handles ordinary desktop launches, including field codes and working directories. The `Exec` command may also use Rill
-commands such as `internal:settings` or `host:ktrem`; those are handled by the
+commands such as `internal:settings` or `host:t9`; those are handled by the
 shell before falling back to the platform launcher.
 
 Two optional keys are recognized:

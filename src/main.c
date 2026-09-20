@@ -25,8 +25,8 @@
 #include "plan9_overlay.h"
 
 #ifdef KRYON_NATIVE_PLAN9
-AppHost *KtermCreateAppHost(int abi_version, const char *project_path);
-void KtermDestroyAppHost(AppHost *app_host);
+AppHost *T9CreateAppHost(int abi_version, const char *project_path);
+void T9DestroyAppHost(AppHost *app_host);
 AppHost *ShelfCreateAppHost(int abi_version, const char *project_path);
 void ShelfDestroyAppHost(AppHost *app_host);
 #endif
@@ -1052,9 +1052,9 @@ load_static_host(RillHostModule *slot, const char *id)
 
     if(slot == NULL || id == NULL)
         return 0;
-    if(strcmp(id, "ktrem") == 0 || strcmp(id, "kterm") == 0) {
-        create = KtermCreateAppHost;
-        destroy = KtermDestroyAppHost;
+    if(strcmp(id, "t9") == 0) {
+        create = T9CreateAppHost;
+        destroy = T9DestroyAppHost;
     } else if(strcmp(id, "shelf") == 0) {
         create = ShelfCreateAppHost;
         destroy = ShelfDestroyAppHost;
@@ -1457,11 +1457,9 @@ rill_control_poll(RillControlState *control, RillShellState *shell,
         trimmed = line;
         while(*trimmed == ' ' || *trimmed == '\t')
             trimmed++;
-        if(strcmp(trimmed, "open ktrem") == 0 ||
-           strcmp(trimmed, "open kterm") == 0 ||
+        if(strcmp(trimmed, "open t9") == 0 ||
            strcmp(trimmed, "open terminal") == 0 ||
-           strcmp(trimmed, "ktrem") == 0 ||
-           strcmp(trimmed, "kterm") == 0 ||
+           strcmp(trimmed, "t9") == 0 ||
            strcmp(trimmed, "terminal") == 0)
             open_launcher_id(shell, platform, "terminal");
     }
@@ -5085,7 +5083,7 @@ draw_host_app(RillAppWindow *app, Rectangle content, RillVisualState *visuals)
     if(visuals == NULL || app == NULL)
         return;
     host_id = app->host_id[0] != '\0' ? app->host_id :
-              (app->kind == RILL_APP_TERMINAL ? "ktrem" : "shelf");
+              (app->kind == RILL_APP_TERMINAL ? "t9" : "shelf");
     module = load_host_module(visuals, host_id);
     if(module == NULL || module->host == NULL) {
         draw_text_fit((TextProps){
@@ -6683,7 +6681,7 @@ draw_menu_stack_test_scene(void)
     draw_window_close_button((Rectangle){lower.x + lower.width - 30,
                                          lower.y + 4, 22, 22});
     draw_menu_panel(menu);
-    draw_menu_row((Rectangle){182, 124, 226, 28}, "ktrem", "terminal");
+    draw_menu_row((Rectangle){182, 124, 226, 28}, "Terminal", "terminal");
     draw_menu_row((Rectangle){182, 156, 226, 28}, "Files", "files");
     draw_menu_row((Rectangle){182, 188, 226, 28}, "Settings", "settings");
 }

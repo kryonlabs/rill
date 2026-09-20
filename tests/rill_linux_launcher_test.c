@@ -80,7 +80,7 @@ main(int argc, char **argv)
                      "Name=Rill Terminal\n"
                      "Comment[ar]=طرفية مضمّنة\n"
                      "Comment=Hosted terminal\n"
-                     "Exec=host:ktrem %U\n"
+                     "Exec=host:t9 %U\n"
                      "Categories=System;Utility;\n"
                      "X-Rill-ID=terminal\n"
                      "X-Rill-Favorite=true\n"),
@@ -130,7 +130,7 @@ main(int argc, char **argv)
     check("id", strcmp(launchers[hosted].id, "terminal") == 0, &failures);
     check("name", strcmp(launchers[hosted].name, "Rill Terminal") == 0, &failures);
     check("command strips field codes",
-          strcmp(launchers[hosted].command, "host:ktrem") == 0, &failures);
+          strcmp(launchers[hosted].command, "host:t9") == 0, &failures);
     check("category", strcmp(launchers[hosted].category, "Settings") == 0,
           &failures);
     check("favorite", launchers[hosted].favorite, &failures);

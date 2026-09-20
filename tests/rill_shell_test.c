@@ -18,7 +18,7 @@ test_launchers(RillLauncher *out, int cap)
              "Use the command line");
     snprintf(out[0].category, sizeof(out[0].category), "%s", "Accessories");
     snprintf(out[0].command, sizeof(out[0].command), "%s",
-             "host:ktrem");
+             "host:t9");
     out[0].favorite = 1;
     snprintf(out[1].id, sizeof(out[1].id), "%s", "settings");
     snprintf(out[1].name, sizeof(out[1].name), "%s", "Settings");
@@ -140,10 +140,10 @@ main(void)
     check("platform focus not used", focused_task == 0, &failures);
     check("status updated", strstr(shell.status, "Settings") != NULL,
           &failures);
-    check("select ktrem", RillShellSelectLauncher(&shell, 0), &failures);
-    check("launch hosted ktrem", RillShellLaunchSelected(&shell, &services),
+    check("select t9", RillShellSelectLauncher(&shell, 0), &failures);
+    check("launch hosted t9", RillShellLaunchSelected(&shell, &services),
           &failures);
-    check("ktrem opened in shell", shell.app_count == 2, &failures);
+    check("t9 opened in shell", shell.app_count == 2, &failures);
     check("external launch call count unchanged", launches == 0, &failures);
     check("recent host launch moved first", shell.recent_launcher_count == 2 &&
           strcmp(shell.recent_launcher_ids[0], "terminal") == 0, &failures);
