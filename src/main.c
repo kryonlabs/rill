@@ -455,7 +455,7 @@ panel_text_dim(void)
 static Color
 panel_active_color(void)
 {
-    return opaque_color(mix_color(GetThemeButtonHover(),
+    return opaque_color(mix_color(StyleTokenColor("accent-hover"),
                                   (Color){194, 0, 194, 255}, 0.42f));
 }
 
@@ -641,6 +641,27 @@ enum {
     LabelAccent, LabelPanelAccent, LabelWarning, LabelTestRed
 };
 
+/* Register the theme-derived color tokens so the rest of the shell reads
+ * StyleTokenColor() instead of the legacy getters. The parsed sheet is
+ * immediately superseded by configure_label_styles' rule table; the token
+ * table on the "desktop" source pack is what survives. */
+static void
+register_theme_tokens(void)
+{
+    StyleColorToken tokens[] = {
+        {"canvas", (unsigned)ColorToInt(GetThemeBackground())},
+        {"text", (unsigned)ColorToInt(GetThemeText())},
+        {"muted", (unsigned)ColorToInt(GetThemeIcon())},
+        {"surface", (unsigned)ColorToInt(GetThemeSurface())},
+        {"link", (unsigned)ColorToInt(GetThemeLink())},
+        {"icon", (unsigned)ColorToInt(GetThemeIcon())},
+        {"accent-hover", (unsigned)ColorToInt(GetThemeButtonHover())},
+    };
+    RegisterStylePackVariant("desktop", "@pack desktop; Text { foreground: #ffffff; }",
+                             "Desktop", tokens,
+                             (int)(sizeof(tokens) / sizeof(tokens[0])));
+}
+
 static void
 configure_label_styles(void)
 {
@@ -648,8 +669,8 @@ configure_label_styles(void)
     static StyleRule *rules;
     const StylePack *base = GetActiveStylePack();
     int count = base != NULL && base->sheet != NULL ? base->sheet->rule_count : 0;
-    Color colors[] = {GetThemeText(), GetThemeIcon(), panel_text_color(),
-                      panel_text_dim(), WHITE, GetThemeLink(),
+    Color colors[] = {StyleTokenColor("text"), StyleTokenColor("icon"), panel_text_color(),
+                      panel_text_dim(), WHITE, StyleTokenColor("link"),
                       {92, 185, 255, 255}, {224, 82, 68, 255}, {240, 16, 32, 255}};
     int labels = sizeof(colors) / sizeof(colors[0]);
 
@@ -686,6 +707,7 @@ configure_system_look(RillVisualState *visuals, const RillTestState *test)
     SetThemeSource(THEME_SOURCE_SYSTEM);
     SetThemeMode(THEME_MODE_SYSTEM);
     ApplyCurrentTheme();
+    register_theme_tokens();
     configure_label_styles();
 
     snprintf(visuals->system_theme_name, sizeof(visuals->system_theme_name),
@@ -1200,7 +1222,7 @@ draw_wallpaper(const RillVisualState *visuals)
     } else {
         DrawRectangle(0, top, GetScreenWidth(),
                       GetScreenHeight() - panel_space,
-                      opaque_color(GetThemeBackground()));
+                      opaque_color(StyleTokenColor("canvas")));
     }
     DrawRectangle(0, top, GetScreenWidth(), GetScreenHeight() - panel_space,
                   Fade(BLACK, 0.05f));
@@ -1565,11 +1587,11 @@ draw_desktop_icon(RillShellState *shell, const RillPlatformServices *platform,
             interactive = 0;
     }
     if(interactive && CheckCollisionPointRec(visuals->desktop_pointer, box))
-        DrawRectangleRounded(box, 0.08f, 6, Fade(GetThemeButtonHover(), 0.38f));
+        DrawRectangleRounded(box, 0.08f, 6, Fade(StyleTokenColor("accent-hover"), 0.38f));
     if(visuals->desktop_selection[index]) {
-        DrawRectangleRounded(box, 0.06f, 6, Fade(GetThemeLink(), 0.30f));
+        DrawRectangleRounded(box, 0.06f, 6, Fade(StyleTokenColor("link"), 0.30f));
         DrawRectangleRoundedLinesEx(box, 0.06f, 6, 1.0f,
-                                    Fade(GetThemeLink(), 0.60f));
+                                    Fade(StyleTokenColor("link"), 0.60f));
     }
     draw_launcher_icon(visuals, launcher, icon, accent);
     draw_text_fit((TextProps){
@@ -2285,13 +2307,13 @@ draw_desktop(RillShellState *shell, const RillPlatformServices *platform,
         if(x < 0) x = 0;
         if(y < top) y = top;
         draw_desktop_icon(shell, platform, visuals, x, y, i, visuals->desktop_entries[i],
-                          i < 3 ? GetThemeLink() : GetThemeIcon());
+                          i < 3 ? StyleTokenColor("link") : StyleTokenColor("icon"));
     }
     for(int i = entry_count; i < DESKTOP_ICON_MAX; i++)
         visuals->desktop_snapshots[i].id[0] = '\0';
     if(visuals->desktop_rubber_band) {
-        DrawRectangleRec(visuals->desktop_band, Fade(GetThemeLink(), 0.15f));
-        DrawRectangleLinesEx(visuals->desktop_band, 1, GetThemeLink());
+        DrawRectangleRec(visuals->desktop_band, Fade(StyleTokenColor("link"), 0.15f));
+        DrawRectangleLinesEx(visuals->desktop_band, 1, StyleTokenColor("link"));
     }
 }
 
@@ -2332,7 +2354,7 @@ panel_menu_button(RillShellState *shell, int menu_id, int x, int w,
         draw_applications_mark(x + 3, y + (ph - 14) / 2 + 1);
     else
         draw_launcher_icon(NULL, NULL, (Rectangle){x + 5, (float)glyph_y, 14, 14},
-                           menu_id == 2 ? GetThemeLink() : GetThemeIcon());
+                           menu_id == 2 ? StyleTokenColor("link") : StyleTokenColor("icon"));
     draw_text_fit((TextProps){
         .bounds = {x + (menu_id == 1 ? 22 : 24), text_y, w - (menu_id == 1 ? 26 : 28), 0},
         .text = label, .font = Text12, .class_name = LabelPanel,
@@ -2359,7 +2381,7 @@ draw_quick_launcher(RillShellState *shell, const RillPlatformServices *platform,
         DrawRectangleRec(bounds, panel_item_hover_color());
     if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
         open_launcher_id(shell, platform, launcher_id);
-    draw_launcher_icon(visuals, launcher, icon, GetThemeText());
+    draw_launcher_icon(visuals, launcher, icon, StyleTokenColor("text"));
 }
 
 static void
@@ -2792,7 +2814,7 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
                                icon, (Vector2){0, 0}, 0.0f, WHITE);
             } else
                 DrawCircleLines((int)icon.x + 9, (int)icon.y + 9, 6,
-                                GetThemeLink());
+                                StyleTokenColor("link"));
             if(hover && entry->id[0] != '\0' &&
                platform != NULL && platform->tray_activate != NULL) {
                 if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
@@ -2834,9 +2856,9 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
         }
         if(shown == 0)
             draw_tray_indicator(x, plugin->variant,
-                                plugin->variant == 0 ? GetThemeLink() :
-                                (plugin->variant == 1 ? GetThemeIcon() :
-                                 GetThemeButtonHover()), y, ph);
+                                plugin->variant == 0 ? StyleTokenColor("link") :
+                                (plugin->variant == 1 ? StyleTokenColor("icon") :
+                                 StyleTokenColor("accent-hover")), y, ph);
         return x + (plugin->advance > shown * 22 + 8 ? plugin->advance :
                     shown * 22 + 8);
     }
@@ -2996,7 +3018,7 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
         if(hover)
             DrawRectangleRec(bounds, panel_item_hover_color());
         draw_symbol_icon((Rectangle){x + 3, (float)(y + (ph - 16) / 2), 16, 16},
-                         "power", GetThemeLink());
+                         "power", StyleTokenColor("link"));
         if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             shell->menu_open = 0;
             visuals->logout_open = 1;
@@ -3046,7 +3068,7 @@ draw_panel_item(const RillPanelPlugin *plugin, RillShellState *shell,
         shell->menu_open = 0;
     }
     if(visuals->panel_drag_index >= 0 && CheckCollisionPointRec(mouse, bounds))
-        DrawRectangleLinesEx(bounds, 2, GetThemeLink());
+        DrawRectangleLinesEx(bounds, 2, StyleTokenColor("link"));
     return next;
 }
 
@@ -3245,10 +3267,10 @@ draw_panel_cell(const RillPanelPlugin *plugin, RillShellState *shell,
         if(found != NULL)
             draw_launcher_icon(visuals, found,
                                (Rectangle){(float)cx - 12, (float)cy - 12, 24, 24},
-                               GetThemeText());
+                               StyleTokenColor("text"));
         else
             draw_symbol_icon((Rectangle){(float)cx - 8, (float)cy - 8, 16, 16},
-                             "all", GetThemeIcon());
+                             "all", StyleTokenColor("icon"));
         if(hover && pressed && found != NULL)
             open_launcher_id(shell, platform, found->id);
         break;
@@ -3260,7 +3282,7 @@ draw_panel_cell(const RillPanelPlugin *plugin, RillShellState *shell,
             DrawRectangleRec(icon, active ? panel_active_color() :
                              panel_item_color());
             if(shell->tasks[task].urgent)
-                DrawRectangleLinesEx(icon, 1, GetThemeLink());
+                DrawRectangleLinesEx(icon, 1, StyleTokenColor("link"));
             draw_text_fit((TextProps){
                 .bounds = {icon.x + 1, icon.y + 1, 16, 0},
                 .text = shell->tasks[task].title, .font = 11,
@@ -3323,7 +3345,7 @@ draw_panel_cell(const RillPanelPlugin *plugin, RillShellState *shell,
             }
         }
         if(shown == 0)
-            draw_tray_indicator(cx - 7, plugin->variant, GetThemeIcon(),
+            draw_tray_indicator(cx - 7, plugin->variant, StyleTokenColor("icon"),
                                 cell_y + 4, cell_size - 8);
         break;
     }
@@ -3356,7 +3378,7 @@ draw_panel_cell(const RillPanelPlugin *plugin, RillShellState *shell,
                           16 * percent / 100, charge);
         } else
             draw_symbol_icon((Rectangle){(float)cx - 8, (float)cy - 8, 16, 16},
-                             "power", GetThemeIcon());
+                             "power", StyleTokenColor("icon"));
         break;
     case RILL_PANEL_SHOW_DESKTOP:
         if(visuals->show_desktop_on)
@@ -3370,7 +3392,7 @@ draw_panel_cell(const RillPanelPlugin *plugin, RillShellState *shell,
         break;
     case RILL_PANEL_ACTIONS:
         draw_symbol_icon((Rectangle){(float)cx - 8, (float)cy - 8, 16, 16},
-                         "power", GetThemeLink());
+                         "power", StyleTokenColor("link"));
         if(hover && pressed) {
             shell->menu_open = 0;
             visuals->logout_open = 1;
@@ -3601,9 +3623,9 @@ draw_menu_panel(Rectangle menu)
 {
     plan9_overlay_rect(menu);
     include_panel_popup(menu);
-    DrawRectangleRounded(menu, 0.02f, 6, opaque_color(GetThemeSurface()));
+    DrawRectangleRounded(menu, 0.02f, 6, opaque_color(StyleTokenColor("surface")));
     DrawRectangleRoundedLinesEx(menu, 0.02f, 6, 1.0f,
-                                Fade(GetThemeText(), 0.30f));
+                                Fade(StyleTokenColor("text"), 0.30f));
 }
 
 static int
@@ -3618,7 +3640,7 @@ draw_menu_row(Rectangle row, const char *label, const char *icon_id)
                   1, Fade(BLACK, 0.28f));
     if(icon_id != NULL)
         draw_symbol_icon((Rectangle){row.x + 6, row.y + 6, 16, 16}, icon_id,
-                         GetThemeLink());
+                         StyleTokenColor("link"));
     draw_text_fit((TextProps){
         .bounds = {(int)row.x + 30, (int)row.y + 8, (int)row.width - 38, 0},
         .text = label, .font = Text12, .class_name = LabelPanel,
@@ -3765,7 +3787,7 @@ draw_whisker_header(Rectangle menu, RillShellState *shell,
     int hover;
 
     DrawCircle((int)(user_icon.x + 15), (int)(user_icon.y + 15), 15,
-               GetThemeButtonHover());
+               StyleTokenColor("accent-hover"));
     DrawCircle((int)(user_icon.x + 15), (int)(user_icon.y + 11), 5,
                Fade(WHITE, 0.88f));
     DrawCircle((int)(user_icon.x + 15), (int)(user_icon.y + 26), 10,
@@ -3776,11 +3798,11 @@ draw_whisker_header(Rectangle menu, RillShellState *shell,
         .wrap = TextWrapNone});
 
     draw_symbol_icon((Rectangle){menu.x + menu.width - 86, menu.y + 14,
-                                 22, 22}, "settings", GetThemeButtonHover());
+                                 22, 22}, "settings", StyleTokenColor("accent-hover"));
     draw_symbol_icon((Rectangle){menu.x + menu.width - 54, menu.y + 14,
-                                 22, 22}, "power", GetThemeLink());
+                                 22, 22}, "power", StyleTokenColor("link"));
     draw_symbol_icon((Rectangle){menu.x + menu.width - 25, menu.y + 14,
-                                 20, 20}, "about", GetThemeIcon());
+                                 20, 20}, "about", StyleTokenColor("icon"));
     if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
         if(CheckCollisionPointRec(mouse, (Rectangle){menu.x + menu.width - 88,
                                                      menu.y + 12, 26, 26})) {
@@ -3802,11 +3824,11 @@ draw_whisker_header(Rectangle menu, RillShellState *shell,
     DrawRectangleRounded(search, 0.04f, 5, Fade(BLACK, 0.20f));
     DrawRectangleRoundedLinesEx(search, 0.04f, 5, 1.0f,
                                 shell->app_menu_search_active ?
-                                GetThemeButtonHover() :
-                                (hover ? GetThemeLink() :
-                                 Fade(GetThemeText(), 0.38f)));
+                                StyleTokenColor("accent-hover") :
+                                (hover ? StyleTokenColor("link") :
+                                 Fade(StyleTokenColor("text"), 0.38f)));
     draw_search_mark((Rectangle){search.x + 8, search.y + 7, 16, 16},
-                     GetThemeIcon());
+                     StyleTokenColor("icon"));
     if(shell->app_menu_search[0] != '\0')
         draw_text_fit((TextProps){
             .bounds = {(int)search.x + 30, (int)search.y + 8, (int)search.width - 38, 0},
@@ -3821,7 +3843,7 @@ draw_whisker_category_row(Rectangle row, const RillMenuCategory *category,
                           int active)
 {
     int hover = CheckCollisionPointRec(GetMousePosition(), row);
-    Color icon = active ? WHITE : GetThemeButtonHover();
+    Color icon = active ? WHITE : StyleTokenColor("accent-hover");
     int icon_size = (int)row.height - 6;
     int text_y = (int)(row.y + (row.height - 12) * 0.5f);
 
@@ -3854,7 +3876,7 @@ draw_whisker_launcher_row(RillVisualState *visuals,
         DrawRectangleRounded(row, 0.02f, 4, panel_item_hover_color());
     draw_launcher_icon(visuals, launcher,
                        (Rectangle){row.x + 8, row.y + 6, 30, 30},
-                       GetThemeLink());
+                       StyleTokenColor("link"));
     draw_text_fit((TextProps){
         .bounds = {(int)row.x + 48, (int)row.y + 7, (int)row.width - 56, 0},
         .text = launcher->name, .font = Text14, .class_name = hover ? LabelPanel : LabelPrimary,
@@ -3875,8 +3897,8 @@ draw_window_close_button(Rectangle close)
 
     hover = CheckCollisionPointRec(GetMousePosition(), close);
     DrawRectangleRec(close, hover ? panel_active_color() : panel_item_color());
-    DrawRectangleLinesEx(close, 1.0f, Fade(GetThemeText(), 0.36f));
-    stroke = hover ? WHITE : GetThemeText();
+    DrawRectangleLinesEx(close, 1.0f, Fade(StyleTokenColor("text"), 0.36f));
+    stroke = hover ? WHITE : StyleTokenColor("text");
     DrawLine((int)close.x + 7, (int)close.y + 7,
              (int)close.x + (int)close.width - 7,
              (int)close.y + (int)close.height - 7, stroke);
@@ -4028,7 +4050,7 @@ draw_task_icon(RillVisualState *visuals, RillShellState *shell,
             }
         }
     }
-    draw_launcher_icon(visuals, launcher, icon, GetThemeText());
+    draw_launcher_icon(visuals, launcher, icon, StyleTokenColor("text"));
 }
 
 static void
@@ -4494,12 +4516,12 @@ draw_trash_dialog(RillShellState *shell, RillVisualState *visuals,
         Rectangle row = {panel.x + 12, panel.y + 44 + i * 32, 496, 28};
         int selected = visuals->trash_selected == i;
         if(CheckCollisionPointRec(GetMousePosition(), row)) {
-            DrawRectangleRec(row, Fade(GetThemeButtonHover(), 0.30f));
+            DrawRectangleRec(row, Fade(StyleTokenColor("accent-hover"), 0.30f));
             if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
                 visuals->trash_selected = i;
         }
         if(selected)
-            DrawRectangleRec(row, Fade(GetThemeLink(), 0.25f));
+            DrawRectangleRec(row, Fade(StyleTokenColor("link"), 0.25f));
         char label[256];
         snprintf(label, sizeof(label), "%s%s", entry->name,
                  entry->is_directory ? " (folder)" : "");
@@ -4591,7 +4613,7 @@ draw_drives_dialog(RillShellState *shell, RillVisualState *visuals,
             visuals->drive_selected = i;
         }
         if(visuals->drive_selected == i)
-            DrawRectangleRec(row, Fade(GetThemeLink(), 0.25f));
+            DrawRectangleRec(row, Fade(StyleTokenColor("link"), 0.25f));
         char label[320];
         snprintf(label, sizeof(label), "%s  (%s, %s)", volume->name,
                  volume->device, volume->mounted ? "mounted" : "not mounted");
@@ -4724,8 +4746,8 @@ draw_panel_properties(RillShellState *shell, RillVisualState *visuals)
                         (GetScreenHeight() - 132) / 2.0f, 264, 132};
     include_panel_popup(full);
     DrawRectangleRec(full, Fade(BLACK, 0.30f));
-    DrawRectangleRounded(panel, 0.03f, 8, opaque_color(GetThemeSurface()));
-    DrawRectangleRoundedLinesEx(panel, 0.03f, 8, 2.0f, GetThemeLink());
+    DrawRectangleRounded(panel, 0.03f, 8, opaque_color(StyleTokenColor("surface")));
+    DrawRectangleRoundedLinesEx(panel, 0.03f, 8, 2.0f, StyleTokenColor("link"));
     Text((TextProps){
         .bounds = {(int)panel.x + 14, (int)panel.y + 12, 0, 0},
         .text = "Panel item", .font = Text16, .class_name = LabelPrimary,
@@ -4917,11 +4939,11 @@ draw_notifications(RillShellState *shell, RillVisualState *visuals,
         banner = (Rectangle){(float)x, (float)(y + i * step), (float)width,
                              (float)height};
         include_panel_popup(banner);
-        DrawRectangleRec(banner, opaque_color(GetThemeSurface()));
-        DrawRectangleRounded(banner, 0.05f, 6, opaque_color(GetThemeSurface()));
+        DrawRectangleRec(banner, opaque_color(StyleTokenColor("surface")));
+        DrawRectangleRounded(banner, 0.05f, 6, opaque_color(StyleTokenColor("surface")));
         DrawRectangleRoundedLinesEx(banner, 0.05f, 6, 1.0f,
-                                    Fade(GetThemeLink(), 0.55f));
-        DrawRectangle(x, (int)banner.y + 6, 3, height - 12, GetThemeLink());
+                                    Fade(StyleTokenColor("link"), 0.55f));
+        DrawRectangle(x, (int)banner.y + 6, 3, height - 12, StyleTokenColor("link"));
         draw_text_fit((TextProps){
             .bounds = {x + 12, (int)banner.y + 8, width - 24, 0},
             .text = note->summary, .font = Text14, .class_name = LabelPrimary,
@@ -4961,8 +4983,8 @@ draw_logout_dialog(RillShellState *shell, RillVisualState *visuals,
     include_panel_popup(full);
     plan9_overlay_rect(full);
     DrawRectangleRec(full, Fade(BLACK, 0.38f));
-    DrawRectangleRounded(panel, 0.03f, 8, opaque_color(GetThemeSurface()));
-    DrawRectangleRoundedLinesEx(panel, 0.03f, 8, 2.0f, GetThemeLink());
+    DrawRectangleRounded(panel, 0.03f, 8, opaque_color(StyleTokenColor("surface")));
+    DrawRectangleRoundedLinesEx(panel, 0.03f, 8, 2.0f, StyleTokenColor("link"));
     Text((TextProps){
         .bounds = {(int)panel.x + 16, (int)panel.y + 14, 0, 0},
         .text = "End session", .font = Text18, .class_name = LabelPrimary,
@@ -5133,7 +5155,7 @@ draw_settings_button(Rectangle bounds, const char *label, int active)
                          active ? panel_active_color() :
                          hover ? panel_item_hover_color() : panel_item_color());
     DrawRectangleRoundedLinesEx(bounds, 0.06f, 4, 1.0f,
-                                Fade(GetThemeText(), 0.30f));
+                                Fade(StyleTokenColor("text"), 0.30f));
     draw_text_fit((TextProps){
         .bounds = {(int)bounds.x + 8, (int)bounds.y + 5, (int)bounds.width - 16, 0},
         .text = label, .font = Text12, .class_name = LabelPanel,
@@ -6008,7 +6030,7 @@ draw_panels_settings(RillShellState *shell, Rectangle content,
             visuals->panel_selected_entry = i;
         }
         if(visuals->panel_selected_entry == i)
-            DrawRectangleLinesEx(row, 1, GetThemeLink());
+            DrawRectangleLinesEx(row, 1, StyleTokenColor("link"));
         draw_text_fit((TextProps){.bounds = {row.x + 10, row.y + 5, 96, 0},
                                   .text = entry->id, .font = Text14,
                                   .class_name = LabelPrimary, .wrap = TextWrapNone});
@@ -6470,7 +6492,7 @@ draw_run_dialog(RillShellState *shell, RillVisualState *visuals,
     DrawRectangleRounded((Rectangle){8, 40, (float)width - 16, 32}, 0.05f, 4,
                          Fade(BLACK, 0.22f));
     DrawRectangleRoundedLinesEx((Rectangle){8, 40, (float)width - 16, 32},
-                                0.05f, 4, 1.0f, GetThemeLink());
+                                0.05f, 4, 1.0f, StyleTokenColor("link"));
     if(visuals->run_input[0] != '\0')
         draw_text_fit((TextProps){
             .bounds = {16, 48, width - 32, 0},
@@ -6556,13 +6578,13 @@ draw_app_window(RillShellState *shell, RillAppWindow *app,
     frame = (Rectangle){app->x, app->y, app->w, app->h};
     title = (Rectangle){app->x, app->y, app->w, 30};
     content = (Rectangle){app->x + 1, app->y + 31, app->w - 2, app->h - 32};
-    frame_color = app->focused ? GetThemeLink() : Fade(GetThemeText(), 0.32f);
+    frame_color = app->focused ? StyleTokenColor("link") : Fade(StyleTokenColor("text"), 0.32f);
     include_panel_popup(frame);
 
-    DrawRectangleRec(frame, opaque_color(GetThemeSurface()));
-    DrawRectangleRounded(frame, 0.025f, 8, opaque_color(GetThemeSurface()));
+    DrawRectangleRec(frame, opaque_color(StyleTokenColor("surface")));
+    DrawRectangleRounded(frame, 0.025f, 8, opaque_color(StyleTokenColor("surface")));
     DrawRectangleRoundedLinesEx(frame, 0.025f, 8, 2.0f, frame_color);
-    DrawRectangleRec(title, opaque_color(mix_color(GetThemeSurface(),
+    DrawRectangleRec(title, opaque_color(mix_color(StyleTokenColor("surface"),
                                                   frame_color, 0.18f)));
     BeginScissorMode((int)title.x + 6, (int)title.y,
                      (int)title.width - 42, (int)title.height);
@@ -6579,7 +6601,7 @@ draw_app_window(RillShellState *shell, RillAppWindow *app,
 
     BeginScissorMode((int)content.x, (int)content.y, (int)content.width,
                      (int)content.height);
-    DrawRectangleRec(content, opaque_color(GetThemeBackground()));
+    DrawRectangleRec(content, opaque_color(StyleTokenColor("canvas")));
     if(app->kind == RILL_APP_TERMINAL || app->kind == RILL_APP_FILES)
         draw_host_app(app, content, visuals);
     else if(app->kind == RILL_APP_SETTINGS)
@@ -6612,8 +6634,8 @@ draw_test_window(Rectangle frame, const char *title, Color title_color,
                          frame.height - 32};
     Color border = focused ? WHITE : Fade(WHITE, 0.44f);
 
-    DrawRectangleRec(frame, opaque_color(GetThemeSurface()));
-    DrawRectangleRounded(frame, 0.025f, 8, opaque_color(GetThemeSurface()));
+    DrawRectangleRec(frame, opaque_color(StyleTokenColor("surface")));
+    DrawRectangleRounded(frame, 0.025f, 8, opaque_color(StyleTokenColor("surface")));
     DrawRectangleRoundedLinesEx(frame, 0.025f, 8, 2.0f, border);
     DrawRectangleRec(title_rect, opaque_color(title_color));
     BeginScissorMode((int)title_rect.x + 8, (int)title_rect.y,
@@ -7027,7 +7049,7 @@ main(int argc, char **argv)
 #endif
         plan9_overlay_begin();
         BeginDrawing();
-        ClearBackground(opaque_color(GetThemeBackground()));
+        ClearBackground(opaque_color(StyleTokenColor("canvas")));
         BeginInterfaceFrame(GetScreenWidth(), GetScreenHeight(), 1.0f);
         if(IsKeyPressed(KEY_ESCAPE) && options.mode != RILL_MODE_RUN) {
             shell.menu_open = 0;

@@ -966,7 +966,7 @@ close_button(Rectangle close)
 {
     int hover = CheckCollisionPointRec(GetMousePosition(), close);
     Color color = hover ? (Color){220, 80, 96, 255} :
-                  Fade(GetThemeText(), 0.55f);
+                  Fade(StyleTokenColor("text"), 0.55f);
 
     DrawRectangleRounded(close, 0.18f, 4, Fade(color, hover ? 0.24f : 0.08f));
     DrawLine((int)close.x + 6, (int)close.y + 6,
@@ -993,13 +993,13 @@ RillX11Draw(RillX11Manager *wm)
                              client->frame_w - 2, client->frame_h - 32};
         Rectangle close = {client->frame_x + client->frame_w - 30,
                            client->frame_y + 4, 22, 22};
-        Color border = client->focused ? GetThemeLink() :
-                       Fade(GetThemeText(), 0.32f);
+        Color border = client->focused ? StyleTokenColor("link") :
+                       Fade(StyleTokenColor("text"), 0.32f);
 
         (void)refresh_client_texture(wm, client);
-        DrawRectangleRounded(frame, 0.025f, 8, GetThemeSurface());
+        DrawRectangleRounded(frame, 0.025f, 8, StyleTokenColor("surface"));
         DrawRectangleRoundedLinesEx(frame, 0.025f, 8, 2.0f, border);
-        DrawRectangleRec(title, mix(GetThemeSurface(), border, 0.18f));
+        DrawRectangleRec(title, mix(StyleTokenColor("surface"), border, 0.18f));
         BeginScissorMode((int)title.x + 8, (int)title.y,
                          (int)title.width - 44, (int)title.height);
         Text((TextProps){.bounds = {title.x + 10, title.y + 8, title.width - 44, 0},
@@ -1010,7 +1010,7 @@ RillX11Draw(RillX11Manager *wm)
         }
         BeginScissorMode((int)content.x, (int)content.y,
                          (int)content.width, (int)content.height);
-        DrawRectangleRec(content, GetThemeBackground());
+        DrawRectangleRec(content, StyleTokenColor("canvas"));
         if(client->texture.id != 0) {
             DrawTexturePro(client->texture,
                            (Rectangle){0, 0, (float)client->texture.width,
