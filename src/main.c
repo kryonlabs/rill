@@ -1961,6 +1961,7 @@ duplicate_desktop_files(RillShellState *shell, RillVisualState *visuals,
 
 /* Percent-decode a file:// URI into a local path; returns NULL for other
  * schemes (only local files can be transferred by the desktop). */
+#if RILL_HAS_X11
 static const char *
 dnd_uri_to_path(const char *uri, char *out, int out_size)
 {
@@ -2025,6 +2026,7 @@ process_external_drop(RillShellState *shell, RillVisualState *visuals,
         RillShellSetStatus(shell, "Finish the current file operation first");
     }
 }
+#endif
 
 static void
 process_desktop_mouse(RillShellState *shell,
