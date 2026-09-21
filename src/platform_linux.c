@@ -3569,3 +3569,24 @@ RillPlatformCurrent(void)
 {
     return &services;
 }
+
+/* Kryon's clipboard protocol declares these write callbacks as
+ * host-provided. Wiring them to real X11 selection writes through the
+ * clipboard monitor is still open; until then decline politely so the
+ * protocol reports "write unavailable" instead of failing to link. */
+int
+ClipboardOSC52Write(void *userdata, const char *text)
+{
+    (void)userdata;
+    (void)text;
+    return 0;
+}
+
+int
+ClipboardPasteWrite(void *userdata, const char *text, int size)
+{
+    (void)userdata;
+    (void)text;
+    (void)size;
+    return 0;
+}
