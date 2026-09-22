@@ -3,8 +3,14 @@
 
 #include <stddef.h>
 
+#ifdef KRYON_PLATFORM_PLAN9
+/* 8c rejects the megabyte X11 drag structure; native Plan 9 has no XDND. */
+#define RILL_DND_MAX_URIS 8
+#define RILL_DND_URI_MAX 512
+#else
 #define RILL_DND_MAX_URIS 256
 #define RILL_DND_URI_MAX 4096
+#endif
 
 typedef struct RillDndDrop {
     int x, y;   /* root coordinates of the drop */

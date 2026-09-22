@@ -423,19 +423,22 @@ opaque_color(Color color)
 static Color
 panel_color(void)
 {
-    return (Color){30, 33, 46, 255};
+    Color c = {30, 33, 46, 255};
+    return c;
 }
 
 static Color
 panel_item_color(void)
 {
-    return (Color){38, 42, 58, 255};
+    Color c = {38, 42, 58, 255};
+    return c;
 }
 
 static Color
 panel_item_hover_color(void)
 {
-    return (Color){48, 54, 74, 255};
+    Color c = {48, 54, 74, 255};
+    return c;
 }
 
 /* The bar keeps its own dark palette, so item text contrasts with the bar
@@ -443,20 +446,22 @@ panel_item_hover_color(void)
 static Color
 panel_text_color(void)
 {
-    return (Color){238, 240, 248, 255};
+    Color c = {238, 240, 248, 255};
+    return c;
 }
 
 static Color
 panel_text_dim(void)
 {
-    return (Color){178, 184, 202, 255};
+    Color c = {178, 184, 202, 255};
+    return c;
 }
 
 static Color
 panel_active_color(void)
 {
-    return opaque_color(mix_color(StyleTokenColor("accent-hover"),
-                                  (Color){194, 0, 194, 255}, 0.42f));
+    Color base = {194, 0, 194, 255};
+    return opaque_color(mix_color(StyleTokenColor("accent-hover"), base, 0.42f));
 }
 
 static int
@@ -691,7 +696,14 @@ configure_label_styles(void)
     }
     sheet.rules = rules;
     sheet.rule_count = count + labels;
-    RegisterStylePack((StylePack){.id = "desktop", .label = "Desktop", .sheet = &sheet});
+    {
+        StylePack pack;
+        memset(&pack, 0, sizeof(pack));
+        pack.id = "desktop";
+        pack.label = "Desktop";
+        pack.sheet = &sheet;
+        RegisterStylePack(pack);
+    }
     SetActiveStylePack("desktop");
 }
 
@@ -1205,19 +1217,22 @@ draw_wallpaper(const RillVisualState *visuals)
 
     top = visuals->panel_bottom ? 0 : rill_panel_visible_height(visuals);
     panel_space = rill_panel_visible_height(visuals);
-    screen = (Rectangle){0, (float)top, (float)GetScreenWidth(),
-                         (float)(GetScreenHeight() - panel_space)};
+    screen.x = 0;
+    screen.y = (float)top;
+    screen.width = (float)GetScreenWidth();
+    screen.height = (float)(GetScreenHeight() - panel_space);
     if(visuals->wallpaper_ready) {
+        Vector2 origin = {0, 0};
         sw = (float)visuals->wallpaper.width;
         sh = (float)visuals->wallpaper.height;
         scale = screen.width / sw;
         if(sh * scale < screen.height)
             scale = screen.height / sh;
-        src = (Rectangle){(sw - screen.width / scale) * 0.5f,
-                          (sh - screen.height / scale) * 0.5f,
-                          screen.width / scale,
-                          screen.height / scale};
-        DrawTexturePro(visuals->wallpaper, src, screen, (Vector2){0, 0}, 0.0f,
+        src.x = (sw - screen.width / scale) * 0.5f;
+        src.y = (sh - screen.height / scale) * 0.5f;
+        src.width = screen.width / scale;
+        src.height = screen.height / scale;
+        DrawTexturePro(visuals->wallpaper, src, screen, origin, 0.0f,
                        WHITE);
     } else {
         DrawRectangle(0, top, GetScreenWidth(),
@@ -1283,6 +1298,7 @@ static void
 draw_texture_icon(Texture2D *texture, Rectangle dest)
 {
     Rectangle src;
+    Vector2 origin = {0, 0};
     float size;
 
     if(texture == NULL || texture->id == 0)
@@ -1292,8 +1308,11 @@ draw_texture_icon(Texture2D *texture, Rectangle dest)
     dest.y += (dest.height - size) * 0.5f;
     dest.width = size;
     dest.height = size;
-    src = (Rectangle){0, 0, (float)texture->width, (float)texture->height};
-    DrawTexturePro(*texture, src, dest, (Vector2){0, 0}, 0.0f, WHITE);
+    src.x = 0;
+    src.y = 0;
+    src.width = (float)texture->width;
+    src.height = (float)texture->height;
+    DrawTexturePro(*texture, src, dest, origin, 0.0f, WHITE);
 }
 
 static void
@@ -1303,20 +1322,17 @@ draw_symbol_icon(Rectangle r, const char *id, Color color)
     float cy = r.y + r.height * 0.5f;
 
     if(id != NULL && strcmp(id, "terminal") == 0) {
-        DrawRectangleRoundedLinesEx((Rectangle){r.x + 3, r.y + 5,
-                                                r.width - 6, r.height - 10},
-                                    0.08f, 5, 2.0f, color);
+        Rectangle body = {r.x + 3, r.y + 5, r.width - 6, r.height - 10};
+        DrawRectangleRoundedLinesEx(body, 0.08f, 5, 2.0f, color);
         DrawLine((int)r.x + 10, (int)cy - 2, (int)r.x + 15, (int)cy + 3,
                  color);
         DrawLine((int)r.x + 10, (int)cy + 8, (int)r.x + 19, (int)cy + 8,
                  color);
     } else if(id != NULL && strcmp(id, "files") == 0) {
-        DrawRectangleRounded((Rectangle){r.x + 4, r.y + 11, r.width - 8,
-                                         r.height - 16},
-                             0.08f, 5, Fade(color, 0.82f));
-        DrawRectangleRounded((Rectangle){r.x + 7, r.y + 6, r.width * 0.42f,
-                                         9},
-                             0.08f, 4, color);
+        Rectangle body = {r.x + 4, r.y + 11, r.width - 8, r.height - 16};
+        Rectangle tab = {r.x + 7, r.y + 6, r.width * 0.42f, 9};
+        DrawRectangleRounded(body, 0.08f, 5, Fade(color, 0.82f));
+        DrawRectangleRounded(tab, 0.08f, 4, color);
     } else if(id != NULL && strcmp(id, "settings") == 0) {
         DrawCircleLines((int)cx, (int)cy, r.width * 0.24f, color);
         DrawCircle((int)cx, (int)cy, r.width * 0.08f, color);
@@ -1339,8 +1355,8 @@ draw_symbol_icon(Rectangle r, const char *id, Color color)
         for(int i = 0; i < 10; i++) {
             float radius = (i % 2) == 0 ? r.width * 0.36f : r.width * 0.16f;
             float angle = -1.570796f + (float)i * 0.628319f;
-            p[i] = (Vector2){cx + cosf(angle) * radius,
-                              cy + sinf(angle) * radius};
+            p[i].x = cx + cosf(angle) * radius;
+            p[i].y = cy + sinf(angle) * radius;
         }
         for(int i = 0; i < 10; i++)
             DrawLine((int)p[i].x, (int)p[i].y, (int)p[(i + 1) % 10].x,
@@ -1372,10 +1388,12 @@ draw_symbol_icon(Rectangle r, const char *id, Color color)
         DrawCircle((int)cx + 4, (int)cy - 3, 3, color);
         DrawCircle((int)cx, (int)cy + 4, 3, color);
     } else if(id != NULL && strcmp(id, "multimedia") == 0) {
+        Vector2 a = {cx - 3, cy - 6};
+        Vector2 b = {cx - 3, cy + 6};
+        Vector2 c = {cx + 7, cy};
         DrawRectangleLines((int)r.x + 5, (int)r.y + 5,
                            (int)r.width - 10, (int)r.height - 10, color);
-        DrawTriangle((Vector2){cx - 3, cy - 6}, (Vector2){cx - 3, cy + 6},
-                     (Vector2){cx + 7, cy}, color);
+        DrawTriangle(a, b, c, color);
     } else if(id != NULL && strcmp(id, "development") == 0) {
         DrawLine((int)r.x + 5, (int)cy, (int)r.x + 10, (int)cy - 5, color);
         DrawLine((int)r.x + 5, (int)cy, (int)r.x + 10, (int)cy + 5, color);
@@ -1575,15 +1593,25 @@ draw_desktop_icon(RillShellState *shell, const RillPlatformServices *platform,
 
     if(launcher == NULL)
         return;
-    box = (Rectangle){x, y, 84, 82};
-    icon = (Rectangle){x + 22, y + 5, 40, 40};
+    box.x = (float)x;
+    box.y = (float)y;
+    box.width = 84;
+    box.height = 82;
+    icon.x = (float)(x + 22);
+    icon.y = (float)(y + 5);
+    icon.width = 40;
+    icon.height = 40;
     visuals->desktop_bounds[index] = box;
     int interactive = shell->menu_open == 0 && !visuals->file_action[0] &&
                       !visuals->logout_open && !visuals->properties_open;
     for(int i = 0; i < shell->app_count; i++) {
         const RillAppWindow *app = &shell->apps[i];
-        if(CheckCollisionPointRec(GetMousePosition(),
-                                  (Rectangle){app->x, app->y, app->w, app->h}))
+        Rectangle app_bounds;
+        app_bounds.x = (float)app->x;
+        app_bounds.y = (float)app->y;
+        app_bounds.width = (float)app->w;
+        app_bounds.height = (float)app->h;
+        if(CheckCollisionPointRec(GetMousePosition(), app_bounds))
             interactive = 0;
     }
     if(interactive && CheckCollisionPointRec(visuals->desktop_pointer, box))
@@ -1594,10 +1622,20 @@ draw_desktop_icon(RillShellState *shell, const RillPlatformServices *platform,
                                     Fade(StyleTokenColor("link"), 0.60f));
     }
     draw_launcher_icon(visuals, launcher, icon, accent);
-    draw_text_fit((TextProps){
-        .bounds = {x + 4, y + 52, 76, 0},
-        .text = launcher->name, .font = Text12, .class_name = LabelPrimary,
-        .wrap = TextWrapNone, .align = TextAlignCenter});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (float)(x + 4);
+        props.bounds.y = (float)(y + 52);
+        props.bounds.width = 76;
+        props.bounds.height = 0;
+        props.text = launcher->name;
+        props.font = Text12;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        props.align = TextAlignCenter;
+        draw_text_fit(props);
+    }
     if(strcmp(launcher->id, "desktop-trash") == 0 && platform->file_trash_list != NULL) {
         if(GetTime() >= visuals->trash_next_badge) {
             visuals->trash_next_badge = GetTime() + 5.0;
@@ -1608,13 +1646,26 @@ draw_desktop_icon(RillShellState *shell, const RillPlatformServices *platform,
         }
         if(visuals->trash_badge > 0) {
             char badge[8];
+            Color badge_color = {198, 58, 62, 255};
+            Rectangle bubble;
+            TextProps props;
             snprintf(badge, sizeof(badge), "%d",
                      visuals->trash_badge > 99 ? 99 : visuals->trash_badge);
-            Rectangle bubble = {icon.x + 30, icon.y - 2, 18, 14};
-            DrawRectangleRounded(bubble, 0.5f, 4, (Color){198, 58, 62, 255});
-            Text((TextProps){.bounds = {bubble.x - 4, bubble.y + 1, 26, 12},
-                             .text = badge, .font = Text12, .class_name = LabelWhite,
-                             .align = TextAlignCenter});
+            bubble.x = icon.x + 30;
+            bubble.y = icon.y - 2;
+            bubble.width = 18;
+            bubble.height = 14;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = bubble.x - 4;
+            props.bounds.y = bubble.y + 1;
+            props.bounds.width = 26;
+            props.bounds.height = 12;
+            props.text = badge;
+            props.font = Text12;
+            props.class_name = LabelWhite;
+            props.align = TextAlignCenter;
+            DrawRectangleRounded(bubble, 0.5f, 4, badge_color);
+            Text(props);
         }
     }
 }
@@ -1699,10 +1750,15 @@ point_on_desktop_icon_grid(const RillShellState *shell,
 {
     int top = visuals->panel_bottom ? 0 : rill_panel_visible_height(visuals);
 
-    if(visuals->file_transfer_visible &&
-       CheckCollisionPointRec(mouse, (Rectangle){GetScreenWidth() - 400,
-                              GetScreenHeight() - 180, 380, 154}))
-        return 0;
+    if(visuals->file_transfer_visible) {
+        Rectangle transfer;
+        transfer.x = (float)(GetScreenWidth() - 400);
+        transfer.y = (float)(GetScreenHeight() - 180);
+        transfer.width = 380;
+        transfer.height = 154;
+        if(CheckCollisionPointRec(mouse, transfer))
+            return 0;
+    }
 
     if(mouse.y < top || mouse.y >= GetScreenHeight() -
        (visuals->panel_bottom ? rill_panel_visible_height(visuals) : 0))
@@ -1927,6 +1983,7 @@ duplicate_desktop_files(RillShellState *shell, RillVisualState *visuals,
 
 /* Percent-decode a file:// URI into a local path; returns NULL for other
  * schemes (only local files can be transferred by the desktop). */
+#if RILL_HAS_X11
 static const char *
 dnd_uri_to_path(const char *uri, char *out, int out_size)
 {
@@ -1971,9 +2028,9 @@ process_external_drop(RillShellState *shell, RillVisualState *visuals,
                               platform->desktop_directory() : NULL;
     for(int i = 0; i < visuals->desktop_entry_count; i++) {
         const RillLauncher *entry = visuals->desktop_entries[i];
+        Vector2 point = {(float)drop->x, (float)drop->y};
         if(entry != NULL && entry->is_directory && entry->file_path[0] &&
-           CheckCollisionPointRec((Vector2){(float)drop->x, (float)drop->y},
-                                  visuals->desktop_bounds[i])) {
+           CheckCollisionPointRec(point, visuals->desktop_bounds[i])) {
             destination = entry->file_path;
             break;
         }
@@ -1991,6 +2048,7 @@ process_external_drop(RillShellState *shell, RillVisualState *visuals,
         RillShellSetStatus(shell, "Finish the current file operation first");
     }
 }
+#endif
 
 static void
 process_desktop_mouse(RillShellState *shell,
@@ -2106,8 +2164,10 @@ process_desktop_mouse(RillShellState *shell,
     }
     if(visuals->desktop_rubber_band) {
         Vector2 start = visuals->desktop_band_start;
-        visuals->desktop_band = (Rectangle){fminf(start.x, mouse.x), fminf(start.y, mouse.y),
-                                             fabsf(start.x - mouse.x), fabsf(start.y - mouse.y)};
+        visuals->desktop_band.x = fminf(start.x, mouse.x);
+        visuals->desktop_band.y = fminf(start.y, mouse.y);
+        visuals->desktop_band.width = fabsf(start.x - mouse.x);
+        visuals->desktop_band.height = fabsf(start.y - mouse.y);
         for(int i = 0; i < visuals->desktop_entry_count; i++) {
             int intersects = CheckCollisionRecs(visuals->desktop_band, visuals->desktop_bounds[i]);
             visuals->desktop_selection[i] = visuals->desktop_add_selection ?
@@ -2167,16 +2227,20 @@ process_desktop_mouse(RillShellState *shell,
             visuals->desktop_last_index = -1;
             visuals->desktop_rubber_band = down;
             visuals->desktop_band_start = mouse;
-            visuals->desktop_band = (Rectangle){mouse.x, mouse.y, 0, 0};
+            visuals->desktop_band.x = mouse.x;
+            visuals->desktop_band.y = mouse.y;
+            visuals->desktop_band.width = 0;
+            visuals->desktop_band.height = 0;
             visuals->desktop_add_selection = control;
-        } else {
+            } else {
             select_desktop_item(visuals, hit, control, shift);
             if(visuals->desktop_selection[hit]) {
                 visuals->desktop_drag_index = down ? hit : -1;
                 visuals->desktop_drag_start = mouse;
-                for(int i = 0; i < visuals->desktop_entry_count; i++)
-                    visuals->desktop_drag_origins[i] = (Vector2){visuals->desktop_bounds[i].x,
-                                                                visuals->desktop_bounds[i].y};
+                for(int i = 0; i < visuals->desktop_entry_count; i++) {
+                    visuals->desktop_drag_origins[i].x = visuals->desktop_bounds[i].x;
+                    visuals->desktop_drag_origins[i].y = visuals->desktop_bounds[i].y;
+                }
             }
             double now = GetTime();
             int single_click = RillSettingsGetInteger(&rill_settings,
@@ -2352,13 +2416,30 @@ panel_menu_button(RillShellState *shell, int menu_id, int x, int w,
                          panel_active_color() : panel_item_hover_color());
     if(menu_id == 1)
         draw_applications_mark(x + 3, y + (ph - 14) / 2 + 1);
-    else
-        draw_launcher_icon(NULL, NULL, (Rectangle){x + 5, (float)glyph_y, 14, 14},
+    else {
+        Rectangle rect;
+        rect.x = x + 5;
+        rect.y = (float)glyph_y;
+        rect.width = 14;
+        rect.height = 14;
+        draw_launcher_icon(NULL, NULL, rect,
                            menu_id == 2 ? StyleTokenColor("link") : StyleTokenColor("icon"));
-    draw_text_fit((TextProps){
-        .bounds = {x + (menu_id == 1 ? 22 : 24), text_y, w - (menu_id == 1 ? 26 : 28), 0},
-        .text = label, .font = Text12, .class_name = LabelPanel,
-        .wrap = TextWrapNone});
+    }
+
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = x + (menu_id == 1 ? 22 : 24);
+        props.bounds.y = text_y;
+        props.bounds.width = w - (menu_id == 1 ? 26 : 28);
+        props.bounds.height = 0;
+        props.text = label;
+        props.font = Text12;
+        props.class_name = LabelPanel;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    }
+
     if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
         shell->menu_open = shell->menu_open == menu_id ? 0 : menu_id;
         return 1;
@@ -2395,8 +2476,20 @@ draw_tray_indicator(int x, int kind, Color color, int y, int ph)
         DrawLine(x + 9, oy + 12, x + 14, oy + 12, color);
     } else if(kind == 1) {
         DrawRectangle(x + 3, oy + 12, 4, 5, color);
-        DrawTriangle((Vector2){x + 7, (float)oy + 12}, (Vector2){x + 13, (float)oy + 8},
-                     (Vector2){x + 13, (float)oy + 20}, color);
+        {
+            Vector2 vec;
+            Vector2 vec1;
+            Vector2 vec2;
+            vec.x = x + 7;
+            vec.y = (float)oy + 12;
+            vec1.x = x + 13;
+            vec1.y = (float)oy + 8;
+            vec2.x = x + 13;
+            vec2.y = (float)oy + 20;
+            DrawTriangle(vec, vec1,
+                     vec2, color);
+        }
+
         DrawCircleLines(x + 15, oy + 14, 4, color);
     } else {
         DrawCircle(x + 10, oy + 14, 5, color);
@@ -2432,10 +2525,20 @@ draw_workspace_switcher(int x, int width, RillShellState *shell,
         Rectangle button = {x + i * 20, (float)(y + oy + 4), 18, 18};
         DrawRectangleRec(button, index == current ? panel_active_color() : panel_item_color());
         snprintf(label, sizeof(label), "%d", index + 1);
-        Text((TextProps){
-            .bounds = {(int)button.x + 4, y + oy + 7, 0, 0},
-            .text = label, .font = Text12, .class_name = LabelPanel,
-            .wrap = TextWrapNone});
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = (int)button.x + 4;
+            props.bounds.y = y + oy + 7;
+            props.bounds.width = 0;
+            props.bounds.height = 0;
+            props.text = label;
+            props.font = Text12;
+            props.class_name = LabelPanel;
+            props.wrap = TextWrapNone;
+            Text(props);
+        }
+
         if(CheckCollisionPointRec(GetMousePosition(), button) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
             if(!platform->switch_workspace(index))
                 RillShellSetStatus(shell, "Could not switch workspace");
@@ -2446,10 +2549,20 @@ static void
 draw_panel_resource(int x, const char *label, Color color, int y, int ph)
 {
     int oy = (ph - PANEL_H) / 2;
-    Text((TextProps){
-        .bounds = {x, y + oy + 7, 0, 0},
-        .text = label, .font = 11, .class_name = LabelPanelDim,
-        .wrap = TextWrapNone});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = x;
+        props.bounds.y = y + oy + 7;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = label;
+        props.font = 11;
+        props.class_name = LabelPanelDim;
+        props.wrap = TextWrapNone;
+        Text(props);
+    }
+
     DrawRectangle(x + 26, y + oy + 18, 28, 3, Fade(BLACK, 0.45f));
     DrawRectangle(x + 26, y + oy + 18, 16, 3, color);
 }
@@ -2514,10 +2627,20 @@ panel_context_row(Rectangle row, const char *label)
                      panel_item_color());
     DrawRectangle((int)row.x, (int)(row.y + row.height - 1), (int)row.width,
                   1, Fade(BLACK, 0.28f));
-    draw_text_fit((TextProps){
-        .bounds = {(int)row.x + 10, (int)row.y + 7, (int)row.width - 20, 0},
-        .text = label, .font = Text12, .class_name = LabelPanel,
-        .wrap = TextWrapNone});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)row.x + 10;
+        props.bounds.y = (int)row.y + 7;
+        props.bounds.width = (int)row.width - 20;
+        props.bounds.height = 0;
+        props.text = label;
+        props.font = Text12;
+        props.class_name = LabelPanel;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    }
+
     return hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
 }
 
@@ -2617,7 +2740,10 @@ draw_panel_context_menu(RillShellState *shell, RillVisualState *visuals,
         x = 2;
     if(y < 2)
         y = 2;
-    menu = (Rectangle){x, y, 208, index >= 0 ? 188 : 268};
+    menu.x = x;
+    menu.y = y;
+    menu.width = 208;
+    menu.height = index >= 0 ? 188 : 268;
     draw_menu_panel(menu);
 
     if(index >= 0) {
@@ -2626,20 +2752,60 @@ draw_panel_context_menu(RillShellState *shell, RillVisualState *visuals,
         snprintf(title, sizeof(title), "%s",
                  plugins[index].id[0] != '\0' ? plugins[index].id :
                  RillPanelPluginKindName(plugins[index].kind));
-        draw_text_fit((TextProps){
-            .bounds = {x + 10, y + 8, 188, 0},
-            .text = title, .font = Text12, .class_name = LabelMuted,
-            .wrap = TextWrapNone});
-        if(panel_context_row((Rectangle){x + 6, y + 30, 196, 26},
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = x + 10;
+            props.bounds.y = y + 8;
+            props.bounds.width = 188;
+            props.bounds.height = 0;
+            props.text = title;
+            props.font = Text12;
+            props.class_name = LabelMuted;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
+
+        {
+            Rectangle rect;
+            rect.x = x + 6;
+            rect.y = y + 30;
+            rect.width = 196;
+            rect.height = 26;
+            if(panel_context_row(rect,
                              "Move Left"))
             panel_swap_item(visuals, side, index, -1);
-        if(panel_context_row((Rectangle){x + 6, y + 58, 196, 26},
+        }
+
+        {
+            Rectangle rect;
+            rect.x = x + 6;
+            rect.y = y + 58;
+            rect.width = 196;
+            rect.height = 26;
+            if(panel_context_row(rect,
                              "Move Right"))
             panel_swap_item(visuals, side, visuals->panel_context_index, 1);
-        if(panel_context_row((Rectangle){x + 6, y + 86, 196, 26},
+        }
+
+        {
+            Rectangle rect;
+            rect.x = x + 6;
+            rect.y = y + 86;
+            rect.width = 196;
+            rect.height = 26;
+            if(panel_context_row(rect,
                              "Remove"))
             panel_remove_item(visuals, side, visuals->panel_context_index);
-        if(panel_context_row((Rectangle){x + 6, y + 114, 196, 26},
+        }
+
+        {
+            Rectangle rect;
+            rect.x = x + 6;
+            rect.y = y + 114;
+            rect.width = 196;
+            rect.height = 26;
+            if(panel_context_row(rect,
                              "Properties")) {
             visuals->properties_open = 1;
             visuals->properties_side = side;
@@ -2647,8 +2813,21 @@ draw_panel_context_menu(RillShellState *shell, RillVisualState *visuals,
             visuals->panel_context_open = 0;
         }
         y += 140;
+        }
+
     } else {
-        if(panel_context_row((Rectangle){x + 6, y + 6, 196, 26},
+        {
+            Rectangle rect;
+            Rectangle rect1;
+            rect.x = x + 6;
+            rect.y = y + 6;
+            rect.width = 196;
+            rect.height = 26;
+            rect1.x = x + 6;
+            rect1.y = y + 34;
+            rect1.width = 196;
+            rect1.height = 26;
+            if(panel_context_row(rect,
                              visuals->panel_bottom ? "Move Panel to Top" :
                              "Move Panel to Bottom")) {
             visuals->panel_bottom = !visuals->panel_bottom;
@@ -2657,7 +2836,7 @@ draw_panel_context_menu(RillShellState *shell, RillVisualState *visuals,
             rill_settings_persist(shell);
             visuals->panel_context_open = 0;
         }
-        if(panel_context_row((Rectangle){x + 6, y + 34, 196, 26},
+        if(panel_context_row(rect1,
                              visuals->panel_autohide ? "Autohide: on" :
                              "Autohide: off")) {
             visuals->panel_autohide = !visuals->panel_autohide;
@@ -2667,35 +2846,99 @@ draw_panel_context_menu(RillShellState *shell, RillVisualState *visuals,
             visuals->panel_context_open = 0;
         }
         y += 62;
+        }
+
     }
 
     plugin = panel_plugin(RILL_PANEL_SEPARATOR, "separator", 0, 8);
-    if(panel_context_row((Rectangle){x + 6, y, 196, 26}, "Add Separator"))
+    {
+        Rectangle rect;
+        rect.x = x + 6;
+        rect.y = y;
+        rect.width = 196;
+        rect.height = 26;
+        if(panel_context_row(rect, "Add Separator"))
         panel_append_item(visuals, side, plugin);
+    }
+
     plugin = panel_plugin(RILL_PANEL_TASK_LIST, "task-list", 0, 0);
-    if(panel_context_row((Rectangle){x + 6, y + 28, 196, 26}, "Add Task List"))
+    {
+        Rectangle rect;
+        rect.x = x + 6;
+        rect.y = y + 28;
+        rect.width = 196;
+        rect.height = 26;
+        if(panel_context_row(rect, "Add Task List"))
         panel_append_item(visuals, side, plugin);
+    }
+
     plugin = panel_plugin(RILL_PANEL_WORKSPACES, "workspaces", 42, 42);
-    if(panel_context_row((Rectangle){x + 6, y + 56, 196, 26},
+    {
+        Rectangle rect;
+        rect.x = x + 6;
+        rect.y = y + 56;
+        rect.width = 196;
+        rect.height = 26;
+        if(panel_context_row(rect,
                          "Add Workspaces"))
         panel_append_item(visuals, side, plugin);
+    }
+
     plugin = panel_plugin(RILL_PANEL_SHOW_DESKTOP, "show-desktop", 26, 28);
-    if(panel_context_row((Rectangle){x + 6, y + 84, 196, 26},
+    {
+        Rectangle rect;
+        rect.x = x + 6;
+        rect.y = y + 84;
+        rect.width = 196;
+        rect.height = 26;
+        if(panel_context_row(rect,
                          "Add Show Desktop"))
         panel_append_item(visuals, side, plugin);
+    }
+
     plugin = panel_plugin(RILL_PANEL_ACTIONS, "actions", 26, 28);
-    if(panel_context_row((Rectangle){x + 6, y + 112, 196, 26},
+    {
+        Rectangle rect;
+        rect.x = x + 6;
+        rect.y = y + 112;
+        rect.width = 196;
+        rect.height = 26;
+        if(panel_context_row(rect,
                          "Add Action Buttons"))
         panel_append_item(visuals, side, plugin);
+    }
+
     plugin = panel_plugin(RILL_PANEL_VOLUME, "volume", 58, 60);
-    if(panel_context_row((Rectangle){x + 6, y + 140, 196, 26},
+    {
+        Rectangle rect;
+        rect.x = x + 6;
+        rect.y = y + 140;
+        rect.width = 196;
+        rect.height = 26;
+        if(panel_context_row(rect,
                          "Add Volume Control"))
         panel_append_item(visuals, side, plugin);
+    }
+
     plugin = panel_plugin(RILL_PANEL_CLIPBOARD, "clipboard", 26, 28);
-    if(panel_context_row((Rectangle){x + 6, y + 168, 196, 26},
+    {
+        Rectangle rect;
+        rect.x = x + 6;
+        rect.y = y + 168;
+        rect.width = 196;
+        rect.height = 26;
+        if(panel_context_row(rect,
                          "Add Clipboard History"))
         panel_append_item(visuals, side, plugin);
-    if(panel_context_row((Rectangle){x + 6, y + 84, 196, 26},
+    }
+
+    {
+        Rectangle rect;
+        rect.x = x + 6;
+        rect.y = y + 84;
+        rect.width = 196;
+        rect.height = 26;
+        if(panel_context_row(rect,
                          "Add XFCE Plugin...")) {
 #if RILL_HAS_X11
         RillLauncher launcher;
@@ -2714,6 +2957,8 @@ draw_panel_context_menu(RillShellState *shell, RillVisualState *visuals,
     if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
        !CheckCollisionPointRec(GetMousePosition(), menu))
         visuals->panel_context_open = 0;
+    }
+
 }
 
 static int
@@ -2730,22 +2975,51 @@ draw_panel_task_list(RillShellState *shell, const RillPlatformServices *platform
         int width;
 
         width = shell->tasks[i].focused ? 190 : 154;
-        task_rect = (Rectangle){x, (float)y + 1, (float)width, (float)ph - 2};
+        task_rect.x = x;
+        task_rect.y = (float)y + 1;
+        task_rect.width = (float)width;
+        task_rect.height = (float)ph - 2;
         hover = CheckCollisionPointRec(GetMousePosition(), task_rect);
-        DrawRectangleRec(task_rect, shell->tasks[i].focused ?
+        {
+            Color col;
+            col.r = 0x80;
+            col.g = 0x53;
+            col.b = 0x28;
+            col.a = 0xff;
+            DrawRectangleRec(task_rect, shell->tasks[i].focused ?
                          panel_active_color() :
                          (shell->tasks[i].urgent && flash ?
-                          (Color){0x80, 0x53, 0x28, 0xff} :
+                          col :
                           (hover ? panel_item_hover_color() :
                            panel_item_color())));
+        }
+
         DrawRectangleLinesEx(task_rect, 1.0f, shell->tasks[i].focused ?
                              Fade(WHITE, 0.55f) : Fade(BLACK, 0.40f));
-        draw_task_icon(visuals, shell, &shell->tasks[i],
-                       (Rectangle){x + 5, (float)(y + oy + 5), 16, 16});
-        draw_text_fit((TextProps){
-            .bounds = {x + 27, y + oy + 7, width - 32, 0},
-            .text = shell->tasks[i].title, .font = Text12, .class_name = LabelPanel,
-            .wrap = TextWrapNone});
+        {
+            Rectangle rect;
+            rect.x = x + 5;
+            rect.y = (float)(y + oy + 5);
+            rect.width = 16;
+            rect.height = 16;
+            draw_task_icon(visuals, shell, &shell->tasks[i],
+                       rect);
+        }
+
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = x + 27;
+            props.bounds.y = y + oy + 7;
+            props.bounds.width = width - 32;
+            props.bounds.height = 0;
+            props.text = shell->tasks[i].title;
+            props.font = Text12;
+            props.class_name = LabelPanel;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
+
         if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             RillShellSelectTask(shell, i);
             RillShellFocusSelectedTask(shell, platform);
@@ -2766,12 +3040,14 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
 
     if(plugin == NULL)
         return x;
-    context_bounds = (Rectangle){x, (float)y,
-                                 plugin->kind == RILL_PANEL_TASK_LIST ?
-                                 (float)(task_right - x) :
-                                 (float)(plugin->advance > 0 ? plugin->advance :
-                                  plugin->width),
-                                 (float)ph};
+    context_bounds.x = x;
+    context_bounds.y = (float)y;
+    context_bounds.width =
+        plugin->kind == RILL_PANEL_TASK_LIST ?
+        (float)(task_right - x) :
+        (float)(plugin->advance > 0 ? plugin->advance :
+         plugin->width);
+    context_bounds.height = (float)ph;
     if(context_bounds.width < 12)
         context_bounds.width = 12;
     if(CheckCollisionPointRec(GetMousePosition(), context_bounds) &&
@@ -2804,14 +3080,32 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
             Rectangle icon = {x + 3 + shown * 22,
                               (float)(y + (ph - 18) / 2), 18, 18};
             int hover = CheckCollisionPointRec(GetMousePosition(), icon);
-            if(hover)
-                DrawRectangleRec((Rectangle){icon.x - 2, icon.y - 2, 22, 22},
+            {
+                Rectangle rect;
+                rect.x = icon.x - 2;
+                rect.y = icon.y - 2;
+                rect.width = 22;
+                rect.height = 22;
+                if(hover)
+                DrawRectangleRec(rect,
                                  panel_item_hover_color());
+            }
+
             if(entry->ready) {
-                DrawTexturePro(entry->texture,
-                               (Rectangle){0, 0, (float)entry->texture.width,
-                                           (float)entry->texture.height},
-                               icon, (Vector2){0, 0}, 0.0f, WHITE);
+                {
+                    Rectangle rect;
+                    Vector2 vec;
+                    rect.x = 0;
+                    rect.y = 0;
+                    rect.width = (float)entry->texture.width;
+                    rect.height = (float)entry->texture.height;
+                    vec.x = 0;
+                    vec.y = 0;
+                    DrawTexturePro(entry->texture,
+                               rect,
+                               icon, vec, 0.0f, WHITE);
+                }
+
             } else
                 DrawCircleLines((int)icon.x + 9, (int)icon.y + 9, 6,
                                 StyleTokenColor("link"));
@@ -2862,43 +3156,104 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
         return x + (plugin->advance > shown * 22 + 8 ? plugin->advance :
                     shown * 22 + 8);
     }
-    case RILL_PANEL_LANGUAGE:
-        Text((TextProps){
-            .bounds = {x, y + oy + 7, 0, 0},
-            .text = plugin->label, .font = Text12, .class_name = LabelPanelAccent,
-            .wrap = TextWrapNone});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = x;
+        props.bounds.y = y + oy + 7;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = plugin->label;
+        props.font = Text12;
+        props.class_name = LabelPanelAccent;
+        props.wrap = TextWrapNone;
+        case RILL_PANEL_LANGUAGE:
+        Text(props);
+    }
+
         return x + plugin->advance;
     case RILL_PANEL_CLOCK: {
         Rectangle bounds = {x, (float)y, (float)plugin->width, (float)ph};
         int hover = CheckCollisionPointRec(GetMousePosition(), bounds);
-        if(hover)
-            DrawRectangleRec((Rectangle){x, (float)y + 2,
-                                         (float)plugin->width, (float)ph - 4},
+        {
+            Rectangle rect;
+            rect.x = x;
+            rect.y = (float)y + 2;
+            rect.width = (float)plugin->width;
+            rect.height = (float)ph - 4;
+            if(hover)
+            DrawRectangleRec(rect,
                              panel_item_hover_color());
-        draw_text_fit((TextProps){
-            .bounds = {x, y + oy + 7, plugin->width, 0},
-            .text = clock_text, .font = Text12, .class_name = LabelPanel,
-            .wrap = TextWrapNone});
+        }
+
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = x;
+            props.bounds.y = y + oy + 7;
+            props.bounds.width = plugin->width;
+            props.bounds.height = 0;
+            props.text = clock_text;
+            props.font = Text12;
+            props.class_name = LabelPanel;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
+
         if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
             visuals->calendar_open = !visuals->calendar_open;
         return x + plugin->advance;
     }
     case RILL_PANEL_RESOURCE: {
-        Color color = plugin->variant == 0 ? (Color){104, 190, 255, 255} :
-                       (Color){86, 218, 154, 255};
+        Color color;
         char label[48];
         int fill;
+        if(plugin->variant == 0) {
+            color.r = 104;
+            color.g = 190;
+            color.b = 255;
+            color.a = 255;
+        } else {
+            color.r = 86;
+            color.g = 218;
+            color.b = 154;
+            color.a = 255;
+        }
         if(visuals->battery_available) {
             int percent = visuals->battery_percent;
-            Color charge = percent < 20 ? (Color){224, 82, 68, 255} :
-                           percent < 55 ? (Color){222, 160, 62, 255} :
-                           (Color){86, 218, 154, 255};
+            Color charge;
+            if(percent < 20) {
+                charge.r = 224;
+                charge.g = 82;
+                charge.b = 68;
+                charge.a = 255;
+            } else if(percent < 55) {
+                charge.r = 222;
+                charge.g = 160;
+                charge.b = 62;
+                charge.a = 255;
+            } else {
+                charge.r = 86;
+                charge.g = 218;
+                charge.b = 154;
+                charge.a = 255;
+            }
             snprintf(label, sizeof(label), "%s%d%%",
                      visuals->battery_charging ? "+" : "", percent);
-            Text((TextProps){
-                .bounds = {x, y + oy + 7, 0, 0},
-                .text = label, .font = 11, .class_name = LabelPanel,
-                .wrap = TextWrapNone});
+            {
+                TextProps props;
+                memset(&props, 0, sizeof(props));
+                props.bounds.x = x;
+                props.bounds.y = y + oy + 7;
+                props.bounds.width = 0;
+                props.bounds.height = 0;
+                props.text = label;
+                props.font = 11;
+                props.class_name = LabelPanel;
+                props.wrap = TextWrapNone;
+                Text(props);
+            }
+
             fill = 28 * percent / 100;
             DrawRectangle(x + 26, y + oy + 18, 28, 3, Fade(BLACK, 0.45f));
             DrawRectangle(x + 26, y + oy + 18, fill, 3, charge);
@@ -2929,16 +3284,35 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
                             (float)ph - 4};
         int hover = CheckCollisionPointRec(GetMousePosition(), bounds);
         char label[24];
-        Color accent = visuals->volume_muted ?
-                       (Color){224, 82, 68, 255} : panel_text_color();
+        Color accent;
         int cy = y + ph / 2;
+
+        if(visuals->volume_muted) {
+            accent.r = 224;
+            accent.g = 82;
+            accent.b = 68;
+            accent.a = 255;
+        } else
+            accent = panel_text_color();
 
         if(hover)
             DrawRectangleRec(bounds, panel_item_hover_color());
-        /* Speaker glyph with sound waves (or a cross when muted). */
-        DrawTriangle((Vector2){x + 6, (float)cy - 3},
-                     (Vector2){x + 6, (float)cy + 3},
-                     (Vector2){x + 11, (float)cy}, accent);
+        {
+            Vector2 vec;
+            Vector2 vec1;
+            Vector2 vec2;
+            vec.x = x + 6;
+            vec.y = (float)cy - 3;
+            vec1.x = x + 6;
+            vec1.y = (float)cy + 3;
+            vec2.x = x + 11;
+            vec2.y = (float)cy;
+            /* Speaker glyph with sound waves (or a cross when muted). */
+        DrawTriangle(vec,
+                     vec1,
+                     vec2, accent);
+        }
+
         DrawRectangle(x + 3, (float)cy - 2, 3, 4, accent);
         if(visuals->volume_muted) {
             DrawLine(x + 14, (float)cy - 4, x + 19, (float)cy + 4, accent);
@@ -2949,10 +3323,20 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
                 DrawCircleLines(x + 15, (float)cy, 6, accent);
         }
         snprintf(label, sizeof(label), "%d%%", visuals->volume_percent);
-        draw_text_fit((TextProps){
-            .bounds = {x + 26, y + oy + 7, plugin->width - 30, 0},
-            .text = label, .font = Text12, .class_name = visuals->volume_muted ? LabelWarning : LabelPanel,
-            .wrap = TextWrapNone});
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = x + 26;
+            props.bounds.y = y + oy + 7;
+            props.bounds.width = plugin->width - 30;
+            props.bounds.height = 0;
+            props.text = label;
+            props.font = Text12;
+            props.class_name = visuals->volume_muted ? LabelWarning : LabelPanel;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
+
         if(hover && visuals->volume_available && platform != NULL &&
            platform->volume_set != NULL) {
             float wheel = GetMouseWheelMove();
@@ -3002,10 +3386,20 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
         if(visuals->clipboard_count > 0) {
             char label[8];
             snprintf(label, sizeof(label), "%d", visuals->clipboard_count);
-            Text((TextProps){
-                .bounds = {(int)bounds.x + 8, (int)bounds.y + 12, 0, 0},
-                .text = label, .font = Text12, .class_name = LabelAccent,
-                .wrap = TextWrapNone});
+            {
+                TextProps props;
+                memset(&props, 0, sizeof(props));
+                props.bounds.x = (int)bounds.x + 8;
+                props.bounds.y = (int)bounds.y + 12;
+                props.bounds.width = 0;
+                props.bounds.height = 0;
+                props.text = label;
+                props.font = Text12;
+                props.class_name = LabelAccent;
+                props.wrap = TextWrapNone;
+                Text(props);
+            }
+
         }
         if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
             visuals->clipboard_popup_open = !visuals->clipboard_popup_open;
@@ -3017,8 +3411,16 @@ draw_panel_plugin(const RillPanelPlugin *plugin, RillShellState *shell,
         int hover = CheckCollisionPointRec(GetMousePosition(), bounds);
         if(hover)
             DrawRectangleRec(bounds, panel_item_hover_color());
-        draw_symbol_icon((Rectangle){x + 3, (float)(y + (ph - 16) / 2), 16, 16},
+        {
+            Rectangle rect;
+            rect.x = x + 3;
+            rect.y = (float)(y + (ph - 16) / 2);
+            rect.width = 16;
+            rect.height = 16;
+            draw_symbol_icon(rect,
                          "power", StyleTokenColor("link"));
+        }
+
         if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             shell->menu_open = 0;
             visuals->logout_open = 1;
@@ -3153,8 +3555,24 @@ draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
         visuals->panel_hidden = 0;
         panel_y = rill_panel_top(visuals);
     }
-    include_panel_popup((Rectangle){0, panel_y, screen_w, panel_h});
-    plan9_overlay_rect((Rectangle){0, panel_y, screen_w, panel_h});
+    {
+        Rectangle rect;
+        rect.x = 0;
+        rect.y = panel_y;
+        rect.width = screen_w;
+        rect.height = panel_h;
+        include_panel_popup(rect);
+    }
+
+    {
+        Rectangle rect;
+        rect.x = 0;
+        rect.y = panel_y;
+        rect.width = screen_w;
+        rect.height = panel_h;
+        plan9_overlay_rect(rect);
+    }
+
     DrawRectangle(0, panel_y, screen_w, panel_h, panel_color());
     DrawRectangle(0, visuals->panel_bottom ? panel_y : panel_y + panel_h - 1,
                   screen_w, 1, Fade(BLACK, 0.72f));
@@ -3197,16 +3615,33 @@ draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
 
     if(screen_w < 760) {
         int oy = (panel_h - PANEL_H) / 2;
-        if(screen_w > 70)
-            draw_text_fit((TextProps){
-                .bounds = {screen_w - 58, panel_y + oy + 7, 54, 0},
-                .text = clock_text, .font = Text12, .class_name = LabelPanel,
-                .wrap = TextWrapNone});
-        if(CheckCollisionPointRec(GetMousePosition(),
-                                  (Rectangle){0, (float)panel_y, (float)screen_w,
-                                              (float)panel_h}) &&
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = screen_w - 58;
+            props.bounds.y = panel_y + oy + 7;
+            props.bounds.width = 54;
+            props.bounds.height = 0;
+            props.text = clock_text;
+            props.font = Text12;
+            props.class_name = LabelPanel;
+            props.wrap = TextWrapNone;
+            if(screen_w > 70)
+            draw_text_fit(props);
+        }
+
+        {
+            Rectangle rect;
+            rect.x = 0;
+            rect.y = (float)panel_y;
+            rect.width = (float)screen_w;
+            rect.height = (float)panel_h;
+            if(CheckCollisionPointRec(GetMousePosition(),
+                                  rect) &&
            IsMouseButtonPressed(MOUSE_BUTTON_RIGHT))
             open_panel_context(visuals, 1, -1);
+        }
+
         return;
     }
 
@@ -3219,12 +3654,19 @@ draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
                               visuals, x, right, 1, i, clock_text,
                               panel_y, panel_h);
     finish_panel_drag(visuals);
-    if(CheckCollisionPointRec(GetMousePosition(),
-                              (Rectangle){0, (float)panel_y, (float)screen_w,
-                                          (float)panel_h}) &&
+    {
+        Rectangle rect;
+        rect.x = 0;
+        rect.y = (float)panel_y;
+        rect.width = (float)screen_w;
+        rect.height = (float)panel_h;
+        if(CheckCollisionPointRec(GetMousePosition(),
+                              rect) &&
        IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) &&
        !visuals->panel_context_open)
         open_panel_context(visuals, 1, -1);
+    }
+
 }
 
 /* Vertical panels stack compact icon cells in a column; the right-hand items
@@ -3264,13 +3706,26 @@ draw_panel_cell(const RillPanelPlugin *plugin, RillShellState *shell,
         break;
     case RILL_PANEL_LAUNCHER: {
         RillLauncher *found = launcher_by_id(shell, plugin->launcher_id);
-        if(found != NULL)
+        {
+            Rectangle rect;
+            Rectangle rect1;
+            rect.x = (float)cx - 12;
+            rect.y = (float)cy - 12;
+            rect.width = 24;
+            rect.height = 24;
+            rect1.x = (float)cx - 8;
+            rect1.y = (float)cy - 8;
+            rect1.width = 16;
+            rect1.height = 16;
+            if(found != NULL)
             draw_launcher_icon(visuals, found,
-                               (Rectangle){(float)cx - 12, (float)cy - 12, 24, 24},
+                               rect,
                                StyleTokenColor("text"));
         else
-            draw_symbol_icon((Rectangle){(float)cx - 8, (float)cy - 8, 16, 16},
+            draw_symbol_icon(rect1,
                              "all", StyleTokenColor("icon"));
+        }
+
         if(hover && pressed && found != NULL)
             open_launcher_id(shell, platform, found->id);
         break;
@@ -3283,11 +3738,20 @@ draw_panel_cell(const RillPanelPlugin *plugin, RillShellState *shell,
                              panel_item_color());
             if(shell->tasks[task].urgent)
                 DrawRectangleLinesEx(icon, 1, StyleTokenColor("link"));
-            draw_text_fit((TextProps){
-                .bounds = {icon.x + 1, icon.y + 1, 16, 0},
-                .text = shell->tasks[task].title, .font = 11,
-                .class_name = active ? LabelPanelAccent : LabelPanelDim,
-                .wrap = TextWrapNone});
+            {
+                TextProps props;
+                memset(&props, 0, sizeof(props));
+                props.bounds.x = icon.x + 1;
+                props.bounds.y = icon.y + 1;
+                props.bounds.width = 16;
+                props.bounds.height = 0;
+                props.text = shell->tasks[task].title;
+                props.font = 11;
+                props.class_name = active ? LabelPanelAccent : LabelPanelDim;
+                props.wrap = TextWrapNone;
+                draw_text_fit(props);
+            }
+
             if(CheckCollisionPointRec(mouse, icon) && pressed) {
                 if(platform->focus_task != NULL)
                     platform->focus_task(shell->tasks[task].id);
@@ -3349,19 +3813,40 @@ draw_panel_cell(const RillPanelPlugin *plugin, RillShellState *shell,
                                 cell_y + 4, cell_size - 8);
         break;
     }
-    case RILL_PANEL_LANGUAGE:
-        draw_text_fit((TextProps){.bounds = {(float)cx - 10, (float)cy - 6, 20, 0},
-                                  .text = plugin->label, .font = Text12,
-                                  .class_name = LabelPanelAccent,
-                                  .align = TextAlignCenter, .wrap = TextWrapNone});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (float)cx - 10;
+        props.bounds.y = (float)cy - 6;
+        props.bounds.width = 20;
+        props.bounds.height = 0;
+        props.text = plugin->label;
+        props.font = Text12;
+        props.class_name = LabelPanelAccent;
+        props.align = TextAlignCenter;
+        props.wrap = TextWrapNone;
+        case RILL_PANEL_LANGUAGE:
+        draw_text_fit(props);
+    }
+
         break;
     case RILL_PANEL_CLOCK:
         for(int character = 0; clock_text[character] != '\0' && character < 6; character++) {
             char glyph[2] = {clock_text[character], '\0'};
-            Text((TextProps){.bounds = {(float)cx - 8,
-                                        (float)(cell_y + 4 + character * 12), 16, 12},
-                             .text = glyph, .font = Text12, .class_name = LabelPanel,
-                             .align = TextAlignCenter});
+            {
+                TextProps props;
+                memset(&props, 0, sizeof(props));
+                props.bounds.x = (float)cx - 8;
+                props.bounds.y = (float)(cell_y + 4 + character * 12);
+                props.bounds.width = 16;
+                props.bounds.height = 12;
+                props.text = glyph;
+                props.font = Text12;
+                props.class_name = LabelPanel;
+                props.align = TextAlignCenter;
+                Text(props);
+            }
+
         }
         if(hover && pressed)
             visuals->calendar_open = !visuals->calendar_open;
@@ -3369,16 +3854,37 @@ draw_panel_cell(const RillPanelPlugin *plugin, RillShellState *shell,
     case RILL_PANEL_RESOURCE:
         if(visuals->battery_available) {
             int percent = visuals->battery_percent;
-            Color charge = percent < 20 ? (Color){224, 82, 68, 255} :
-                           percent < 55 ? (Color){222, 160, 62, 255} :
-                           (Color){86, 218, 154, 255};
+            Color charge;
+            if(percent < 20) {
+                charge.r = 224;
+                charge.g = 82;
+                charge.b = 68;
+                charge.a = 255;
+            } else if(percent < 55) {
+                charge.r = 222;
+                charge.g = 160;
+                charge.b = 62;
+                charge.a = 255;
+            } else {
+                charge.r = 86;
+                charge.g = 218;
+                charge.b = 154;
+                charge.a = 255;
+            }
             DrawRectangleLines(cx - 6, cy - 10, 12, 18, panel_text_color());
             DrawRectangle(cx + 5, cy - 6, 2, 10, panel_text_color());
             DrawRectangle(cx - 4, cy - 8 + (16 - 16 * percent / 100), 8,
                           16 * percent / 100, charge);
-        } else
-            draw_symbol_icon((Rectangle){(float)cx - 8, (float)cy - 8, 16, 16},
+        } else {
+     Rectangle rect;
+     rect.x = (float)cx - 8;
+     rect.y = (float)cy - 8;
+     rect.width = 16;
+     rect.height = 16;
+     draw_symbol_icon(rect,
                              "power", StyleTokenColor("icon"));
+ }
+
         break;
     case RILL_PANEL_SHOW_DESKTOP:
         if(visuals->show_desktop_on)
@@ -3390,20 +3896,47 @@ draw_panel_cell(const RillPanelPlugin *plugin, RillShellState *shell,
             visuals->show_desktop_on = !visuals->show_desktop_on;
         }
         break;
-    case RILL_PANEL_ACTIONS:
-        draw_symbol_icon((Rectangle){(float)cx - 8, (float)cy - 8, 16, 16},
+    {
+        Rectangle rect;
+        rect.x = (float)cx - 8;
+        rect.y = (float)cy - 8;
+        rect.width = 16;
+        rect.height = 16;
+        case RILL_PANEL_ACTIONS:
+        draw_symbol_icon(rect,
                          "power", StyleTokenColor("link"));
+    }
+
         if(hover && pressed) {
             shell->menu_open = 0;
             visuals->logout_open = 1;
         }
         break;
     case RILL_PANEL_VOLUME: {
-        Color accent = visuals->volume_muted ? (Color){224, 82, 68, 255} :
-                       panel_text_color();
-        DrawTriangle((Vector2){(float)cx - 6, (float)cy - 3},
-                     (Vector2){(float)cx - 6, (float)cy + 3},
-                     (Vector2){(float)cx - 1, (float)cy}, accent);
+        Color accent;
+
+        if(visuals->volume_muted) {
+            accent.r = 224;
+            accent.g = 82;
+            accent.b = 68;
+            accent.a = 255;
+        } else
+            accent = panel_text_color();
+        {
+            Vector2 vec;
+            Vector2 vec1;
+            Vector2 vec2;
+            vec.x = (float)cx - 6;
+            vec.y = (float)cy - 3;
+            vec1.x = (float)cx - 6;
+            vec1.y = (float)cy + 3;
+            vec2.x = (float)cx - 1;
+            vec2.y = (float)cy;
+            DrawTriangle(vec,
+                     vec1,
+                     vec2, accent);
+        }
+
         DrawRectangle(cx - 9, cy - 2, 3, 4, accent);
         if(visuals->volume_muted) {
             DrawLine(cx, cy - 4, cx + 5, cy + 4, accent);
@@ -3449,8 +3982,19 @@ draw_panel_cell(const RillPanelPlugin *plugin, RillShellState *shell,
         if(visuals->clipboard_count > 0) {
             char label[8];
             snprintf(label, sizeof(label), "%d", visuals->clipboard_count);
-            Text((TextProps){.bounds = {(float)cx - 3, (float)cy - 1, 8, 0},
-                             .text = label, .font = Text12, .class_name = LabelAccent});
+            {
+                TextProps props;
+                memset(&props, 0, sizeof(props));
+                props.bounds.x = (float)cx - 3;
+                props.bounds.y = (float)cy - 1;
+                props.bounds.width = 8;
+                props.bounds.height = 0;
+                props.text = label;
+                props.font = Text12;
+                props.class_name = LabelAccent;
+                Text(props);
+            }
+
         }
         if(hover && pressed)
             visuals->clipboard_popup_open = !visuals->clipboard_popup_open;
@@ -3489,8 +4033,24 @@ draw_side_panel(RillShellState *shell, const RillPlatformServices *platform,
     int shown = visuals->panel_hidden ? 3 : size;
     if(visuals->panel_edge == 3 && visuals->panel_hidden)
         panel_x = GetScreenWidth() - 3;
-    include_panel_popup((Rectangle){(float)panel_x, 0, (float)shown, (float)screen_h});
-    plan9_overlay_rect((Rectangle){(float)panel_x, 0, (float)shown, (float)screen_h});
+    {
+        Rectangle rect;
+        rect.x = (float)panel_x;
+        rect.y = 0;
+        rect.width = (float)shown;
+        rect.height = (float)screen_h;
+        include_panel_popup(rect);
+    }
+
+    {
+        Rectangle rect;
+        rect.x = (float)panel_x;
+        rect.y = 0;
+        rect.width = (float)shown;
+        rect.height = (float)screen_h;
+        plan9_overlay_rect(rect);
+    }
+
     DrawRectangle(panel_x, 0, shown, screen_h, panel_color());
     DrawRectangle(visuals->panel_edge == 3 ? panel_x : panel_x + shown - 1, 0, 1,
                   screen_h, Fade(BLACK, 0.72f));
@@ -3518,11 +4078,18 @@ draw_side_panel(RillShellState *shell, const RillPlatformServices *platform,
         bottom -= 1;
     }
     finish_panel_drag(visuals);
-    if(CheckCollisionPointRec(GetMousePosition(),
-                              (Rectangle){(float)panel_x, 0, (float)shown,
-                                          (float)screen_h}) &&
+    {
+        Rectangle rect;
+        rect.x = (float)panel_x;
+        rect.y = 0;
+        rect.width = (float)shown;
+        rect.height = (float)screen_h;
+        if(CheckCollisionPointRec(GetMousePosition(),
+                              rect) &&
        IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && !visuals->panel_context_open)
         open_panel_context(visuals, 1, -1);
+    }
+
 }
 
 /* Deskbar: a tall top/bottom bar laying the icon cells out in wrapped rows,
@@ -3556,8 +4123,24 @@ draw_deskbar_panel(RillShellState *shell, const RillPlatformServices *platform,
         visuals->panel_hidden = 0;
     int shown = visuals->panel_hidden ? 3 : size;
     int shown_y = visuals->panel_bottom ? GetScreenHeight() - shown : 0;
-    include_panel_popup((Rectangle){0, (float)shown_y, (float)screen_w, (float)shown});
-    plan9_overlay_rect((Rectangle){0, (float)shown_y, (float)screen_w, (float)shown});
+    {
+        Rectangle rect;
+        rect.x = 0;
+        rect.y = (float)shown_y;
+        rect.width = (float)screen_w;
+        rect.height = (float)shown;
+        include_panel_popup(rect);
+    }
+
+    {
+        Rectangle rect;
+        rect.x = 0;
+        rect.y = (float)shown_y;
+        rect.width = (float)screen_w;
+        rect.height = (float)shown;
+        plan9_overlay_rect(rect);
+    }
+
     DrawRectangle(0, shown_y, screen_w, shown, panel_color());
     DrawRectangle(0, visuals->panel_bottom ? shown_y : shown_y + shown - 1,
                   screen_w, 1, Fade(BLACK, 0.72f));
@@ -3598,11 +4181,18 @@ draw_deskbar_panel(RillShellState *shell, const RillPlatformServices *platform,
         }
     }
     finish_panel_drag(visuals);
-    if(CheckCollisionPointRec(GetMousePosition(),
-                              (Rectangle){0, (float)shown_y, (float)screen_w,
-                                          (float)shown}) &&
+    {
+        Rectangle rect;
+        rect.x = 0;
+        rect.y = (float)shown_y;
+        rect.width = (float)screen_w;
+        rect.height = (float)shown;
+        if(CheckCollisionPointRec(GetMousePosition(),
+                              rect) &&
        IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && !visuals->panel_context_open)
         open_panel_context(visuals, 1, -1);
+    }
+
 }
 
 /* Dispatches to the horizontal, deskbar or vertical renderer. */
@@ -3638,13 +4228,31 @@ draw_menu_row(Rectangle row, const char *label, const char *icon_id)
                      panel_item_color());
     DrawRectangle((int)row.x, (int)(row.y + row.height - 1), (int)row.width,
                   1, Fade(BLACK, 0.28f));
-    if(icon_id != NULL)
-        draw_symbol_icon((Rectangle){row.x + 6, row.y + 6, 16, 16}, icon_id,
+    {
+        Rectangle rect;
+        rect.x = row.x + 6;
+        rect.y = row.y + 6;
+        rect.width = 16;
+        rect.height = 16;
+        if(icon_id != NULL)
+        draw_symbol_icon(rect, icon_id,
                          StyleTokenColor("link"));
-    draw_text_fit((TextProps){
-        .bounds = {(int)row.x + 30, (int)row.y + 8, (int)row.width - 38, 0},
-        .text = label, .font = Text12, .class_name = LabelPanel,
-        .wrap = TextWrapNone});
+    }
+
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)row.x + 30;
+        props.bounds.y = (int)row.y + 8;
+        props.bounds.width = (int)row.width - 38;
+        props.bounds.height = 0;
+        props.text = label;
+        props.font = Text12;
+        props.class_name = LabelPanel;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    }
+
     return hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
 }
 
@@ -3792,33 +4400,79 @@ draw_whisker_header(Rectangle menu, RillShellState *shell,
                Fade(WHITE, 0.88f));
     DrawCircle((int)(user_icon.x + 15), (int)(user_icon.y + 26), 10,
                Fade(WHITE, 0.35f));
-    draw_text_fit((TextProps){
-        .bounds = {(int)menu.x + 50, (int)menu.y + 18, (int)menu.width - 150, 0},
-        .text = rill_user_name(), .font = Text16, .class_name = LabelPrimary,
-        .wrap = TextWrapNone});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)menu.x + 50;
+        props.bounds.y = (int)menu.y + 18;
+        props.bounds.width = (int)menu.width - 150;
+        props.bounds.height = 0;
+        props.text = rill_user_name();
+        props.font = Text16;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    }
 
-    draw_symbol_icon((Rectangle){menu.x + menu.width - 86, menu.y + 14,
-                                 22, 22}, "settings", StyleTokenColor("accent-hover"));
-    draw_symbol_icon((Rectangle){menu.x + menu.width - 54, menu.y + 14,
-                                 22, 22}, "power", StyleTokenColor("link"));
-    draw_symbol_icon((Rectangle){menu.x + menu.width - 25, menu.y + 14,
-                                 20, 20}, "about", StyleTokenColor("icon"));
+
+    {
+        Rectangle rect;
+        rect.x = menu.x + menu.width - 86;
+        rect.y = menu.y + 14;
+        rect.width = 22;
+        rect.height = 22;
+        draw_symbol_icon(rect, "settings", StyleTokenColor("accent-hover"));
+    }
+
+    {
+        Rectangle rect;
+        rect.x = menu.x + menu.width - 54;
+        rect.y = menu.y + 14;
+        rect.width = 22;
+        rect.height = 22;
+        draw_symbol_icon(rect, "power", StyleTokenColor("link"));
+    }
+
+    {
+        Rectangle rect;
+        rect.x = menu.x + menu.width - 25;
+        rect.y = menu.y + 14;
+        rect.width = 20;
+        rect.height = 20;
+        draw_symbol_icon(rect, "about", StyleTokenColor("icon"));
+    }
+
     if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        if(CheckCollisionPointRec(mouse, (Rectangle){menu.x + menu.width - 88,
-                                                     menu.y + 12, 26, 26})) {
+        {
+            Rectangle rect;
+            Rectangle rect1;
+            Rectangle rect2;
+            rect.x = menu.x + menu.width - 88;
+            rect.y = menu.y + 12;
+            rect.width = 26;
+            rect.height = 26;
+            rect1.x = menu.x + menu.width - 56;
+            rect1.y = menu.y + 12;
+            rect1.width = 26;
+            rect1.height = 26;
+            rect2.x = menu.x + menu.width - 28;
+            rect2.y = menu.y + 12;
+            rect2.width = 24;
+            rect2.height = 24;
+            if(CheckCollisionPointRec(mouse, rect)) {
             open_launcher_id(shell, platform, "settings");
             shell->menu_open = 0;
-        } else if(CheckCollisionPointRec(mouse, (Rectangle){menu.x + menu.width - 56,
-                                                            menu.y + 12, 26, 26})) {
+        } else if(CheckCollisionPointRec(mouse, rect1)) {
             shell->menu_open = 0;
             if(visuals != NULL)
                 visuals->logout_open = 1;
-        } else if(CheckCollisionPointRec(mouse, (Rectangle){menu.x + menu.width - 28,
-                                                            menu.y + 12, 24, 24})) {
+        } else if(CheckCollisionPointRec(mouse, rect2)) {
             open_launcher_id(shell, platform, "about");
             shell->menu_open = 0;
         }
-    }
+    
+        }
+}
 
     hover = CheckCollisionPointRec(GetMousePosition(), search);
     DrawRectangleRounded(search, 0.04f, 5, Fade(BLACK, 0.20f));
@@ -3827,13 +4481,31 @@ draw_whisker_header(Rectangle menu, RillShellState *shell,
                                 StyleTokenColor("accent-hover") :
                                 (hover ? StyleTokenColor("link") :
                                  Fade(StyleTokenColor("text"), 0.38f)));
-    draw_search_mark((Rectangle){search.x + 8, search.y + 7, 16, 16},
+    {
+        Rectangle rect;
+        rect.x = search.x + 8;
+        rect.y = search.y + 7;
+        rect.width = 16;
+        rect.height = 16;
+        draw_search_mark(rect,
                      StyleTokenColor("icon"));
-    if(shell->app_menu_search[0] != '\0')
-        draw_text_fit((TextProps){
-            .bounds = {(int)search.x + 30, (int)search.y + 8, (int)search.width - 38, 0},
-            .text = shell->app_menu_search, .font = Text12, .class_name = LabelPrimary,
-            .wrap = TextWrapNone});
+    }
+
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)search.x + 30;
+        props.bounds.y = (int)search.y + 8;
+        props.bounds.width = (int)search.width - 38;
+        props.bounds.height = 0;
+        props.text = shell->app_menu_search;
+        props.font = Text12;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        if(shell->app_menu_search[0] != '\0')
+        draw_text_fit(props);
+    }
+
     if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
         shell->app_menu_search_active = 1;
 }
@@ -3856,13 +4528,30 @@ draw_whisker_category_row(Rectangle row, const RillMenuCategory *category,
         DrawRectangleRounded(row, 0.02f, 4, panel_active_color());
     else if(hover)
         DrawRectangleRec(row, panel_item_hover_color());
-    draw_symbol_icon((Rectangle){row.x + 6, row.y + (row.height - icon_size) * 0.5f,
-                                 icon_size, icon_size},
+    {
+        Rectangle rect;
+        rect.x = row.x + 6;
+        rect.y = row.y + (row.height - icon_size) * 0.5f;
+        rect.width = icon_size;
+        rect.height = icon_size;
+        draw_symbol_icon(rect,
                      category->icon_id, icon);
-    draw_text_fit((TextProps){
-        .bounds = {(int)row.x + 32, text_y, (int)row.width - 38, 0},
-        .text = category->name, .font = Text12, .class_name = active || hover ? LabelPanel : LabelPrimary,
-        .wrap = TextWrapNone});
+    }
+
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)row.x + 32;
+        props.bounds.y = text_y;
+        props.bounds.width = (int)row.width - 38;
+        props.bounds.height = 0;
+        props.text = category->name;
+        props.font = Text12;
+        props.class_name = active || hover ? LabelPanel : LabelPrimary;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    }
+
     return hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
 }
 
@@ -3874,18 +4563,46 @@ draw_whisker_launcher_row(RillVisualState *visuals,
 
     if(hover)
         DrawRectangleRounded(row, 0.02f, 4, panel_item_hover_color());
-    draw_launcher_icon(visuals, launcher,
-                       (Rectangle){row.x + 8, row.y + 6, 30, 30},
+    {
+        Rectangle rect;
+        rect.x = row.x + 8;
+        rect.y = row.y + 6;
+        rect.width = 30;
+        rect.height = 30;
+        draw_launcher_icon(visuals, launcher,
+                       rect,
                        StyleTokenColor("link"));
-    draw_text_fit((TextProps){
-        .bounds = {(int)row.x + 48, (int)row.y + 7, (int)row.width - 56, 0},
-        .text = launcher->name, .font = Text14, .class_name = hover ? LabelPanel : LabelPrimary,
-        .wrap = TextWrapNone});
-    draw_text_fit((TextProps){
-        .bounds = {(int)row.x + 48, (int)row.y + 25, (int)row.width - 56, 0},
-        .text = launcher->description[0] != '\0' ?
-                  launcher->description : launcher->category, .font = Text12, .class_name = hover ? LabelPanelDim : LabelMuted,
-        .wrap = TextWrapNone});
+    }
+
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)row.x + 48;
+        props.bounds.y = (int)row.y + 7;
+        props.bounds.width = (int)row.width - 56;
+        props.bounds.height = 0;
+        props.text = launcher->name;
+        props.font = Text14;
+        props.class_name = hover ? LabelPanel : LabelPrimary;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    }
+
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)row.x + 48;
+        props.bounds.y = (int)row.y + 25;
+        props.bounds.width = (int)row.width - 56;
+        props.bounds.height = 0;
+        props.text = launcher->description[0] != '\0' ?
+                  launcher->description : launcher->category;
+        props.font = Text12;
+        props.class_name = hover ? LabelPanelDim : LabelMuted;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    }
+
     return hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
 }
 
@@ -3948,18 +4665,22 @@ draw_applications_menu(RillShellState *shell,
     if(menu_h < 300)
         menu_h = screen_h - rill_panel_visible_height(visuals) - 4;
     category_w = menu_w >= 400 ? 128 : 112;
-    menu = (Rectangle){4, (float)rill_menu_anchor_y(visuals, menu_h), menu_w,
-                       (float)menu_h};
+    menu.x = 4;
+    menu.y = (float)rill_menu_anchor_y(visuals, menu_h);
+    menu.width = menu_w;
+    menu.height = (float)menu_h;
     draw_menu_panel(menu);
 
     draw_whisker_header(menu, shell, platform, visuals);
 
-    category_area = (Rectangle){menu.x + menu.width - category_w - 6,
-                                menu.y + 88, category_w,
-                                menu.height - 96};
-    app_area = (Rectangle){menu.x + 8, menu.y + 88,
-                           menu.width - category_w - 18,
-                           category_area.height};
+    category_area.x = menu.x + menu.width - category_w - 6;
+    category_area.y = menu.y + 88;
+    category_area.width = category_w;
+    category_area.height = menu.height - 96;
+    app_area.x = menu.x + 8;
+    app_area.y = menu.y + 88;
+    app_area.width = menu.width - category_w - 18;
+    app_area.height = category_area.height;
     category_step = (int)(category_area.height / category_count);
     if(category_step > 30)
         category_step = 30;
@@ -3980,7 +4701,10 @@ draw_applications_menu(RillShellState *shell,
 
         if(!launcher_matches_app_menu(shell, &shell->launchers[i]))
             continue;
-        row = (Rectangle){app_area.x, y, app_area.width, 44};
+        row.x = app_area.x;
+        row.y = y;
+        row.width = app_area.width;
+        row.height = 44;
         matches++;
         if(draw_whisker_launcher_row(visuals, &shell->launchers[i], row)) {
             RillShellSelectLauncher(shell, i);
@@ -3994,10 +4718,20 @@ draw_applications_menu(RillShellState *shell,
         const char *message = shell->app_menu_search[0] != '\0' ?
                               "No matching applications" :
                               "No applications in this category";
-        draw_text_fit((TextProps){
-            .bounds = {(int)app_area.x + 8, (int)app_area.y + 10, (int)app_area.width - 16, 0},
-            .text = message, .font = Text12, .class_name = LabelMuted,
-            .wrap = TextWrapNone});
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = (int)app_area.x + 8;
+            props.bounds.y = (int)app_area.y + 10;
+            props.bounds.width = (int)app_area.width - 16;
+            props.bounds.height = 0;
+            props.text = message;
+            props.font = Text12;
+            props.class_name = LabelMuted;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
+
     }
     EndScissorMode();
 
@@ -4063,15 +4797,26 @@ draw_places_menu(RillShellState *shell, const RillPlatformServices *platform,
 
     if(shell->menu_open != 2)
         return;
-    menu = (Rectangle){116, (float)rill_menu_anchor_y(visuals, 106), 190, 106};
+    menu.x = 116;
+    menu.y = (float)rill_menu_anchor_y(visuals, 106);
+    menu.width = 190;
+    menu.height = 106;
     draw_menu_panel(menu);
     y = (int)menu.y + 6;
     for(int i = 0; i < 3; i++) {
-        if(draw_menu_row((Rectangle){122, (float)y, 178, 28}, items[i], "files")) {
+        {
+            Rectangle rect;
+            rect.x = 122;
+            rect.y = (float)y;
+            rect.width = 178;
+            rect.height = 28;
+            if(draw_menu_row(rect, items[i], "files")) {
             open_launcher_id(shell, platform, "files");
             shell->menu_open = 0;
         }
         y += 32;
+        }
+
     }
 }
 
@@ -4086,24 +4831,45 @@ draw_system_menu(RillShellState *shell, const RillPlatformServices *platform,
 
     if(shell->menu_open != 3)
         return;
-    menu = (Rectangle){182, (float)rill_menu_anchor_y(visuals, 104), 190, 104};
+    menu.x = 182;
+    menu.y = (float)rill_menu_anchor_y(visuals, 104);
+    menu.width = 190;
+    menu.height = 104;
     draw_menu_panel(menu);
     y = (int)menu.y + 6;
-    if(draw_menu_row((Rectangle){188, (float)y, 178, 28}, "Settings",
+    {
+        Rectangle rect;
+        Rectangle rect1;
+        Rectangle rect2;
+        rect.x = 188;
+        rect.y = (float)y;
+        rect.width = 178;
+        rect.height = 28;
+        rect1.x = 188;
+        rect1.y = (float)y + 32;
+        rect1.width = 178;
+        rect1.height = 28;
+        rect2.x = 188;
+        rect2.y = (float)y + 64;
+        rect2.width = 178;
+        rect2.height = 28;
+        if(draw_menu_row(rect, "Settings",
                      "settings")) {
         open_launcher_id(shell, platform, "settings");
         shell->menu_open = 0;
     }
-    if(draw_menu_row((Rectangle){188, (float)y + 32, 178, 28}, "About Rill",
+    if(draw_menu_row(rect1, "About Rill",
                      "about")) {
         open_launcher_id(shell, platform, "about");
         shell->menu_open = 0;
     }
-    if(draw_menu_row((Rectangle){188, (float)y + 64, 178, 28}, "Log Out",
+    if(draw_menu_row(rect2, "Log Out",
                      "power")) {
         shell->menu_open = 0;
         if(visuals != NULL)
             visuals->logout_open = 1;
+    }
+
     }
 }
 
@@ -4145,68 +4911,148 @@ draw_desktop_context_menu(RillShellState *shell,
     draw_menu_panel(menu);
     if(item != NULL) {
         int row = y + 6;
-        if(draw_menu_row((Rectangle){x + 6, row, 218, 28}, "Open", "files")) {
+        {
+            Rectangle rect;
+            rect.x = x + 6;
+            rect.y = row;
+            rect.width = 218;
+            rect.height = 28;
+            if(draw_menu_row(rect, "Open", "files")) {
             for(int i = 0; i < visuals->desktop_entry_count; i++)
                 if(visuals->desktop_selection[i])
                     open_desktop_launcher(shell, platform, visuals->desktop_entries[i]);
             shell->menu_open = 0;
         }
         row += 32;
+        }
+
         if(trash_icon) {
-            if(draw_menu_row((Rectangle){x + 6, row, 218, 28}, "Restore Items...", "trash")) {
+            {
+                Rectangle rect;
+                rect.x = x + 6;
+                rect.y = row;
+                rect.width = 218;
+                rect.height = 28;
+                if(draw_menu_row(rect, "Restore Items...", "trash")) {
                 visuals->trash_open = 1;
                 visuals->trash_next_scan = 0;
                 shell->menu_open = 0;
             }
             row += 32;
-            if(draw_menu_row((Rectangle){x + 6, row, 218, 28}, "Empty Trash...", "trash")) {
+            }
+
+            {
+                Rectangle rect;
+                rect.x = x + 6;
+                rect.y = row;
+                rect.width = 218;
+                rect.height = 28;
+                if(draw_menu_row(rect, "Empty Trash...", "trash")) {
                 visuals->trash_open = 1;
                 visuals->trash_next_scan = 0;
                 shell->menu_open = 0;
             }
             row += 32;
+            }
+
         }
         if(count > 0) {
-            if(draw_menu_row((Rectangle){x + 6, row, 218, 28}, "Cut", "files")) {
+            {
+                Rectangle rect;
+                rect.x = x + 6;
+                rect.y = row;
+                rect.width = 218;
+                rect.height = 28;
+                if(draw_menu_row(rect, "Cut", "files")) {
                 copy_desktop_files(shell, visuals, platform, 1);
                 shell->menu_open = 0;
             }
             row += 32;
-            if(draw_menu_row((Rectangle){x + 6, row, 218, 28}, "Copy", "files")) {
+            }
+
+            {
+                Rectangle rect;
+                rect.x = x + 6;
+                rect.y = row;
+                rect.width = 218;
+                rect.height = 28;
+                if(draw_menu_row(rect, "Copy", "files")) {
                 copy_desktop_files(shell, visuals, platform, 0);
                 shell->menu_open = 0;
             }
             row += 32;
-            if(draw_menu_row((Rectangle){x + 6, row, 218, 28}, "Duplicate", "files")) {
+            }
+
+            {
+                Rectangle rect;
+                rect.x = x + 6;
+                rect.y = row;
+                rect.width = 218;
+                rect.height = 28;
+                if(draw_menu_row(rect, "Duplicate", "files")) {
                 duplicate_desktop_files(shell, visuals, platform);
                 shell->menu_open = 0;
             }
             row += 32;
+            }
+
             if(item->is_directory) {
-                if(draw_menu_row((Rectangle){x + 6, row, 218, 28}, "Paste Into Folder", "files")) {
+                {
+                    Rectangle rect;
+                    rect.x = x + 6;
+                    rect.y = row;
+                    rect.width = 218;
+                    rect.height = 28;
+                    if(draw_menu_row(rect, "Paste Into Folder", "files")) {
                     paste_desktop_files(shell, visuals, platform);
                     shell->menu_open = 0;
                 }
                 row += 32;
+                }
+
             }
             if(count == 1 && item->file_path[0]) {
-                if(draw_menu_row((Rectangle){x + 6, row, 218, 28}, "Rename...", "files")) {
+                {
+                    Rectangle rect;
+                    rect.x = x + 6;
+                    rect.y = row;
+                    rect.width = 218;
+                    rect.height = 28;
+                    if(draw_menu_row(rect, "Rename...", "files")) {
                     begin_file_action(visuals, "rename", item->file_path);
                     shell->menu_open = 0;
                 }
                 row += 32;
+                }
+
             }
-            if(draw_menu_row((Rectangle){x + 6, row, 218, 28}, "Move to Trash...", "trash")) {
+            {
+                Rectangle rect;
+                rect.x = x + 6;
+                rect.y = row;
+                rect.width = 218;
+                rect.height = 28;
+                if(draw_menu_row(rect, "Move to Trash...", "trash")) {
                 trash_desktop_files(visuals);
                 shell->menu_open = 0;
             }
             row += 32;
-            if(draw_menu_row((Rectangle){x + 6, row, 218, 28}, "Open Desktop Folder", "files")) {
+            }
+
+            {
+                Rectangle rect;
+                rect.x = x + 6;
+                rect.y = row;
+                rect.width = 218;
+                rect.height = 28;
+                if(draw_menu_row(rect, "Open Desktop Folder", "files")) {
                 if(platform->desktop_directory && platform->open_path)
                     platform->open_path(platform->desktop_directory());
                 shell->menu_open = 0;
             }
-        }
+        
+            }
+}
     } else {
         const char *labels[] = {"Applications", "Terminal", "Open Desktop Folder", "New Folder...",
                                 "Paste", "Select All", "Arrange Icons", "Removable Drives...",
@@ -4214,8 +5060,16 @@ draw_desktop_context_menu(RillShellState *shell,
         const char *icons[] = {"all", "terminal", "files", "files", "files", "all",
                                "all", "files", "all", "settings", "power"};
         for(int i = 0; i < 11; i++) {
-            if(!draw_menu_row((Rectangle){x + 6, y + 6 + i * 32, 218, 28}, labels[i], icons[i]))
+            {
+                Rectangle rect;
+                rect.x = x + 6;
+                rect.y = y + 6 + i * 32;
+                rect.width = 218;
+                rect.height = 28;
+                if(!draw_menu_row(rect, labels[i], icons[i]))
                 continue;
+            }
+
             shell->menu_open = 0;
             switch(i) {
             case 0: shell->menu_open = 1; shell->app_menu_search_active = 1; break;
@@ -4267,30 +5121,83 @@ draw_file_dialog(RillShellState *shell, RillVisualState *visuals,
              visuals->file_source_count, visuals->file_source_count == 1 ? "" : "s");
     const char *title = trash ? trash_title :
                         strcmp(visuals->file_action, "rename") == 0 ? "Rename" : "New Folder";
-    Text((TextProps){
-        .bounds = {panel.x + 16, panel.y + 14, 0, 0},
-        .text = title, .font = Text18, .class_name = LabelPrimary,
-        .wrap = TextWrapNone});
-    draw_text_fit((TextProps){
-        .bounds = {panel.x + 16, panel.y + 44, 448, 0},
-        .text = visuals->file_source, .font = Text12, .class_name = LabelMuted,
-        .wrap = TextWrapNone});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = panel.x + 16;
+        props.bounds.y = panel.y + 14;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = title;
+        props.font = Text18;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        Text(props);
+    }
+
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = panel.x + 16;
+        props.bounds.y = panel.y + 44;
+        props.bounds.width = 448;
+        props.bounds.height = 0;
+        props.text = visuals->file_source;
+        props.font = Text12;
+        props.class_name = LabelMuted;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    }
+
     int commit = 0;
-    if(!trash)
-        TextField((TextFieldProps){.bounds = {panel.x + 16, panel.y + 68, 448, 32},
-                                  .text = visuals->file_name, .text_size = sizeof(visuals->file_name),
-                                  .cursor_position = &visuals->file_cursor, .focused = &visuals->file_focused,
-                                  .focus_id = 9701, .commit_pressed = &commit});
-    draw_text_fit((TextProps){
-        .bounds = {panel.x + 16, panel.y + 110, 448, 0},
-        .text = visuals->file_error, .font = Text12, .class_name = LabelPrimary,
-        .wrap = TextWrapNone});
-    if(draw_menu_row((Rectangle){panel.x + 264, panel.y + 154, 96, 30}, "Cancel", "") ||
+    {
+        TextFieldProps field;
+        memset(&field, 0, sizeof(field));
+        field.bounds.x = panel.x + 16;
+        field.bounds.y = panel.y + 68;
+        field.bounds.width = 448;
+        field.bounds.height = 32;
+        field.text = visuals->file_name;
+        field.text_size = sizeof(visuals->file_name);
+        field.cursor_position = &visuals->file_cursor;
+        field.focused = &visuals->file_focused;
+        field.focus_id = 9701;
+        field.commit_pressed = &commit;
+        if(!trash)
+        TextField(field);
+    }
+
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = panel.x + 16;
+        props.bounds.y = panel.y + 110;
+        props.bounds.width = 448;
+        props.bounds.height = 0;
+        props.text = visuals->file_error;
+        props.font = Text12;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    }
+
+    {
+        Rectangle rect;
+        Rectangle rect1;
+        rect.x = panel.x + 264;
+        rect.y = panel.y + 154;
+        rect.width = 96;
+        rect.height = 30;
+        rect1.x = panel.x + 366;
+        rect1.y = panel.y + 154;
+        rect1.width = 96;
+        rect1.height = 30;
+        if(draw_menu_row(rect, "Cancel", "") ||
        IsKeyPressed(KEY_ESCAPE)) {
         visuals->file_action[0] = '\0';
         return;
     }
-    if(draw_menu_row((Rectangle){panel.x + 366, panel.y + 154, 96, 30},
+    if(draw_menu_row(rect1,
                      trash ? "Trash" : "Save", "") || commit) {
         if(trash && platform->file_transfer_start != NULL) {
             const char *paths[DESKTOP_ICON_MAX];
@@ -4312,6 +5219,8 @@ draw_file_dialog(RillShellState *shell, RillVisualState *visuals,
             RillShellSetStatus(shell, "Desktop updated");
         }
     }
+
+    }
 }
 
 static void
@@ -4332,8 +5241,19 @@ draw_file_transfer(RillShellState *shell, RillVisualState *visuals,
         strcmp(status->operation, "duplicate") == 0 ? "Duplicating files" :
         strcmp(status->operation, "undo") == 0 ? "Undoing the file operation" :
         strcmp(status->operation, "trash") == 0 ? "Moving files to Trash" : "Copying files";
-    Text((TextProps){.bounds = {panel.x + 12, panel.y + 10, 356, 22},
-                     .text = title, .font = Text16, .class_name = LabelPrimary});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = panel.x + 12;
+        props.bounds.y = panel.y + 10;
+        props.bounds.width = 356;
+        props.bounds.height = 22;
+        props.text = title;
+        props.font = Text16;
+        props.class_name = LabelPrimary;
+        Text(props);
+    }
+
     char progress[160];
     snprintf(progress, sizeof(progress), "%d of %d items completed",
              status->completed, status->total);
@@ -4343,44 +5263,107 @@ draw_file_transfer(RillShellState *shell, RillVisualState *visuals,
     if(status->queued > 0)
         snprintf(progress + strlen(progress), sizeof(progress) - strlen(progress),
                  status->queued == 1 ? ", 1 waiting" : ", %d waiting", status->queued);
-    Text((TextProps){.bounds = {panel.x + 12, panel.y + 36, 356, 20},
-                     .text = progress, .font = Text12, .class_name = LabelMuted});
-    Text((TextProps){.bounds = {panel.x + 12, panel.y + 58, 356, 50},
-                     .text = status->conflict ? status->conflict_destination :
-                             (status->error[0] ? status->error : status->current),
-                     .font = Text12, .class_name = LabelPrimary});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = panel.x + 12;
+        props.bounds.y = panel.y + 36;
+        props.bounds.width = 356;
+        props.bounds.height = 20;
+        props.text = progress;
+        props.font = Text12;
+        props.class_name = LabelMuted;
+        Text(props);
+    }
+
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = panel.x + 12;
+        props.bounds.y = panel.y + 58;
+        props.bounds.width = 356;
+        props.bounds.height = 50;
+        props.text = status->conflict ? status->conflict_destination :
+                             (status->error[0] ? status->error : status->current);
+        props.font = Text12;
+        props.class_name = LabelPrimary;
+        Text(props);
+    }
+
     if(status->conflict) {
         /* One row of answers, plus a second row for the apply-to-all forms. */
         const char *labels[4] = {"Skip", "Replace", "Keep Both", "Cancel"};
         int answers[4] = {FILE_CONFLICT_SKIP, FILE_CONFLICT_REPLACE,
                           FILE_CONFLICT_KEEP_BOTH, FILE_CONFLICT_CANCEL};
-        for(int i = 0; i < 4; i++)
-            if(draw_settings_button((Rectangle){panel.x + 10 + i * 92, panel.y + 112, 86, 26},
-                                    labels[i], 0) &&
-               platform->file_transfer_resolve != NULL)
-                platform->file_transfer_resolve(answers[i], 0);
+        {
+            Rectangle rect;
+            for(int i = 0; i < 4; i++) {
+                rect.x = panel.x + 10 + i * 92;
+                rect.y = panel.y + 112;
+                rect.width = 86;
+                rect.height = 26;
+                if(draw_settings_button(rect,
+                                        labels[i], 0) &&
+                   platform->file_transfer_resolve != NULL)
+                    platform->file_transfer_resolve(answers[i], 0);
+            }
+        }
+
         const char *all_labels[3] = {"Skip All", "Replace All", "Keep All"};
         int all_answers[3] = {FILE_CONFLICT_SKIP, FILE_CONFLICT_REPLACE,
                               FILE_CONFLICT_KEEP_BOTH};
-        for(int i = 0; i < 3; i++)
-            if(draw_settings_button((Rectangle){panel.x + 10 + i * 92, panel.y + 140, 86, 22},
-                                    all_labels[i], 0) &&
-               platform->file_transfer_resolve != NULL)
-                platform->file_transfer_resolve(all_answers[i], 1);
+        {
+            Rectangle rect;
+            for(int i = 0; i < 3; i++) {
+                rect.x = panel.x + 10 + i * 92;
+                rect.y = panel.y + 140;
+                rect.width = 86;
+                rect.height = 22;
+                if(draw_settings_button(rect,
+                                        all_labels[i], 0) &&
+                   platform->file_transfer_resolve != NULL)
+                    platform->file_transfer_resolve(all_answers[i], 1);
+            }
+        }
+
         return;
     }
     int button = 0;
-    if(!status->running && status->error[0] && platform->file_transfer_retry != NULL &&
-       draw_settings_button((Rectangle){panel.x + 178, panel.y + 118, 86, 26}, "Retry", 0))
+    {
+        Rectangle rect;
+        rect.x = panel.x + 178;
+        rect.y = panel.y + 118;
+        rect.width = 86;
+        rect.height = 26;
+        if(!status->running && status->error[0] && platform->file_transfer_retry != NULL &&
+       draw_settings_button(rect, "Retry", 0))
         button = 2;
-    if(!status->running && !status->error[0] && !status->cancelled &&
+    }
+
+    {
+        Rectangle rect;
+        rect.x = panel.x + 178;
+        rect.y = panel.y + 118;
+        rect.width = 86;
+        rect.height = 26;
+        if(!status->running && !status->error[0] && !status->cancelled &&
        status->completed == status->total &&
        platform->file_transfer_undo != NULL &&
-       draw_settings_button((Rectangle){panel.x + 178, panel.y + 118, 86, 26}, "Undo", 0))
+       draw_settings_button(rect, "Undo", 0))
         button = 3;
-    if(draw_settings_button((Rectangle){panel.x + 276, panel.y + 118, 92, 26},
+    }
+
+    {
+        Rectangle rect;
+        rect.x = panel.x + 276;
+        rect.y = panel.y + 118;
+        rect.width = 92;
+        rect.height = 26;
+        if(draw_settings_button(rect,
                             status->running ? "Cancel" : "Close", 0))
         button = 1;
+    }
+
     if(button == 1) {
         if(status->running && platform->file_transfer_cancel != NULL)
             platform->file_transfer_cancel();
@@ -4429,10 +5412,20 @@ draw_volume_menu(RillVisualState *visuals, const RillPlatformServices *platform)
             DrawRectangleRec(row, panel_item_hover_color());
         else if(active)
             DrawRectangleRec(row, panel_item_color());
-        draw_text_fit((TextProps){.bounds = {row.x + 10, row.y + 7, 218, 0},
-                                  .text = visuals->volume_sinks[i], .font = Text12,
-                                  .class_name = active ? LabelPanelAccent : LabelPanel,
-                                  .wrap = TextWrapNone});
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = row.x + 10;
+            props.bounds.y = row.y + 7;
+            props.bounds.width = 218;
+            props.bounds.height = 0;
+            props.text = visuals->volume_sinks[i];
+            props.font = Text12;
+            props.class_name = active ? LabelPanelAccent : LabelPanel;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
+
         if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
            platform->volume_set_default != NULL) {
             if(platform->volume_set_default(visuals->volume_sinks[i])) {
@@ -4477,10 +5470,20 @@ draw_tray_menu(RillShellState *shell, RillVisualState *visuals,
         int hover = clickable && CheckCollisionPointRec(GetMousePosition(), rect);
         if(hover)
             DrawRectangleRec(rect, panel_item_hover_color());
-        draw_text_fit((TextProps){.bounds = {rect.x + 8, rect.y + 7, 202, 0},
-                                  .text = label, .font = Text12,
-                                  .class_name = row->enabled ? LabelPanel : LabelPanelDim,
-                                  .wrap = TextWrapNone});
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = rect.x + 8;
+            props.bounds.y = rect.y + 7;
+            props.bounds.width = 202;
+            props.bounds.height = 0;
+            props.text = label;
+            props.font = Text12;
+            props.class_name = row->enabled ? LabelPanel : LabelPanelDim;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
+
         if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
            platform->tray_menu_activate != NULL) {
             platform->tray_menu_activate(visuals->tray_menu_id, row->item_id);
@@ -4502,14 +5505,36 @@ draw_trash_dialog(RillShellState *shell, RillVisualState *visuals,
     refresh_trash_entries(visuals, platform);
     Rectangle panel = {GetScreenWidth() / 2 - 260, GetScreenHeight() / 2 - 190, 520, 380};
     draw_menu_panel(panel);
-    Text((TextProps){.bounds = {panel.x + 16, panel.y + 12, 300, 24},
-                     .text = "Trash", .font = Text16, .class_name = LabelPrimary});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = panel.x + 16;
+        props.bounds.y = panel.y + 12;
+        props.bounds.width = 300;
+        props.bounds.height = 24;
+        props.text = "Trash";
+        props.font = Text16;
+        props.class_name = LabelPrimary;
+        Text(props);
+    }
+
     char heading[96];
     snprintf(heading, sizeof(heading), visuals->trash_count == 1 ?
              "%d item" : "%d items", visuals->trash_count);
-    Text((TextProps){.bounds = {panel.x + 330, panel.y + 14, 170, 20},
-                     .text = heading, .font = Text12, .class_name = LabelMuted,
-                     .align = TextAlignEnd});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = panel.x + 330;
+        props.bounds.y = panel.y + 14;
+        props.bounds.width = 170;
+        props.bounds.height = 20;
+        props.text = heading;
+        props.font = Text12;
+        props.class_name = LabelMuted;
+        props.align = TextAlignEnd;
+        Text(props);
+    }
+
     int visible = visuals->trash_count < 8 ? visuals->trash_count : 8;
     for(int i = 0; i < visible; i++) {
         const FileTrashEntry *entry = &visuals->trash_entries[i];
@@ -4525,37 +5550,102 @@ draw_trash_dialog(RillShellState *shell, RillVisualState *visuals,
         char label[256];
         snprintf(label, sizeof(label), "%s%s", entry->name,
                  entry->is_directory ? " (folder)" : "");
-        draw_text_fit((TextProps){.bounds = {row.x + 10, row.y + 6, 220, 0},
-                                  .text = label, .font = Text12,
-                                  .class_name = LabelPrimary, .wrap = TextWrapNone});
-        draw_text_fit((TextProps){.bounds = {row.x + 240, row.y + 6, 246, 0},
-                                  .text = entry->original[0] ? entry->original :
-                                          "original location unknown",
-                                  .font = Text12, .class_name = LabelMuted,
-                                  .wrap = TextWrapNone});
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = row.x + 10;
+            props.bounds.y = row.y + 6;
+            props.bounds.width = 220;
+            props.bounds.height = 0;
+            props.text = label;
+            props.font = Text12;
+            props.class_name = LabelPrimary;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
+
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = row.x + 240;
+            props.bounds.y = row.y + 6;
+            props.bounds.width = 246;
+            props.bounds.height = 0;
+            props.text = entry->original[0] ? entry->original :
+                                          "original location unknown";
+            props.font = Text12;
+            props.class_name = LabelMuted;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
+
     }
     if(visuals->trash_count > 8) {
         char more[64];
         snprintf(more, sizeof(more), "... and %d more", visuals->trash_count - 8);
-        Text((TextProps){.bounds = {panel.x + 16, panel.y + 44 + 8 * 32, 480, 20},
-                         .text = more, .font = Text12, .class_name = LabelMuted});
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = panel.x + 16;
+            props.bounds.y = panel.y + 44 + 8 * 32;
+            props.bounds.width = 480;
+            props.bounds.height = 20;
+            props.text = more;
+            props.font = Text12;
+            props.class_name = LabelMuted;
+            Text(props);
+        }
+
     }
-    if(visuals->trash_error[0])
-        Text((TextProps){.bounds = {panel.x + 16, panel.y + 312, 488, 20},
-                         .text = visuals->trash_error, .font = Text12,
-                         .class_name = LabelPrimary});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = panel.x + 16;
+        props.bounds.y = panel.y + 312;
+        props.bounds.width = 488;
+        props.bounds.height = 20;
+        props.text = visuals->trash_error;
+        props.font = Text12;
+        props.class_name = LabelPrimary;
+        if(visuals->trash_error[0])
+        Text(props);
+    }
+
     int restored = 0, emptied = 0;
-    if(visuals->trash_selected >= 0 &&
-       draw_settings_button((Rectangle){panel.x + 12, panel.y + 340, 120, 28},
+    {
+        Rectangle rect;
+        rect.x = panel.x + 12;
+        rect.y = panel.y + 340;
+        rect.width = 120;
+        rect.height = 28;
+        if(visuals->trash_selected >= 0 &&
+       draw_settings_button(rect,
                             "Restore", 0))
         restored = 1;
-    if(draw_settings_button((Rectangle){panel.x + 140, panel.y + 340, 140, 28},
+    }
+
+    {
+        Rectangle rect;
+        rect.x = panel.x + 140;
+        rect.y = panel.y + 340;
+        rect.width = 140;
+        rect.height = 28;
+        if(draw_settings_button(rect,
                             "Empty Trash", 0))
         emptied = 1;
-    if(draw_settings_button((Rectangle){panel.x + 388, panel.y + 340, 120, 28},
-                            "Close", 0) || IsKeyPressed(KEY_ESCAPE)) {
-        visuals->trash_open = 0;
-        return;
+    }
+
+    {
+        Rectangle rect;
+        rect.x = panel.x + 388;
+        rect.y = panel.y + 340;
+        rect.width = 120;
+        rect.height = 28;
+        if(draw_settings_button(rect,
+                                "Close", 0) || IsKeyPressed(KEY_ESCAPE)) {
+            visuals->trash_open = 0;
+            return;
+        }
     }
     if(restored && platform->file_trash_restore != NULL) {
         if(platform->file_trash_restore(
@@ -4590,20 +5680,46 @@ draw_drives_dialog(RillShellState *shell, RillVisualState *visuals,
     }
     Rectangle panel = {GetScreenWidth() / 2 - 260, GetScreenHeight() / 2 - 150, 520, 300};
     draw_menu_panel(panel);
-    Text((TextProps){.bounds = {panel.x + 16, panel.y + 12, 300, 24},
-                     .text = "Removable Drives", .font = Text16,
-                     .class_name = LabelPrimary});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = panel.x + 16;
+        props.bounds.y = panel.y + 12;
+        props.bounds.width = 300;
+        props.bounds.height = 24;
+        props.text = "Removable Drives";
+        props.font = Text16;
+        props.class_name = LabelPrimary;
+        Text(props);
+    }
     char heading[96];
     snprintf(heading, sizeof(heading), visuals->drive_count == 1 ?
              "%d volume" : "%d volumes", visuals->drive_count);
-    Text((TextProps){.bounds = {panel.x + 330, panel.y + 14, 170, 20},
-                     .text = heading, .font = Text12, .class_name = LabelMuted,
-                     .align = TextAlignEnd});
-    if(visuals->drive_count == 0)
-        draw_text_fit((TextProps){
-            .bounds = {panel.x + 16, panel.y + 52, 488, 0},
-            .text = "No removable volumes are connected.", .font = Text12,
-            .class_name = LabelMuted});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = panel.x + 330;
+        props.bounds.y = panel.y + 14;
+        props.bounds.width = 170;
+        props.bounds.height = 20;
+        props.text = heading;
+        props.font = Text12;
+        props.class_name = LabelMuted;
+        props.align = TextAlignEnd;
+        Text(props);
+    }
+    if(visuals->drive_count == 0) {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = panel.x + 16;
+        props.bounds.y = panel.y + 52;
+        props.bounds.width = 488;
+        props.bounds.height = 0;
+        props.text = "No removable volumes are connected.";
+        props.font = Text12;
+        props.class_name = LabelMuted;
+        draw_text_fit(props);
+    }
     int visible = visuals->drive_count < 6 ? visuals->drive_count : 6;
     for(int i = 0; i < visible; i++) {
         const RillVolume *volume = &visuals->drive_entries[i];
@@ -4617,27 +5733,67 @@ draw_drives_dialog(RillShellState *shell, RillVisualState *visuals,
         char label[320];
         snprintf(label, sizeof(label), "%s  (%s, %s)", volume->name,
                  volume->device, volume->mounted ? "mounted" : "not mounted");
-        draw_text_fit((TextProps){.bounds = {row.x + 10, row.y + 6, 330, 0},
-                                  .text = label, .font = Text12,
-                                  .class_name = LabelPrimary, .wrap = TextWrapNone});
-        draw_text_fit((TextProps){.bounds = {row.x + 346, row.y + 6, 140, 0},
-                                  .text = volume->mount_path, .font = Text12,
-                                  .class_name = LabelMuted, .wrap = TextWrapNone});
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = row.x + 10;
+            props.bounds.y = row.y + 6;
+            props.bounds.width = 330;
+            props.bounds.height = 0;
+            props.text = label;
+            props.font = Text12;
+            props.class_name = LabelPrimary;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = row.x + 346;
+            props.bounds.y = row.y + 6;
+            props.bounds.width = 140;
+            props.bounds.height = 0;
+            props.text = volume->mount_path;
+            props.font = Text12;
+            props.class_name = LabelMuted;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
     }
-    if(visuals->drive_error[0])
-        draw_text_fit((TextProps){.bounds = {panel.x + 16, panel.y + 244, 488, 40},
-                                  .text = visuals->drive_error, .font = Text12,
-                                  .class_name = LabelPrimary});
+    if(visuals->drive_error[0]) {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = panel.x + 16;
+        props.bounds.y = panel.y + 244;
+        props.bounds.width = 488;
+        props.bounds.height = 40;
+        props.text = visuals->drive_error;
+        props.font = Text12;
+        props.class_name = LabelPrimary;
+        draw_text_fit(props);
+    }
     int selected = visuals->drive_selected;
     int acted = 0;
-    if(selected >= 0 && visuals->drive_entries[selected].mounted &&
-       draw_settings_button((Rectangle){panel.x + 12, panel.y + 262, 78, 28}, "Open", 0)) {
+    {
+        Rectangle rect;
+        rect.x = panel.x + 12;
+        rect.y = panel.y + 262;
+        rect.width = 78;
+        rect.height = 28;
+        if(selected >= 0 && visuals->drive_entries[selected].mounted &&
+           draw_settings_button(rect, "Open", 0)) {
         if(platform->open_path != NULL)
             platform->open_path(visuals->drive_entries[selected].mount_path);
+        }
     }
-    if(selected >= 0 && !visuals->drive_entries[selected].mounted &&
-       draw_settings_button((Rectangle){panel.x + 96, panel.y + 262, 84, 28},
-                            "Mount", 0) && platform->removable_mount != NULL) {
+    {
+        Rectangle rect;
+        rect.x = panel.x + 96;
+        rect.y = panel.y + 262;
+        rect.width = 84;
+        rect.height = 28;
+        if(selected >= 0 && !visuals->drive_entries[selected].mounted &&
+           draw_settings_button(rect, "Mount", 0) && platform->removable_mount != NULL) {
         char mounted_path[512];
         if(platform->removable_mount(visuals->drive_entries[selected].device,
                                      mounted_path, sizeof(mounted_path),
@@ -4646,31 +5802,50 @@ draw_drives_dialog(RillShellState *shell, RillVisualState *visuals,
             RillShellSetStatus(shell, "Volume mounted");
         visuals->drive_next_scan = 0;
         acted = 1;
+        }
     }
-    if(selected >= 0 && visuals->drive_entries[selected].mounted &&
-       draw_settings_button((Rectangle){panel.x + 96, panel.y + 262, 100, 28},
-                            "Unmount", 0) && platform->removable_unmount != NULL) {
+    {
+        Rectangle rect;
+        rect.x = panel.x + 96;
+        rect.y = panel.y + 262;
+        rect.width = 100;
+        rect.height = 28;
+        if(selected >= 0 && visuals->drive_entries[selected].mounted &&
+           draw_settings_button(rect, "Unmount", 0) && platform->removable_unmount != NULL) {
         if(platform->removable_unmount(visuals->drive_entries[selected].device,
                                        visuals->drive_error,
                                        sizeof(visuals->drive_error)))
             RillShellSetStatus(shell, "Volume unmounted");
         visuals->drive_next_scan = 0;
         acted = 1;
+        }
     }
-    if(selected >= 0 && visuals->drive_entries[selected].can_eject &&
-       draw_settings_button((Rectangle){panel.x + 204, panel.y + 262, 78, 28},
-                            "Eject", 0) && platform->removable_eject != NULL) {
+    {
+        Rectangle rect;
+        rect.x = panel.x + 204;
+        rect.y = panel.y + 262;
+        rect.width = 78;
+        rect.height = 28;
+        if(selected >= 0 && visuals->drive_entries[selected].can_eject &&
+           draw_settings_button(rect, "Eject", 0) && platform->removable_eject != NULL) {
         if(platform->removable_eject(visuals->drive_entries[selected].device,
                                      visuals->drive_error,
                                      sizeof(visuals->drive_error)))
             RillShellSetStatus(shell, "Drive powered off");
         visuals->drive_next_scan = 0;
         acted = 1;
+        }
     }
     (void)acted;
-    if(draw_settings_button((Rectangle){panel.x + 388, panel.y + 262, 120, 28},
-                            "Close", 0) || IsKeyPressed(KEY_ESCAPE))
-        visuals->drives_open = 0;
+    {
+        Rectangle rect;
+        rect.x = panel.x + 388;
+        rect.y = panel.y + 262;
+        rect.width = 120;
+        rect.height = 28;
+        if(draw_settings_button(rect, "Close", 0) || IsKeyPressed(KEY_ESCAPE))
+            visuals->drives_open = 0;
+    }
 }
 
 static void
@@ -4691,13 +5866,23 @@ draw_window_list_menu(RillShellState *shell,
     x = visuals->desktop_menu_x;
     y = visuals->desktop_menu_y;
     clamp_menu_origin(visuals, &x, &y, 250, rows * 30 + 14);
-    menu = (Rectangle){(float)x, (float)y, 250, (float)(rows * 30 + 14)};
+    menu.x = (float)x;
+    menu.y = (float)y;
+    menu.width = 250;
+    menu.height = (float)(rows * 30 + 14);
     draw_menu_panel(menu);
     if(shell->task_count == 0) {
-        draw_text_fit((TextProps){
-            .bounds = {x + 12, y + 10, 226, 0},
-            .text = "No windows", .font = Text12, .class_name = LabelMuted,
-            .wrap = TextWrapNone});
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = x + 12;
+        props.bounds.y = y + 10;
+        props.bounds.width = 226;
+        props.bounds.height = 0;
+        props.text = "No windows";
+        props.font = Text12;
+        props.class_name = LabelMuted;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
         return;
     }
     for(i = 0; i < rows; i++) {
@@ -4705,12 +5890,27 @@ draw_window_list_menu(RillShellState *shell,
         int task_index = i;
         if(CheckCollisionPointRec(GetMousePosition(), row))
             DrawRectangleRec(row, panel_item_hover_color());
-        draw_task_icon(visuals, shell, &shell->tasks[task_index],
-                       (Rectangle){row.x + 4, row.y + 5, 16, 16});
-        draw_text_fit((TextProps){
-            .bounds = {(int)row.x + 26, (int)row.y + 8, (int)row.width - 34, 0},
-            .text = shell->tasks[task_index].title, .font = Text12, .class_name = CheckCollisionPointRec(GetMousePosition(), row) ? LabelPanel : LabelPrimary,
-            .wrap = TextWrapNone});
+        {
+            Rectangle rect;
+            rect.x = row.x + 4;
+            rect.y = row.y + 5;
+            rect.width = 16;
+            rect.height = 16;
+            draw_task_icon(visuals, shell, &shell->tasks[task_index], rect);
+        }
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = (int)row.x + 26;
+            props.bounds.y = (int)row.y + 8;
+            props.bounds.width = (int)row.width - 34;
+            props.bounds.height = 0;
+            props.text = shell->tasks[task_index].title;
+            props.font = Text12;
+            props.class_name = CheckCollisionPointRec(GetMousePosition(), row) ? LabelPanel : LabelPrimary;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
         if(CheckCollisionPointRec(GetMousePosition(), row) &&
            IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             RillShellSelectTask(shell, task_index);
@@ -4742,46 +5942,102 @@ draw_panel_properties(RillShellState *shell, RillVisualState *visuals)
         return;
     }
     plugin = &plugins[visuals->properties_index];
-    panel = (Rectangle){(GetScreenWidth() - 264) / 2.0f,
-                        (GetScreenHeight() - 132) / 2.0f, 264, 132};
+    panel.x = (GetScreenWidth() - 264) / 2.0f;
+    panel.y = (GetScreenHeight() - 132) / 2.0f;
+    panel.width = 264;
+    panel.height = 132;
     include_panel_popup(full);
     DrawRectangleRec(full, Fade(BLACK, 0.30f));
     DrawRectangleRounded(panel, 0.03f, 8, opaque_color(StyleTokenColor("surface")));
     DrawRectangleRoundedLinesEx(panel, 0.03f, 8, 2.0f, StyleTokenColor("link"));
-    Text((TextProps){
-        .bounds = {(int)panel.x + 14, (int)panel.y + 12, 0, 0},
-        .text = "Panel item", .font = Text16, .class_name = LabelPrimary,
-        .wrap = TextWrapNone});
-    draw_text_fit((TextProps){
-        .bounds = {(int)panel.x + 14, (int)panel.y + 36, (int)panel.width - 28, 0},
-        .text = RillPanelPluginKindName(plugin->kind), .font = Text12, .class_name = LabelMuted,
-        .wrap = TextWrapNone});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)panel.x + 14;
+        props.bounds.y = (int)panel.y + 12;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = "Panel item";
+        props.font = Text16;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        Text(props);
+    }
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)panel.x + 14;
+        props.bounds.y = (int)panel.y + 36;
+        props.bounds.width = (int)panel.width - 28;
+        props.bounds.height = 0;
+        props.text = RillPanelPluginKindName(plugin->kind);
+        props.font = Text12;
+        props.class_name = LabelMuted;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    }
 
-    Text((TextProps){
-        .bounds = {(int)panel.x + 14, (int)panel.y + 64, 0, 0},
-        .text = "Width", .font = Text14, .class_name = LabelPrimary,
-        .wrap = TextWrapNone});
-    if(draw_settings_button((Rectangle){panel.x + 150, panel.y + 60, 26, 24},
-                            "-", 0) && plugin->width > 8) {
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)panel.x + 14;
+        props.bounds.y = (int)panel.y + 64;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = "Width";
+        props.font = Text14;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        Text(props);
+    }
+    {
+        Rectangle rect;
+        rect.x = panel.x + 150;
+        rect.y = panel.y + 60;
+        rect.width = 26;
+        rect.height = 24;
+        if(draw_settings_button(rect, "-", 0) && plugin->width > 8) {
         plugin->width -= 2;
         plugin->advance = plugin->advance > 2 ? plugin->advance - 2 : 0;
         visuals->panel_dirty = 1;
+        }
     }
     snprintf(sample, sizeof(sample), "%d", plugin->width);
-    draw_text_fit((TextProps){
-        .bounds = {(int)panel.x + 184, (int)panel.y + 64, 34, 0},
-        .text = sample, .font = Text14, .class_name = LabelPrimary,
-        .wrap = TextWrapNone});
-    if(draw_settings_button((Rectangle){panel.x + 222, panel.y + 60, 26, 24},
-                            "+", 0) && plugin->width < 600) {
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)panel.x + 184;
+        props.bounds.y = (int)panel.y + 64;
+        props.bounds.width = 34;
+        props.bounds.height = 0;
+        props.text = sample;
+        props.font = Text14;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    }
+    {
+        Rectangle rect;
+        rect.x = panel.x + 222;
+        rect.y = panel.y + 60;
+        rect.width = 26;
+        rect.height = 24;
+        if(draw_settings_button(rect, "+", 0) && plugin->width < 600) {
         plugin->width += 2;
         plugin->advance += 2;
         visuals->panel_dirty = 1;
+        }
     }
-    if(draw_settings_button((Rectangle){panel.x + 14, panel.y + 94, 100, 26},
-                            "Done", 0)) {
-        visuals->properties_open = 0;
-        RillShellSetStatus(shell, "Panel item updated");
+    {
+        Rectangle rect;
+        rect.x = panel.x + 14;
+        rect.y = panel.y + 94;
+        rect.width = 100;
+        rect.height = 26;
+        if(draw_settings_button(rect, "Done", 0)) {
+            visuals->properties_open = 0;
+            RillShellSetStatus(shell, "Panel item updated");
+        }
     }
     if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
        !CheckCollisionPointRec(GetMousePosition(), panel))
@@ -4812,20 +6068,40 @@ draw_calendar_popup(RillVisualState *visuals)
         return;
     x = GetScreenWidth() - width - 8;
     y = rill_menu_anchor_y(visuals, height);
-    menu = (Rectangle){(float)x, (float)y, (float)width, (float)height};
+    menu.x = (float)x;
+    menu.y = (float)y;
+    menu.width = (float)width;
+    menu.height = (float)height;
     draw_menu_panel(menu);
 
     char month[48];
     strftime(month, sizeof(month), "%B %Y", local);
-    Text((TextProps){
-        .bounds = {(int)menu.x + 14, (int)menu.y + 10, 0, 0},
-        .text = month, .font = Text14, .class_name = LabelPrimary,
-        .wrap = TextWrapNone});
-    for(int i = 0; i < 7; i++)
-        Text((TextProps){
-            .bounds = {(int)menu.x + 16 + i * 28, (int)menu.y + 34, 0, 0},
-            .text = weekdays[i], .font = Text12, .class_name = LabelMuted,
-            .wrap = TextWrapNone});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)menu.x + 14;
+        props.bounds.y = (int)menu.y + 10;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = month;
+        props.font = Text14;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        Text(props);
+    }
+    for(int i = 0; i < 7; i++) {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)menu.x + 16 + i * 28;
+        props.bounds.y = (int)menu.y + 34;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = weekdays[i];
+        props.font = Text12;
+        props.class_name = LabelMuted;
+        props.wrap = TextWrapNone;
+        Text(props);
+    }
 
     memset(&day, 0, sizeof(day));
     day.tm_year = local->tm_year;
@@ -4851,10 +6127,19 @@ draw_calendar_popup(RillVisualState *visuals)
             DrawRectangleRec(cell_rect, panel_active_color());
         else if(CheckCollisionPointRec(GetMousePosition(), cell_rect))
             DrawRectangleRec(cell_rect, panel_item_hover_color());
-        Text((TextProps){
-            .bounds = {(int)cell_rect.x + 8, (int)cell_rect.y + 4, 0, 0},
-            .text = label, .font = Text12, .class_name = d == today ? LabelWhite : LabelPrimary,
-            .wrap = TextWrapNone});
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = (int)cell_rect.x + 8;
+            props.bounds.y = (int)cell_rect.y + 4;
+            props.bounds.width = 0;
+            props.bounds.height = 0;
+            props.text = label;
+            props.font = Text12;
+            props.class_name = d == today ? LabelWhite : LabelPrimary;
+            props.wrap = TextWrapNone;
+            Text(props);
+        }
     }
     if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
        !CheckCollisionPointRec(GetMousePosition(), menu))
@@ -4879,23 +6164,42 @@ draw_clipboard_popup(RillShellState *shell, RillVisualState *visuals,
     if(x < 4)
         x = 4;
     y = rill_menu_anchor_y(visuals, rows * 28 + 14);
-    menu = (Rectangle){(float)x, (float)y, 272, (float)(rows * 28 + 14)};
+    menu.x = (float)x;
+    menu.y = (float)y;
+    menu.width = 272;
+    menu.height = (float)(rows * 28 + 14);
     draw_menu_panel(menu);
     if(visuals->clipboard_count == 0) {
-        draw_text_fit((TextProps){
-            .bounds = {x + 12, y + 10, 248, 0},
-            .text = "Clipboard is empty", .font = Text12, .class_name = LabelMuted,
-            .wrap = TextWrapNone});
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = x + 12;
+        props.bounds.y = y + 10;
+        props.bounds.width = 248;
+        props.bounds.height = 0;
+        props.text = "Clipboard is empty";
+        props.font = Text12;
+        props.class_name = LabelMuted;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
         return;
     }
     for(i = 0; i < rows; i++) {
         Rectangle row = {x + 6, (float)(y + 6 + i * 28), 260, 26};
         if(CheckCollisionPointRec(GetMousePosition(), row))
             DrawRectangleRec(row, panel_item_hover_color());
-        draw_text_fit((TextProps){
-            .bounds = {(int)row.x + 10, (int)row.y + 6, (int)row.width - 20, 0},
-            .text = visuals->clipboard_texts[i], .font = Text12, .class_name = LabelPanel,
-            .wrap = TextWrapNone});
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = (int)row.x + 10;
+            props.bounds.y = (int)row.y + 6;
+            props.bounds.width = (int)row.width - 20;
+            props.bounds.height = 0;
+            props.text = visuals->clipboard_texts[i];
+            props.font = Text12;
+            props.class_name = LabelPanel;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
         if(CheckCollisionPointRec(GetMousePosition(), row) &&
            IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             if(platform != NULL && platform->clipboard_select != NULL &&
@@ -4936,22 +6240,42 @@ draw_notifications(RillShellState *shell, RillVisualState *visuals,
         RillNotification *note = &visuals->notifications[i];
         int clicked;
 
-        banner = (Rectangle){(float)x, (float)(y + i * step), (float)width,
-                             (float)height};
+        banner.x = (float)x;
+        banner.y = (float)(y + i * step);
+        banner.width = (float)width;
+        banner.height = (float)height;
         include_panel_popup(banner);
         DrawRectangleRec(banner, opaque_color(StyleTokenColor("surface")));
         DrawRectangleRounded(banner, 0.05f, 6, opaque_color(StyleTokenColor("surface")));
         DrawRectangleRoundedLinesEx(banner, 0.05f, 6, 1.0f,
                                     Fade(StyleTokenColor("link"), 0.55f));
         DrawRectangle(x, (int)banner.y + 6, 3, height - 12, StyleTokenColor("link"));
-        draw_text_fit((TextProps){
-            .bounds = {x + 12, (int)banner.y + 8, width - 24, 0},
-            .text = note->summary, .font = Text14, .class_name = LabelPrimary,
-            .wrap = TextWrapNone});
-        draw_text_fit((TextProps){
-            .bounds = {x + 12, (int)banner.y + 28, width - 24, 0},
-            .text = note->body[0] != '\0' ? note->body : note->app_name, .font = Text12, .class_name = LabelMuted,
-            .wrap = TextWrapNone});
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = x + 12;
+            props.bounds.y = (int)banner.y + 8;
+            props.bounds.width = width - 24;
+            props.bounds.height = 0;
+            props.text = note->summary;
+            props.font = Text14;
+            props.class_name = LabelPrimary;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = x + 12;
+            props.bounds.y = (int)banner.y + 28;
+            props.bounds.width = width - 24;
+            props.bounds.height = 0;
+            props.text = note->body[0] != '\0' ? note->body : note->app_name;
+            props.font = Text12;
+            props.class_name = LabelMuted;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
         clicked = CheckCollisionPointRec(GetMousePosition(), banner) &&
                   IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
         if(clicked && platform != NULL &&
@@ -4978,26 +6302,45 @@ draw_logout_dialog(RillShellState *shell, RillVisualState *visuals,
 
     if(visuals == NULL || !visuals->logout_open)
         return;
-    panel = (Rectangle){(screen_w - 280) / 2.0f, (screen_h - 246) / 2.0f,
-                        280, 246};
+    panel.x = (screen_w - 280) / 2.0f;
+    panel.y = (screen_h - 246) / 2.0f;
+    panel.width = 280;
+    panel.height = 246;
     include_panel_popup(full);
     plan9_overlay_rect(full);
     DrawRectangleRec(full, Fade(BLACK, 0.38f));
     DrawRectangleRounded(panel, 0.03f, 8, opaque_color(StyleTokenColor("surface")));
     DrawRectangleRoundedLinesEx(panel, 0.03f, 8, 2.0f, StyleTokenColor("link"));
-    Text((TextProps){
-        .bounds = {(int)panel.x + 16, (int)panel.y + 14, 0, 0},
-        .text = "End session", .font = Text18, .class_name = LabelPrimary,
-        .wrap = TextWrapNone});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)panel.x + 16;
+        props.bounds.y = (int)panel.y + 14;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = "End session";
+        props.font = Text18;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        Text(props);
+    }
     /* Explicit behavior for in-progress file transfers: ending the session
      * waits for the active job instead of discarding it silently. */
     int transfer_running = visuals->file_transfer.running ||
                            visuals->file_transfer.queued > 0;
-    if(transfer_running)
-        draw_text_fit((TextProps){
-            .bounds = {panel.x + 16, panel.y + 28, panel.width - 32, 14},
-            .text = "A file operation is still running; it finishes first.",
-            .font = Text12, .class_name = LabelPrimary, .wrap = TextWrapNone});
+    if(transfer_running) {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = panel.x + 16;
+        props.bounds.y = panel.y + 28;
+        props.bounds.width = panel.width - 32;
+        props.bounds.height = 14;
+        props.text = "A file operation is still running; it finishes first.";
+        props.font = Text12;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    }
     for(i = 0; i < 6; i++) {
         Rectangle button = {panel.x + 16, panel.y + 46 + i * 32,
                             panel.width - 32, 28};
@@ -5117,14 +6460,32 @@ draw_host_app(RillAppWindow *app, Rectangle content, RillVisualState *visuals)
               (app->kind == RILL_APP_TERMINAL ? "t9" : "shelf");
     module = load_host_module(visuals, host_id);
     if(module == NULL || module->host == NULL) {
-        draw_text_fit((TextProps){
-            .bounds = {(int)content.x + 16, (int)content.y + 18, (int)content.width - 32, 0},
-            .text = "Host module not installed", .font = Text14, .class_name = LabelPrimary,
-            .wrap = TextWrapNone});
-        draw_text_fit((TextProps){
-            .bounds = {(int)content.x + 16, (int)content.y + 46, (int)content.width - 32, 0},
-            .text = host_id, .font = Text12, .class_name = LabelMuted,
-            .wrap = TextWrapNone});
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = (int)content.x + 16;
+            props.bounds.y = (int)content.y + 18;
+            props.bounds.width = (int)content.width - 32;
+            props.bounds.height = 0;
+            props.text = "Host module not installed";
+            props.font = Text14;
+            props.class_name = LabelPrimary;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = (int)content.x + 16;
+            props.bounds.y = (int)content.y + 46;
+            props.bounds.width = (int)content.width - 32;
+            props.bounds.height = 0;
+            props.text = host_id;
+            props.font = Text12;
+            props.class_name = LabelMuted;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
         return;
     }
 
@@ -5156,10 +6517,19 @@ draw_settings_button(Rectangle bounds, const char *label, int active)
                          hover ? panel_item_hover_color() : panel_item_color());
     DrawRectangleRoundedLinesEx(bounds, 0.06f, 4, 1.0f,
                                 Fade(StyleTokenColor("text"), 0.30f));
-    draw_text_fit((TextProps){
-        .bounds = {(int)bounds.x + 8, (int)bounds.y + 5, (int)bounds.width - 16, 0},
-        .text = label, .font = Text12, .class_name = LabelPanel,
-        .wrap = TextWrapNone});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)bounds.x + 8;
+        props.bounds.y = (int)bounds.y + 5;
+        props.bounds.width = (int)bounds.width - 16;
+        props.bounds.height = 0;
+        props.text = label;
+        props.font = Text12;
+        props.class_name = LabelPanel;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    }
     return hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
 }
 
@@ -5467,18 +6837,35 @@ draw_input_settings(RillShellState *shell, Rectangle content,
         visuals->panel_output_count =
             platform->display_outputs(visuals->panel_outputs, 8);
 
-    Text((TextProps){.bounds = {(int)content.x + 16, y, 0, 0},
-                     .text = "Display", .font = Text18, .class_name = LabelPrimary});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)content.x + 16;
+        props.bounds.y = y;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = "Display";
+        props.font = Text18;
+        props.class_name = LabelPrimary;
+        Text(props);
+    }
     y += 28;
     if(visuals->panel_output_count > 0) {
         if(visuals->display_output_selected >= visuals->panel_output_count)
             visuals->display_output_selected = 0;
-        if(draw_settings_button((Rectangle){content.x + 16, (float)y, 130, 26},
-                                visuals->panel_outputs[
-                                    visuals->display_output_selected].name, 0))
-            visuals->display_output_selected =
-                (visuals->display_output_selected + 1) %
-                visuals->panel_output_count;
+        {
+            Rectangle rect;
+            rect.x = content.x + 16;
+            rect.y = (float)y;
+            rect.width = 130;
+            rect.height = 26;
+            if(draw_settings_button(rect,
+                                    visuals->panel_outputs[
+                                        visuals->display_output_selected].name, 0))
+                visuals->display_output_selected =
+                    (visuals->display_output_selected + 1) %
+                    visuals->panel_output_count;
+        }
         const char *output =
             visuals->panel_outputs[visuals->display_output_selected].name;
         if(visuals->display_mode_count == 0 && platform->display_modes != NULL)
@@ -5490,15 +6877,25 @@ draw_input_settings(RillShellState *shell, Rectangle content,
             snprintf(label, sizeof(label), "%dx%d",
                      visuals->display_modes[visuals->display_mode_selected].width,
                      visuals->display_modes[visuals->display_mode_selected].height);
-            if(draw_settings_button((Rectangle){content.x + 156, (float)y, 110, 26},
-                                    label, 0))
-                visuals->display_mode_selected =
-                    (visuals->display_mode_selected + 1) %
-                    visuals->display_mode_count;
-            if(visuals->display_confirm_deadline == 0 &&
-               draw_settings_button((Rectangle){content.x + 276, (float)y, 100, 26},
-                                    "Apply", 0) &&
-               platform->display_apply != NULL) {
+            {
+                Rectangle rect;
+                rect.x = content.x + 156;
+                rect.y = (float)y;
+                rect.width = 110;
+                rect.height = 26;
+                if(draw_settings_button(rect, label, 0))
+                    visuals->display_mode_selected =
+                        (visuals->display_mode_selected + 1) %
+                        visuals->display_mode_count;
+            }
+                Rectangle rect;
+                rect.x = content.x + 276;
+                rect.y = (float)y;
+                rect.width = 100;
+                rect.height = 26;
+                if(visuals->display_confirm_deadline == 0 &&
+                   draw_settings_button(rect, "Apply", 0) &&
+                   platform->display_apply != NULL) {
                 snprintf(visuals->display_revert_output,
                          sizeof(visuals->display_revert_output), "%s", output);
                 visuals->display_revert_mode.width =
@@ -5511,6 +6908,7 @@ draw_input_settings(RillShellState *shell, Rectangle content,
                        visuals->display_modes[visuals->display_mode_selected].height,
                        visuals->display_error, sizeof(visuals->display_error)))
                     visuals->display_confirm_deadline = GetTime() + 15.0;
+                }
             }
         }
         y += 32;
@@ -5518,19 +6916,44 @@ draw_input_settings(RillShellState *shell, Rectangle content,
             int remaining = (int)(visuals->display_confirm_deadline - GetTime());
             snprintf(label, sizeof(label),
                      "Keep the new resolution? Reverting in %ds...", remaining);
-            DrawRectangleRec((Rectangle){content.x + 12, (float)y - 4,
-                                         content.width - 24, 30},
-                             panel_item_color());
-            draw_text_fit((TextProps){.bounds = {content.x + 18, (float)y,
-                                                 (int)content.width - 160, 0},
-                                      .text = label, .font = Text12,
-                                      .class_name = LabelPrimary});
-            if(draw_settings_button((Rectangle){content.x + content.width - 130,
-                                                (float)y - 2, 52, 26}, "Keep", 0))
-                visuals->display_confirm_deadline = 0;
-            if(draw_settings_button((Rectangle){content.x + content.width - 72,
-                                                (float)y - 2, 58, 26}, "Revert", 0))
-                remaining = -1;
+            {
+                Rectangle rect;
+                rect.x = content.x + 12;
+                rect.y = (float)y - 4;
+                rect.width = content.width - 24;
+                rect.height = 30;
+                DrawRectangleRec(rect, panel_item_color());
+            }
+            {
+                TextProps props;
+                memset(&props, 0, sizeof(props));
+                props.bounds.x = content.x + 18;
+                props.bounds.y = (float)y;
+                props.bounds.width = (int)content.width - 160;
+                props.bounds.height = 0;
+                props.text = label;
+                props.font = Text12;
+                props.class_name = LabelPrimary;
+                draw_text_fit(props);
+            }
+            {
+                Rectangle rect;
+                rect.x = content.x + content.width - 130;
+                rect.y = (float)y - 2;
+                rect.width = 52;
+                rect.height = 26;
+                if(draw_settings_button(rect, "Keep", 0))
+                    visuals->display_confirm_deadline = 0;
+            }
+            {
+                Rectangle rect;
+                rect.x = content.x + content.width - 72;
+                rect.y = (float)y - 2;
+                rect.width = 58;
+                rect.height = 26;
+                if(draw_settings_button(rect, "Revert", 0))
+                    remaining = -1;
+            }
             if(remaining < 0 && visuals->display_confirm_deadline > 0) {
                 visuals->display_confirm_deadline = 0;
                 if(platform->display_apply != NULL)
@@ -5541,17 +6964,32 @@ draw_input_settings(RillShellState *shell, Rectangle content,
                                             sizeof(visuals->display_error));
                 visuals->display_mode_count = 0;
             }
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = content.x + 16;
+            props.bounds.y = (float)y + 30;
+            props.bounds.width = (int)content.width - 32;
+            props.bounds.height = 0;
+            props.text = visuals->display_error;
+            props.font = Text12;
+            props.class_name = LabelPrimary;
+            draw_text_fit(props);
         }
-        draw_text_fit((TextProps){.bounds = {content.x + 16, (float)y + 30,
-                                             (int)content.width - 32, 0},
-                                  .text = visuals->display_error, .font = Text12,
-                                  .class_name = LabelPrimary});
         y += 58;
     } else {
-        draw_text_fit((TextProps){.bounds = {(int)content.x + 16, y,
-                                             (int)content.width - 32, 0},
-                                  .text = "No connected outputs were found.",
-                                  .font = Text12, .class_name = LabelMuted});
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = (int)content.x + 16;
+            props.bounds.y = y;
+            props.bounds.width = (int)content.width - 32;
+            props.bounds.height = 0;
+            props.text = "No connected outputs were found.";
+            props.font = Text12;
+            props.class_name = LabelMuted;
+            draw_text_fit(props);
+        }
         y += 26;
     }
     draw_input_settings_body(shell, content, visuals, platform, y);
@@ -5568,29 +7006,76 @@ draw_input_settings_body(RillShellState *shell, Rectangle content,
     char label[96];
 
     /* Keyboard repeat and pointer speed apply immediately and persist. */
-    Text((TextProps){.bounds = {(int)content.x + 16, y, 0, 0},
-                     .text = "Keyboard and Mouse", .font = Text18,
-                     .class_name = LabelPrimary});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)content.x + 16;
+        props.bounds.y = y;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = "Keyboard and Mouse";
+        props.font = Text18;
+        props.class_name = LabelPrimary;
+        Text(props);
+    }
     y += 28;
     snprintf(label, sizeof(label), "Repeat delay %d ms   rate %d/s",
              visuals->keyboard_delay, visuals->keyboard_rate);
-    draw_text_fit((TextProps){.bounds = {content.x + 16, (float)y, 240, 0},
-                              .text = label, .font = Text12,
-                              .class_name = LabelMuted});
-    if(draw_settings_button((Rectangle){content.x + 260, (float)y - 4, 30, 24},
-                            "-", 0) && visuals->keyboard_delay > 100)
-        visuals->keyboard_delay -= 50;
-    if(draw_settings_button((Rectangle){content.x + 294, (float)y - 4, 30, 24},
-                            "+", 0) && visuals->keyboard_delay < 2000)
-        visuals->keyboard_delay += 50;
-    if(draw_settings_button((Rectangle){content.x + 330, (float)y - 4, 30, 24},
-                            "-", 0) && visuals->keyboard_rate > 1)
-        visuals->keyboard_rate--;
-    if(draw_settings_button((Rectangle){content.x + 364, (float)y - 4, 30, 24},
-                            "+", 0) && visuals->keyboard_rate < 100)
-        visuals->keyboard_rate++;
-    if(draw_settings_button((Rectangle){content.x + content.width - 96,
-                                        (float)y - 4, 84, 24}, "Apply", 0)) {
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = content.x + 16;
+        props.bounds.y = (float)y;
+        props.bounds.width = 240;
+        props.bounds.height = 0;
+        props.text = label;
+        props.font = Text12;
+        props.class_name = LabelMuted;
+        draw_text_fit(props);
+    }
+    {
+        Rectangle rect;
+        rect.x = content.x + 260;
+        rect.y = (float)y - 4;
+        rect.width = 30;
+        rect.height = 24;
+        if(draw_settings_button(rect, "-", 0) && visuals->keyboard_delay > 100)
+            visuals->keyboard_delay -= 50;
+    }
+    {
+        Rectangle rect;
+        rect.x = content.x + 294;
+        rect.y = (float)y - 4;
+        rect.width = 30;
+        rect.height = 24;
+        if(draw_settings_button(rect, "+", 0) && visuals->keyboard_delay < 2000)
+            visuals->keyboard_delay += 50;
+    }
+    {
+        Rectangle rect;
+        rect.x = content.x + 330;
+        rect.y = (float)y - 4;
+        rect.width = 30;
+        rect.height = 24;
+        if(draw_settings_button(rect, "-", 0) && visuals->keyboard_rate > 1)
+            visuals->keyboard_rate--;
+    }
+    {
+        Rectangle rect;
+        rect.x = content.x + 364;
+        rect.y = (float)y - 4;
+        rect.width = 30;
+        rect.height = 24;
+        if(draw_settings_button(rect, "+", 0) && visuals->keyboard_rate < 100)
+            visuals->keyboard_rate++;
+    }
+    {
+        Rectangle rect;
+        rect.x = content.x + content.width - 96;
+        rect.y = (float)y - 4;
+        rect.width = 84;
+        rect.height = 24;
+        if(draw_settings_button(rect, "Apply", 0)) {
         if(platform->keyboard_set_repeat != NULL &&
            platform->keyboard_set_repeat(visuals->keyboard_delay,
                                          visuals->keyboard_rate)) {
@@ -5602,28 +7087,67 @@ draw_input_settings_body(RillShellState *shell, Rectangle content,
         } else
             snprintf(visuals->wm_keys_error, sizeof(visuals->wm_keys_error),
                      "Could not change the keyboard repeat rate.");
+        }
     }
     y += 30;
     snprintf(label, sizeof(label), "Mouse speed %d/%d  threshold %d",
              visuals->pointer_numerator, visuals->pointer_denominator,
              visuals->pointer_threshold);
-    draw_text_fit((TextProps){.bounds = {content.x + 16, (float)y, 240, 0},
-                              .text = label, .font = Text12,
-                              .class_name = LabelMuted});
-    if(draw_settings_button((Rectangle){content.x + 260, (float)y - 4, 30, 24},
-                            "-", 0) && visuals->pointer_numerator > 1)
-        visuals->pointer_numerator--;
-    if(draw_settings_button((Rectangle){content.x + 294, (float)y - 4, 30, 24},
-                            "+", 0) && visuals->pointer_numerator < 20)
-        visuals->pointer_numerator++;
-    if(draw_settings_button((Rectangle){content.x + 330, (float)y - 4, 30, 24},
-                            "-", 0) && visuals->pointer_threshold > 0)
-        visuals->pointer_threshold -= 2;
-    if(draw_settings_button((Rectangle){content.x + 364, (float)y - 4, 30, 24},
-                            "+", 0) && visuals->pointer_threshold < 50)
-        visuals->pointer_threshold += 2;
-    if(draw_settings_button((Rectangle){content.x + content.width - 96,
-                                        (float)y - 4, 84, 24}, "Apply", 0)) {
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = content.x + 16;
+        props.bounds.y = (float)y;
+        props.bounds.width = 240;
+        props.bounds.height = 0;
+        props.text = label;
+        props.font = Text12;
+        props.class_name = LabelMuted;
+        draw_text_fit(props);
+    }
+    {
+        Rectangle rect;
+        rect.x = content.x + 260;
+        rect.y = (float)y - 4;
+        rect.width = 30;
+        rect.height = 24;
+        if(draw_settings_button(rect, "-", 0) && visuals->pointer_numerator > 1)
+            visuals->pointer_numerator--;
+    }
+    {
+        Rectangle rect;
+        rect.x = content.x + 294;
+        rect.y = (float)y - 4;
+        rect.width = 30;
+        rect.height = 24;
+        if(draw_settings_button(rect, "+", 0) && visuals->pointer_numerator < 20)
+            visuals->pointer_numerator++;
+    }
+    {
+        Rectangle rect;
+        rect.x = content.x + 330;
+        rect.y = (float)y - 4;
+        rect.width = 30;
+        rect.height = 24;
+        if(draw_settings_button(rect, "-", 0) && visuals->pointer_threshold > 0)
+            visuals->pointer_threshold -= 2;
+    }
+    {
+        Rectangle rect;
+        rect.x = content.x + 364;
+        rect.y = (float)y - 4;
+        rect.width = 30;
+        rect.height = 24;
+        if(draw_settings_button(rect, "+", 0) && visuals->pointer_threshold < 50)
+            visuals->pointer_threshold += 2;
+    }
+    {
+        Rectangle rect;
+        rect.x = content.x + content.width - 96;
+        rect.y = (float)y - 4;
+        rect.width = 84;
+        rect.height = 24;
+        if(draw_settings_button(rect, "Apply", 0)) {
         if(platform->pointer_set != NULL &&
            platform->pointer_set(visuals->pointer_numerator,
                                  visuals->pointer_denominator,
@@ -5638,6 +7162,7 @@ draw_input_settings_body(RillShellState *shell, Rectangle content,
         } else
             snprintf(visuals->wm_keys_error, sizeof(visuals->wm_keys_error),
                      "Could not change the mouse speed.");
+        }
     }
     y += 34;
     draw_input_settings_shortcuts(shell, content, visuals, y);
@@ -5647,26 +7172,58 @@ static void
 draw_input_settings_shortcuts(RillShellState *shell, Rectangle content,
                               RillVisualState *visuals, int y)
 {
-    Text((TextProps){.bounds = {(int)content.x + 16, y, 0, 0},
-                     .text = "Window Manager Shortcuts", .font = Text18,
-                     .class_name = LabelPrimary});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)content.x + 16;
+        props.bounds.y = y;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = "Window Manager Shortcuts";
+        props.font = Text18;
+        props.class_name = LabelPrimary;
+        Text(props);
+    }
     y += 26;
     for(int i = 0; i < visuals->wm_action_count && i < 5; i++) {
         Rectangle row = {content.x + 12, (float)y, content.width - 24, 24};
-        draw_text_fit((TextProps){.bounds = {row.x + 6, row.y + 5, 150, 0},
-                                  .text = visuals->wm_action_names[i],
-                                  .font = Text12, .class_name = LabelPrimary});
-        draw_text_fit((TextProps){.bounds = {row.x + 160, row.y + 5, 170, 0},
-                                  .text = visuals->wm_rebind_index == i ?
-                                          "press keys..." :
-                                          visuals->wm_action_bindings[i],
-                                  .font = Text12,
-                                  .class_name = visuals->wm_rebind_index == i ?
-                                                LabelAccent : LabelMuted});
-        if(draw_settings_button((Rectangle){row.x + row.width - 84, row.y, 78, 22},
-                                "Rebind", 0)) {
-            visuals->wm_rebind_index = visuals->wm_rebind_index == i ? -1 : i;
-            visuals->wm_keys_error[0] = '\0';
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = row.x + 6;
+            props.bounds.y = row.y + 5;
+            props.bounds.width = 150;
+            props.bounds.height = 0;
+            props.text = visuals->wm_action_names[i];
+            props.font = Text12;
+            props.class_name = LabelPrimary;
+            draw_text_fit(props);
+        }
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = row.x + 160;
+            props.bounds.y = row.y + 5;
+            props.bounds.width = 170;
+            props.bounds.height = 0;
+            props.text = visuals->wm_rebind_index == i ?
+                         "press keys..." :
+                         visuals->wm_action_bindings[i];
+            props.font = Text12;
+            props.class_name = visuals->wm_rebind_index == i ?
+                               LabelAccent : LabelMuted;
+            draw_text_fit(props);
+        }
+        {
+            Rectangle rect;
+            rect.x = row.x + row.width - 84;
+            rect.y = row.y;
+            rect.width = 78;
+            rect.height = 22;
+            if(draw_settings_button(rect, "Rebind", 0)) {
+                visuals->wm_rebind_index = visuals->wm_rebind_index == i ? -1 : i;
+                visuals->wm_keys_error[0] = '\0';
+            }
         }
         y += 26;
     }
@@ -5714,23 +7271,43 @@ draw_input_settings_shortcuts(RillShellState *shell, Rectangle content,
             visuals->wm_rebind_index = -1;
         }
     }
-    if(draw_settings_button((Rectangle){content.x + 12, (float)y + 2, 96, 26},
-                            "Save Keys", 0)) {
-        save_wm_keys(visuals);
-        RillShellSetStatus(shell, "Shortcuts saved; they load at WM start");
+    {
+        Rectangle rect;
+        rect.x = content.x + 12;
+        rect.y = (float)y + 2;
+        rect.width = 96;
+        rect.height = 26;
+        if(draw_settings_button(rect, "Save Keys", 0)) {
+            save_wm_keys(visuals);
+            RillShellSetStatus(shell, "Shortcuts saved; they load at WM start");
+        }
     }
-    if(draw_settings_button((Rectangle){content.x + 116, (float)y + 2, 90, 26},
-                            "Reset", 0)) {
-        for(int i = 0; i < visuals->wm_action_count; i++)
-            snprintf(visuals->wm_action_bindings[i],
-                     sizeof(visuals->wm_action_bindings[i]), "%s",
-                     visuals->wm_action_defaults[i]);
-        save_wm_keys(visuals);
+    {
+        Rectangle rect;
+        rect.x = content.x + 116;
+        rect.y = (float)y + 2;
+        rect.width = 90;
+        rect.height = 26;
+        if(draw_settings_button(rect, "Reset", 0)) {
+            for(int i = 0; i < visuals->wm_action_count; i++)
+                snprintf(visuals->wm_action_bindings[i],
+                         sizeof(visuals->wm_action_bindings[i]), "%s",
+                         visuals->wm_action_defaults[i]);
+            save_wm_keys(visuals);
+        }
     }
-    draw_text_fit((TextProps){.bounds = {content.x + 16, (float)y + 34,
-                                         (int)content.width - 32, 0},
-                              .text = visuals->wm_keys_error, .font = Text12,
-                              .class_name = LabelPrimary});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = content.x + 16;
+        props.bounds.y = (float)y + 34;
+        props.bounds.width = (int)content.width - 32;
+        props.bounds.height = 0;
+        props.text = visuals->wm_keys_error;
+        props.font = Text12;
+        props.class_name = LabelPrimary;
+        draw_text_fit(props);
+    }
 }
 
 /* ---- Xfce panel migration (Settings application) ---- */
@@ -6009,15 +7586,32 @@ draw_panels_settings(RillShellState *shell, Rectangle content,
                      RillVisualState *visuals,
                      const RillPlatformServices *platform)
 {
-    Text((TextProps){
-        .bounds = {(int)content.x + 16, (int)content.y + 12, 0, 0},
-        .text = "Panels", .font = Text18, .class_name = LabelPrimary,
-        .wrap = TextWrapNone});
-    draw_text_fit((TextProps){
-        .bounds = {(int)content.x + 16, (int)content.y + 40,
-                   (int)content.width - 32, 0},
-        .text = "Panel changes take effect at the next login.", .font = Text12,
-        .class_name = LabelMuted, .wrap = TextWrapNone});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)content.x + 16;
+        props.bounds.y = (int)content.y + 12;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = "Panels";
+        props.font = Text18;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        Text(props);
+    }
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)content.x + 16;
+        props.bounds.y = (int)content.y + 40;
+        props.bounds.width = (int)content.width - 32;
+        props.bounds.height = 0;
+        props.text = "Panel changes take effect at the next login.";
+        props.font = Text12;
+        props.class_name = LabelMuted;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    }
     if(visuals->panel_output_count == 0 && platform->display_outputs != NULL)
         visuals->panel_output_count =
             platform->display_outputs(visuals->panel_outputs, 8);
@@ -6031,52 +7625,127 @@ draw_panels_settings(RillShellState *shell, Rectangle content,
         }
         if(visuals->panel_selected_entry == i)
             DrawRectangleLinesEx(row, 1, StyleTokenColor("link"));
-        draw_text_fit((TextProps){.bounds = {row.x + 10, row.y + 5, 96, 0},
-                                  .text = entry->id, .font = Text14,
-                                  .class_name = LabelPrimary, .wrap = TextWrapNone});
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = row.x + 10;
+            props.bounds.y = row.y + 5;
+            props.bounds.width = 96;
+            props.bounds.height = 0;
+            props.text = entry->id;
+            props.font = Text14;
+            props.class_name = LabelPrimary;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
         char placement[96];
         snprintf(placement, sizeof(placement), "%s%s%s",
                  panel_edge_names[entry->edge],
                  entry->output[0] ? ", " : "",
                  entry->output[0] ? entry->output : "any output");
-        draw_text_fit((TextProps){.bounds = {row.x + 112, row.y + 5, 150, 0},
-                                  .text = placement, .font = Text12,
-                                  .class_name = LabelMuted, .wrap = TextWrapNone});
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = row.x + 112;
+            props.bounds.y = row.y + 5;
+            props.bounds.width = 150;
+            props.bounds.height = 0;
+            props.text = placement;
+            props.font = Text12;
+            props.class_name = LabelMuted;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
         char sizing[48];
         snprintf(sizing, sizeof(sizing), "%d px%s", entry->size,
                  entry->autohide ? ", autohide" : "");
-        draw_text_fit((TextProps){.bounds = {row.x + 268, row.y + 5, 90, 0},
-                                  .text = sizing, .font = Text12,
-                                  .class_name = LabelMuted, .wrap = TextWrapNone});
-        if(draw_settings_button((Rectangle){row.x + row.width - 210, row.y + 15, 44, 24},
-                                entry->edge == 0 ? "T" :
-                                entry->edge == 1 ? "B" :
-                                entry->edge == 2 ? "L" : "R", 0))
-            entry->edge = (entry->edge + 1) % 4;
-        if(draw_settings_button((Rectangle){row.x + row.width - 162, row.y + 15, 30, 24},
-                                "-", 0) && entry->size > 20)
-            entry->size -= 2;
-        if(draw_settings_button((Rectangle){row.x + row.width - 128, row.y + 15, 30, 24},
-                                "+", 0) && entry->size < 64)
-            entry->size += 2;
-        if(draw_settings_button((Rectangle){row.x + row.width - 260, row.y + 15, 52, 24},
-                                entry->deskbar ? "Desk" : "Bar", entry->deskbar))
-            entry->deskbar = !entry->deskbar;
-        if(draw_settings_button((Rectangle){row.x + row.width - 94, row.y + 15, 44, 24},
-                                "Hide", entry->autohide))
-            entry->autohide = !entry->autohide;
-        if(draw_settings_button((Rectangle){row.x + row.width - 46, row.y + 15, 44, 24},
-                                "Del", 0) && visuals->panel_entry_count > 1) {
-            memmove(&visuals->panel_entries[i], &visuals->panel_entries[i + 1],
-                    (size_t)(visuals->panel_entry_count - i - 1) *
-                        sizeof(visuals->panel_entries[0]));
-            visuals->panel_entry_count--;
-            i--;
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = row.x + 268;
+            props.bounds.y = row.y + 5;
+            props.bounds.width = 90;
+            props.bounds.height = 0;
+            props.text = sizing;
+            props.font = Text12;
+            props.class_name = LabelMuted;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
+        {
+            Rectangle rect;
+            rect.x = row.x + row.width - 210;
+            rect.y = row.y + 15;
+            rect.width = 44;
+            rect.height = 24;
+            if(draw_settings_button(rect,
+                                    entry->edge == 0 ? "T" :
+                                    entry->edge == 1 ? "B" :
+                                    entry->edge == 2 ? "L" : "R", 0))
+                entry->edge = (entry->edge + 1) % 4;
+        }
+        {
+            Rectangle rect;
+            rect.x = row.x + row.width - 162;
+            rect.y = row.y + 15;
+            rect.width = 30;
+            rect.height = 24;
+            if(draw_settings_button(rect, "-", 0) && entry->size > 20)
+                entry->size -= 2;
+        }
+        {
+            Rectangle rect;
+            rect.x = row.x + row.width - 128;
+            rect.y = row.y + 15;
+            rect.width = 30;
+            rect.height = 24;
+            if(draw_settings_button(rect, "+", 0) && entry->size < 64)
+                entry->size += 2;
+        }
+        {
+            Rectangle rect;
+            rect.x = row.x + row.width - 260;
+            rect.y = row.y + 15;
+            rect.width = 52;
+            rect.height = 24;
+            if(draw_settings_button(rect, entry->deskbar ? "Desk" : "Bar",
+                                    entry->deskbar))
+                entry->deskbar = !entry->deskbar;
+        }
+        {
+            Rectangle rect;
+            rect.x = row.x + row.width - 94;
+            rect.y = row.y + 15;
+            rect.width = 44;
+            rect.height = 24;
+            if(draw_settings_button(rect, "Hide", entry->autohide))
+                entry->autohide = !entry->autohide;
+        }
+        {
+            Rectangle rect;
+            rect.x = row.x + row.width - 46;
+            rect.y = row.y + 15;
+            rect.width = 44;
+            rect.height = 24;
+            if(draw_settings_button(rect, "Del", 0) &&
+               visuals->panel_entry_count > 1) {
+                memmove(&visuals->panel_entries[i], &visuals->panel_entries[i + 1],
+                        (size_t)(visuals->panel_entry_count - i - 1) *
+                            sizeof(visuals->panel_entries[0]));
+                visuals->panel_entry_count--;
+                i--;
+            }
         }
         y += 50;
     }
-    if(draw_settings_button((Rectangle){content.x + 12, (float)y + 4, 110, 28},
-                            "Add Panel", 0) && visuals->panel_entry_count < 8) {
+    {
+        Rectangle rect;
+        rect.x = content.x + 12;
+        rect.y = (float)y + 4;
+        rect.width = 110;
+        rect.height = 28;
+        if(draw_settings_button(rect, "Add Panel", 0) &&
+           visuals->panel_entry_count < 8) {
         RillPanelConfig *entry =
             &visuals->panel_entries[visuals->panel_entry_count++];
         memset(entry, 0, sizeof(*entry));
@@ -6094,11 +7763,17 @@ draw_panels_settings(RillShellState *shell, Rectangle content,
         }
         snprintf(entry->id, sizeof(entry->id), "%s", candidate);
         entry->size = PANEL_H;
+        }
     }
-    if(visuals->panel_output_count > 0 && visuals->panel_selected_entry >= 0 &&
-       visuals->panel_selected_entry < visuals->panel_entry_count &&
-       draw_settings_button((Rectangle){content.x + 130, (float)y + 4, 150, 28},
-                            "Output", 0)) {
+    {
+        Rectangle rect;
+        rect.x = content.x + 130;
+        rect.y = (float)y + 4;
+        rect.width = 150;
+        rect.height = 28;
+        if(visuals->panel_output_count > 0 && visuals->panel_selected_entry >= 0 &&
+           visuals->panel_selected_entry < visuals->panel_entry_count &&
+           draw_settings_button(rect, "Output", 0)) {
         RillPanelConfig *entry =
             &visuals->panel_entries[visuals->panel_selected_entry];
         int index = 0;
@@ -6112,10 +7787,16 @@ draw_panels_settings(RillShellState *shell, Rectangle content,
             length = sizeof(entry->output) - 1;
         memcpy(entry->output, choice, length);
         entry->output[length] = '\0';
+        }
     }
-    if(draw_settings_button((Rectangle){content.x + content.width - 128,
-                                        (float)y + 4, 116, 28}, "Save Panels", 0) &&
-       platform->panel_config_store != NULL) {
+    {
+        Rectangle rect;
+        rect.x = content.x + content.width - 128;
+        rect.y = (float)y + 4;
+        rect.width = 116;
+        rect.height = 28;
+        if(draw_settings_button(rect, "Save Panels", 0) &&
+           platform->panel_config_store != NULL) {
         char json[4096];
         serialize_panel_config(visuals, json, sizeof(json));
         if(platform->panel_config_store(json))
@@ -6123,9 +7804,15 @@ draw_panels_settings(RillShellState *shell, Rectangle content,
         else
             snprintf(visuals->panel_entry_error, sizeof(visuals->panel_entry_error),
                      "Could not write panels.json.");
+        }
     }
-    if(draw_settings_button((Rectangle){content.x + 12, (float)y + 36, 150, 26},
-                            "Import Xfce Panel", 0)) {
+    {
+        Rectangle rect;
+        rect.x = content.x + 12;
+        rect.y = (float)y + 36;
+        rect.width = 150;
+        rect.height = 26;
+        if(draw_settings_button(rect, "Import Xfce Panel", 0)) {
         if(visuals->panel_config_path[0] != '\0' &&
            import_xfce_panel(visuals, platform)) {
             RillShellSetStatus(shell, "Xfce panel items imported");
@@ -6134,13 +7821,21 @@ draw_panels_settings(RillShellState *shell, Rectangle content,
         } else
             snprintf(visuals->panel_entry_error, sizeof(visuals->panel_entry_error),
                      "No Xfce panel configuration was found.");
+        }
     }
-    if(visuals->panel_entry_error[0])
-        draw_text_fit((TextProps){
-            .bounds = {(int)content.x + 16, (float)y + 40,
-                       (int)content.width - 32, 0},
-            .text = visuals->panel_entry_error, .font = Text12,
-            .class_name = LabelPrimary, .wrap = TextWrapNone});
+    if(visuals->panel_entry_error[0]) {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)content.x + 16;
+        props.bounds.y = (float)y + 40;
+        props.bounds.width = (int)content.width - 32;
+        props.bounds.height = 0;
+        props.text = visuals->panel_entry_error;
+        props.font = Text12;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    }
 }
 
 static void
@@ -6154,18 +7849,42 @@ draw_settings_app(RillShellState *shell, Rectangle content,
     int y;
     int i;
 
-    if(draw_settings_button((Rectangle){content.x + 12, content.y + 8, 138, 28},
-                            "Desktop", visuals->settings_tab == 0))
-        visuals->settings_tab = 0;
-    if(draw_settings_button((Rectangle){content.x + 158, content.y + 8, 138, 28},
-                            "System", visuals->settings_tab == 1))
-        visuals->settings_tab = 1;
-    if(draw_settings_button((Rectangle){content.x + 304, content.y + 8, 138, 28},
-                            "Panels", visuals->settings_tab == 2))
-        visuals->settings_tab = 2;
-    if(draw_settings_button((Rectangle){content.x + 450, content.y + 8, 76, 28},
-                            "Input", visuals->settings_tab == 3))
-        visuals->settings_tab = 3;
+    {
+        Rectangle rect;
+        rect.x = content.x + 12;
+        rect.y = content.y + 8;
+        rect.width = 138;
+        rect.height = 28;
+        if(draw_settings_button(rect, "Desktop", visuals->settings_tab == 0))
+            visuals->settings_tab = 0;
+    }
+    {
+        Rectangle rect;
+        rect.x = content.x + 158;
+        rect.y = content.y + 8;
+        rect.width = 138;
+        rect.height = 28;
+        if(draw_settings_button(rect, "System", visuals->settings_tab == 1))
+            visuals->settings_tab = 1;
+    }
+    {
+        Rectangle rect;
+        rect.x = content.x + 304;
+        rect.y = content.y + 8;
+        rect.width = 138;
+        rect.height = 28;
+        if(draw_settings_button(rect, "Panels", visuals->settings_tab == 2))
+            visuals->settings_tab = 2;
+    }
+    {
+        Rectangle rect;
+        rect.x = content.x + 450;
+        rect.y = content.y + 8;
+        rect.width = 76;
+        rect.height = 28;
+        if(draw_settings_button(rect, "Input", visuals->settings_tab == 3))
+            visuals->settings_tab = 3;
+    }
     content.y += 40;
     content.height -= 40;
     if(visuals->settings_tab == 3) {
@@ -6184,18 +7903,40 @@ draw_settings_app(RillShellState *shell, Rectangle content,
                                 "Bluetooth", "Sound"};
         const char *categories[] = {"display", "keyboard", "mouse", "appearance", "defaults",
                                     "accessibility", "power", "network", "bluetooth", "audio"};
-        Text((TextProps){
-            .bounds = {content.x + 16, content.y + 12, 0, 0},
-            .text = "System settings", .font = Text18, .class_name = LabelPrimary,
-            .wrap = TextWrapNone});
-        draw_text_fit((TextProps){
-            .bounds = {content.x + 16, content.y + 42, content.width - 32, 0},
-            .text = "Open the installed control panel for each device or service.", .font = Text12, .class_name = LabelMuted,
-            .wrap = TextWrapNone});
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = content.x + 16;
+            props.bounds.y = content.y + 12;
+            props.bounds.width = 0;
+            props.bounds.height = 0;
+            props.text = "System settings";
+            props.font = Text18;
+            props.class_name = LabelPrimary;
+            props.wrap = TextWrapNone;
+            Text(props);
+        }
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = content.x + 16;
+            props.bounds.y = content.y + 42;
+            props.bounds.width = content.width - 32;
+            props.bounds.height = 0;
+            props.text = "Open the installed control panel for each device or service.";
+            props.font = Text12;
+            props.class_name = LabelMuted;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
         for(int row = 0; row < 10; row++) {
             float width = (content.width - 36) / 2;
-            if(draw_settings_button((Rectangle){content.x + 12 + (row % 2) * (width + 12),
-                                     content.y + 72 + (row / 2) * 44, width, 34}, labels[row], 0)) {
+            Rectangle rect;
+            rect.x = content.x + 12 + (row % 2) * (width + 12);
+            rect.y = content.y + 72 + (row / 2) * 44;
+            rect.width = width;
+            rect.height = 34;
+            if(draw_settings_button(rect, labels[row], 0)) {
                 if(platform->open_settings != NULL && platform->open_settings(categories[row]))
                     visuals->settings_error[0] = '\0';
                 else
@@ -6203,10 +7944,19 @@ draw_settings_app(RillShellState *shell, Rectangle content,
                              "No installed control panel for %s.", labels[row]);
             }
         }
-        draw_text_fit((TextProps){
-            .bounds = {content.x + 16, content.y + 306, content.width - 32, 0},
-            .text = visuals->settings_error, .font = Text12, .class_name = LabelPrimary,
-            .wrap = TextWrapNone});
+        {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = content.x + 16;
+            props.bounds.y = content.y + 306;
+            props.bounds.width = content.width - 32;
+            props.bounds.height = 0;
+            props.text = visuals->settings_error;
+            props.font = Text12;
+            props.class_name = LabelPrimary;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
         /* Supervised services and screen-lock readiness from the session. */
         {
             static char diagnostics[1024];
@@ -6216,32 +7966,76 @@ draw_settings_app(RillShellState *shell, Rectangle content,
                 diagnostics_next = GetTime() + 10.0;
                 platform->session_diagnostics(diagnostics, sizeof(diagnostics));
             }
-            if(diagnostics[0] != '\0')
-                draw_text_fit((TextProps){
-                    .bounds = {content.x + 16, content.y + 328, content.width - 32, 60},
-                    .text = diagnostics, .font = Text12, .class_name = LabelMuted,
-                    .wrap = TextWrapAuto});
+            if(diagnostics[0] != '\0') {
+                TextProps props;
+                memset(&props, 0, sizeof(props));
+                props.bounds.x = content.x + 16;
+                props.bounds.y = content.y + 328;
+                props.bounds.width = content.width - 32;
+                props.bounds.height = 60;
+                props.text = diagnostics;
+                props.font = Text12;
+                props.class_name = LabelMuted;
+                props.wrap = TextWrapAuto;
+                draw_text_fit(props);
+            }
         }
         return;
     }
 
-    Text((TextProps){
-        .bounds = {(int)content.x + 16, (int)content.y + 12, 0, 0},
-        .text = "Appearance", .font = Text18, .class_name = LabelPrimary,
-        .wrap = TextWrapNone});
-    draw_text_fit((TextProps){
-        .bounds = {(int)content.x + 16, (int)content.y + 40, (int)content.width - 32, 0},
-        .text = visuals->system_theme_name, .font = Text12, .class_name = LabelMuted,
-        .wrap = TextWrapNone});
-    draw_text_fit((TextProps){
-        .bounds = {(int)content.x + 16, (int)content.y + 60, (int)content.width - 32, 0},
-        .text = visuals->system_font_name, .font = Text12, .class_name = LabelMuted,
-        .wrap = TextWrapNone});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)content.x + 16;
+        props.bounds.y = (int)content.y + 12;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = "Appearance";
+        props.font = Text18;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        Text(props);
+    }
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)content.x + 16;
+        props.bounds.y = (int)content.y + 40;
+        props.bounds.width = (int)content.width - 32;
+        props.bounds.height = 0;
+        props.text = visuals->system_theme_name;
+        props.font = Text12;
+        props.class_name = LabelMuted;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    }
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)content.x + 16;
+        props.bounds.y = (int)content.y + 60;
+        props.bounds.width = (int)content.width - 32;
+        props.bounds.height = 0;
+        props.text = visuals->system_font_name;
+        props.font = Text12;
+        props.class_name = LabelMuted;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    }
 
-    Text((TextProps){
-        .bounds = {(int)content.x + 16, (int)content.y + 86, 0, 0},
-        .text = "Wallpaper", .font = Text14, .class_name = LabelPrimary,
-        .wrap = TextWrapNone});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)content.x + 16;
+        props.bounds.y = (int)content.y + 86;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = "Wallpaper";
+        props.font = Text14;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        Text(props);
+    }
     if(!visuals->wallpaper_scanned && platform != NULL &&
        platform->list_wallpapers != NULL) {
         visuals->wallpaper_count =
@@ -6250,62 +8044,104 @@ draw_settings_app(RillShellState *shell, Rectangle content,
         visuals->wallpaper_scanned = 1;
     }
     BeginScissorMode((int)content.x, (int)content.y + 104, (int)content.width, 108);
-    if(CheckCollisionPointRec(GetMousePosition(),
-                              (Rectangle){content.x, content.y + 104, content.width, 108})) {
-        visuals->wallpaper_scroll -= (int)GetMouseWheelMove();
-        int maximum = visuals->wallpaper_count > 4 ? visuals->wallpaper_count - 4 : 0;
-        if(visuals->wallpaper_scroll < 0) visuals->wallpaper_scroll = 0;
-        if(visuals->wallpaper_scroll > maximum) visuals->wallpaper_scroll = maximum;
+    {
+        Rectangle rect;
+        rect.x = content.x;
+        rect.y = content.y + 104;
+        rect.width = content.width;
+        rect.height = 108;
+        if(CheckCollisionPointRec(GetMousePosition(), rect)) {
+            visuals->wallpaper_scroll -= (int)GetMouseWheelMove();
+            int maximum = visuals->wallpaper_count > 4 ? visuals->wallpaper_count - 4 : 0;
+            if(visuals->wallpaper_scroll < 0) visuals->wallpaper_scroll = 0;
+            if(visuals->wallpaper_scroll > maximum) visuals->wallpaper_scroll = maximum;
+        }
     }
     y = (int)content.y + 104;
-    if(visuals->wallpaper_count <= 0)
-        draw_text_fit((TextProps){
-            .bounds = {(int)content.x + 16, y + 6, (int)content.width - 32, 0},
-            .text = "No wallpapers found in Pictures or system backgrounds", .font = Text12, .class_name = LabelMuted,
-            .wrap = TextWrapNone});
+    if(visuals->wallpaper_count <= 0) {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)content.x + 16;
+        props.bounds.y = y + 6;
+        props.bounds.width = (int)content.width - 32;
+        props.bounds.height = 0;
+        props.text = "No wallpapers found in Pictures or system backgrounds";
+        props.font = Text12;
+        props.class_name = LabelMuted;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    }
     for(i = visuals->wallpaper_scroll; i < visuals->wallpaper_count &&
                                       i < visuals->wallpaper_scroll + 4; i++) {
         const char *path = visuals->wallpaper_paths[i];
-        if(draw_settings_button((Rectangle){content.x + 12, y + 2,
-                                            content.width - 24, 22},
-                                wallpaper_basename(path),
+        Rectangle rect;
+        rect.x = content.x + 12;
+        rect.y = y + 2;
+        rect.width = content.width - 24;
+        rect.height = 22;
+        if(draw_settings_button(rect, wallpaper_basename(path),
                                 strcmp(path, visuals->wallpaper_path) == 0))
             apply_wallpaper(shell, visuals, path, 1);
         y += 26;
     }
     EndScissorMode();
     y = (int)content.y + 216;
-    if(draw_settings_button((Rectangle){content.x + 12, y, 150, 26},
-                            "System background", 0)) {
-        char wallpaper[512];
-        if(GetSystemDesktopBackground(wallpaper, sizeof(wallpaper))) {
-            apply_wallpaper(shell, visuals, wallpaper, 1);
-            RillSettingsSet(&rill_settings, "wallpaper", "");
-            rill_settings_persist(shell);
-        } else
-            RillShellSetStatus(shell, "No system background configured");
+    {
+        Rectangle rect;
+        rect.x = content.x + 12;
+        rect.y = y;
+        rect.width = 150;
+        rect.height = 26;
+        if(draw_settings_button(rect, "System background", 0)) {
+            char wallpaper[512];
+            if(GetSystemDesktopBackground(wallpaper, sizeof(wallpaper))) {
+                apply_wallpaper(shell, visuals, wallpaper, 1);
+                RillSettingsSet(&rill_settings, "wallpaper", "");
+                rill_settings_persist(shell);
+            } else
+                RillShellSetStatus(shell, "No system background configured");
+        }
     }
-    if(draw_settings_button((Rectangle){content.x + 172, y, 150, 26},
-                            visuals->wallpaper_slideshow ?
-                            "Slideshow: 5 min" : "Slideshow: off",
-                            visuals->wallpaper_slideshow)) {
-        visuals->wallpaper_slideshow = !visuals->wallpaper_slideshow;
-        RillSettingsSetInteger(&rill_settings, "wallpaper-slideshow",
-                               visuals->wallpaper_slideshow);
-        rill_settings_persist(shell);
+    {
+        Rectangle rect;
+        rect.x = content.x + 172;
+        rect.y = y;
+        rect.width = 150;
+        rect.height = 26;
+        if(draw_settings_button(rect,
+                                visuals->wallpaper_slideshow ?
+                                "Slideshow: 5 min" : "Slideshow: off",
+                                visuals->wallpaper_slideshow)) {
+            visuals->wallpaper_slideshow = !visuals->wallpaper_slideshow;
+            RillSettingsSetInteger(&rill_settings, "wallpaper-slideshow",
+                                   visuals->wallpaper_slideshow);
+            rill_settings_persist(shell);
+        }
     }
 
     y = (int)content.y + 252;
-    Text((TextProps){
-        .bounds = {(int)content.x + 16, y, 0, 0},
-        .text = "Clock", .font = Text14, .class_name = LabelPrimary,
-        .wrap = TextWrapNone});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)content.x + 16;
+        props.bounds.y = y;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = "Clock";
+        props.font = Text14;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        Text(props);
+    }
     now = time(NULL);
     for(i = 0; i < 3; i++) {
         strftime(sample, sizeof(sample), clock_choices[i], localtime(&now));
-        if(draw_settings_button((Rectangle){content.x + 12 + i * 148, y + 20,
-                                            140, 24},
-                                sample,
+        Rectangle rect;
+        rect.x = content.x + 12 + i * 148;
+        rect.y = y + 20;
+        rect.width = 140;
+        rect.height = 24;
+        if(draw_settings_button(rect, sample,
                                 strcmp(visuals->clock_format,
                                        clock_choices[i]) == 0)) {
             snprintf(visuals->clock_format, sizeof(visuals->clock_format),
@@ -6317,42 +8153,90 @@ draw_settings_app(RillShellState *shell, Rectangle content,
     }
 
     y = (int)content.y + 312;
-    Text((TextProps){
-        .bounds = {(int)content.x + 16, y + 4, 0, 0},
-        .text = "Panel height", .font = Text12, .class_name = LabelMuted,
-        .wrap = TextWrapNone});
-    if(draw_settings_button((Rectangle){content.x + 240, y, 26, 24}, "-", 0) &&
-       visuals->panel_height > 20) {
-        visuals->panel_height--;
-        RillSettingsSetInteger(&rill_settings, "panel-height",
-                               visuals->panel_height);
-        rill_settings_persist(shell);
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)content.x + 16;
+        props.bounds.y = y + 4;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = "Panel height";
+        props.font = Text12;
+        props.class_name = LabelMuted;
+        props.wrap = TextWrapNone;
+        Text(props);
+    }
+    {
+        Rectangle rect;
+        rect.x = content.x + 240;
+        rect.y = y;
+        rect.width = 26;
+        rect.height = 24;
+        if(draw_settings_button(rect, "-", 0) && visuals->panel_height > 20) {
+            visuals->panel_height--;
+            RillSettingsSetInteger(&rill_settings, "panel-height",
+                                   visuals->panel_height);
+            rill_settings_persist(shell);
+        }
     }
     snprintf(sample, sizeof(sample), "%d", visuals->panel_height);
-    draw_text_fit((TextProps){
-        .bounds = {(int)content.x + 272, y + 4, 34, 0},
-        .text = sample, .font = Text14, .class_name = LabelPrimary,
-        .wrap = TextWrapNone});
-    if(draw_settings_button((Rectangle){content.x + 310, y, 26, 24}, "+", 0) &&
-       visuals->panel_height < 48) {
-        visuals->panel_height++;
-        RillSettingsSetInteger(&rill_settings, "panel-height",
-                               visuals->panel_height);
-        rill_settings_persist(shell);
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)content.x + 272;
+        props.bounds.y = y + 4;
+        props.bounds.width = 34;
+        props.bounds.height = 0;
+        props.text = sample;
+        props.font = Text14;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    }
+    {
+        Rectangle rect;
+        rect.x = content.x + 310;
+        rect.y = y;
+        rect.width = 26;
+        rect.height = 24;
+        if(draw_settings_button(rect, "+", 0) && visuals->panel_height < 48) {
+            visuals->panel_height++;
+            RillSettingsSetInteger(&rill_settings, "panel-height",
+                                   visuals->panel_height);
+            rill_settings_persist(shell);
+        }
     }
 }
 
 static void
 draw_about_app(Rectangle content)
 {
-    Text((TextProps){
-        .bounds = {(int)content.x + 16, (int)content.y + 14, 0, 0},
-        .text = "Rill", .font = Text24, .class_name = LabelPrimary,
-        .wrap = TextWrapNone});
-    Text((TextProps){
-        .bounds = {(int)content.x + 16, (int)content.y + 54, 0, 0},
-        .text = "A Kryon/libdraw desktop for Taiji and Plan 9.", .font = Text14, .class_name = LabelPrimary,
-        .wrap = TextWrapNone});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)content.x + 16;
+        props.bounds.y = (int)content.y + 14;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = "Rill";
+        props.font = Text24;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        Text(props);
+    }
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)content.x + 16;
+        props.bounds.y = (int)content.y + 54;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = "A Kryon/libdraw desktop for Taiji and Plan 9.";
+        props.font = Text14;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        Text(props);
+    }
 }
 
 static int
@@ -6483,51 +8367,108 @@ draw_run_dialog(RillShellState *shell, RillVisualState *visuals,
 
     update_run_dialog_input(visuals);
 
-    DrawRectangleRounded((Rectangle){0, 0, (float)width, 30}, 0.02f, 4,
-                         panel_color());
-    Text((TextProps){
-        .bounds = {10, 8, 0, 0},
-        .text = "Run program", .font = Text14, .class_name = LabelPrimary,
-        .wrap = TextWrapNone});
-    DrawRectangleRounded((Rectangle){8, 40, (float)width - 16, 32}, 0.05f, 4,
-                         Fade(BLACK, 0.22f));
-    DrawRectangleRoundedLinesEx((Rectangle){8, 40, (float)width - 16, 32},
-                                0.05f, 4, 1.0f, StyleTokenColor("link"));
-    if(visuals->run_input[0] != '\0')
-        draw_text_fit((TextProps){
-            .bounds = {16, 48, width - 32, 0},
-            .text = visuals->run_input, .font = Text14, .class_name = LabelPrimary,
-            .wrap = TextWrapNone});
-    else
-        draw_text_fit((TextProps){
-            .bounds = {16, 48, width - 32, 0},
-            .text = "Type a command or application name", .font = Text12, .class_name = LabelMuted,
-            .wrap = TextWrapNone});
+    {
+        Rectangle rect;
+        rect.x = 0;
+        rect.y = 0;
+        rect.width = (float)width;
+        rect.height = 30;
+        DrawRectangleRounded(rect, 0.02f, 4, panel_color());
+    }
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = 10;
+        props.bounds.y = 8;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = "Run program";
+        props.font = Text14;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        Text(props);
+    }
+    {
+        Rectangle rect;
+        rect.x = 8;
+        rect.y = 40;
+        rect.width = (float)width - 16;
+        rect.height = 32;
+        DrawRectangleRounded(rect, 0.05f, 4, Fade(BLACK, 0.22f));
+        DrawRectangleRoundedLinesEx(rect, 0.05f, 4, 1.0f, StyleTokenColor("link"));
+    }
+    if(visuals->run_input[0] != '\0') {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = 16;
+        props.bounds.y = 48;
+        props.bounds.width = width - 32;
+        props.bounds.height = 0;
+        props.text = visuals->run_input;
+        props.font = Text14;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    } else {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = 16;
+        props.bounds.y = 48;
+        props.bounds.width = width - 32;
+        props.bounds.height = 0;
+        props.text = "Type a command or application name";
+        props.font = Text12;
+        props.class_name = LabelMuted;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
+    }
 
     if(visuals->run_input[0] != '\0') {
         for(i = 0; i < 6; i++) {
             match = run_match_launcher(shell, visuals->run_input, i);
             if(match == NULL)
                 break;
-            if(draw_settings_button((Rectangle){8, (float)y,
-                                                (float)width - 16, 26},
-                                    match->name, 0)) {
-                if(run_execute(shell, platform, match, match->name))
-                    rill_stop_requested = 1;
-                return;
+            {
+                Rectangle rect;
+                rect.x = 8;
+                rect.y = (float)y;
+                rect.width = (float)width - 16;
+                rect.height = 26;
+                if(draw_settings_button(rect, match->name, 0)) {
+                    if(run_execute(shell, platform, match, match->name))
+                        rill_stop_requested = 1;
+                    return;
+                }
             }
-            draw_text_fit((TextProps){
-                .bounds = {200, y + 5, width - 220, 0},
-                .text = match->description, .font = Text12, .class_name = LabelMuted,
-                .wrap = TextWrapNone});
+            {
+                TextProps props;
+                memset(&props, 0, sizeof(props));
+                props.bounds.x = 200;
+                props.bounds.y = y + 5;
+                props.bounds.width = width - 220;
+                props.bounds.height = 0;
+                props.text = match->description;
+                props.font = Text12;
+                props.class_name = LabelMuted;
+                props.wrap = TextWrapNone;
+                draw_text_fit(props);
+            }
             matches++;
             y += 30;
         }
-        if(matches == 0)
-            draw_text_fit((TextProps){
-                .bounds = {16, y + 2, width - 32, 0},
-                .text = "Press Enter to run the typed command", .font = Text12, .class_name = LabelMuted,
-                .wrap = TextWrapNone});
+        if(matches == 0) {
+            TextProps props;
+            memset(&props, 0, sizeof(props));
+            props.bounds.x = 16;
+            props.bounds.y = y + 2;
+            props.bounds.width = width - 32;
+            props.bounds.height = 0;
+            props.text = "Press Enter to run the typed command";
+            props.font = Text12;
+            props.class_name = LabelMuted;
+            props.wrap = TextWrapNone;
+            draw_text_fit(props);
+        }
         if(IsKeyPressed(KEY_ENTER)) {
             match = run_match_launcher(shell, visuals->run_input, 0);
             if(run_execute(shell, platform, match, visuals->run_input))
@@ -6538,10 +8479,17 @@ draw_run_dialog(RillShellState *shell, RillVisualState *visuals,
 
     history = RillSettingsGet(&rill_settings, "run-history", "");
     if(history[0] == '\0') {
-        draw_text_fit((TextProps){
-            .bounds = {16, 90, width - 32, 0},
-            .text = "Recent commands appear here", .font = Text12, .class_name = LabelMuted,
-            .wrap = TextWrapNone});
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = 16;
+        props.bounds.y = 90;
+        props.bounds.width = width - 32;
+        props.bounds.height = 0;
+        props.text = "Recent commands appear here";
+        props.font = Text12;
+        props.class_name = LabelMuted;
+        props.wrap = TextWrapNone;
+        draw_text_fit(props);
         return;
     }
     for(i = 0; i < 4; i++) {
@@ -6553,11 +8501,17 @@ draw_run_dialog(RillShellState *shell, RillVisualState *visuals,
             size = sizeof(item) - 1;
         memcpy(item, history, size);
         item[size] = '\0';
-        if(draw_settings_button((Rectangle){8, (float)y, (float)width - 16, 26},
-                                item, 0)) {
-            if(run_execute(shell, platform, NULL, item))
-                rill_stop_requested = 1;
-            return;
+        {
+            Rectangle rect;
+            rect.x = 8;
+            rect.y = (float)y;
+            rect.width = (float)width - 16;
+            rect.height = 26;
+            if(draw_settings_button(rect, item, 0)) {
+                if(run_execute(shell, platform, NULL, item))
+                    rill_stop_requested = 1;
+                return;
+            }
         }
         y += 30;
         if(end == NULL)
@@ -6575,9 +8529,18 @@ draw_app_window(RillShellState *shell, RillAppWindow *app,
     Rectangle content;
     Color frame_color;
 
-    frame = (Rectangle){app->x, app->y, app->w, app->h};
-    title = (Rectangle){app->x, app->y, app->w, 30};
-    content = (Rectangle){app->x + 1, app->y + 31, app->w - 2, app->h - 32};
+    frame.x = app->x;
+    frame.y = app->y;
+    frame.width = app->w;
+    frame.height = app->h;
+    title.x = app->x;
+    title.y = app->y;
+    title.width = app->w;
+    title.height = 30;
+    content.x = app->x + 1;
+    content.y = app->y + 31;
+    content.width = app->w - 2;
+    content.height = app->h - 32;
     frame_color = app->focused ? StyleTokenColor("link") : Fade(StyleTokenColor("text"), 0.32f);
     include_panel_popup(frame);
 
@@ -6588,17 +8551,31 @@ draw_app_window(RillShellState *shell, RillAppWindow *app,
                                                   frame_color, 0.18f)));
     BeginScissorMode((int)title.x + 6, (int)title.y,
                      (int)title.width - 42, (int)title.height);
-    Text((TextProps){
-        .bounds = {app->x + 10, app->y + 8, 0, 0},
-        .text = app->title, .font = Text14, .class_name = LabelPrimary,
-        .wrap = TextWrapNone});
-    EndScissorMode();
-    if(draw_window_close_button((Rectangle){app->x + app->w - 30,
-                                            app->y + 4, 22, 22})) {
-        RillShellCloseApp(shell, app->id);
-        return;
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = app->x + 10;
+        props.bounds.y = app->y + 8;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = app->title;
+        props.font = Text14;
+        props.class_name = LabelPrimary;
+        props.wrap = TextWrapNone;
+        Text(props);
     }
-
+    EndScissorMode();
+    {
+        Rectangle rect;
+        rect.x = app->x + app->w - 30;
+        rect.y = app->y + 4;
+        rect.width = 22;
+        rect.height = 22;
+        if(draw_window_close_button(rect)) {
+            RillShellCloseApp(shell, app->id);
+            return;
+        }
+    }
     BeginScissorMode((int)content.x, (int)content.y, (int)content.width,
                      (int)content.height);
     DrawRectangleRec(content, opaque_color(StyleTokenColor("canvas")));
@@ -6640,10 +8617,19 @@ draw_test_window(Rectangle frame, const char *title, Color title_color,
     DrawRectangleRec(title_rect, opaque_color(title_color));
     BeginScissorMode((int)title_rect.x + 8, (int)title_rect.y,
                      (int)title_rect.width - 16, (int)title_rect.height);
-    Text((TextProps){
-        .bounds = {(int)title_rect.x + 10, (int)title_rect.y + 8, 0, 0},
-        .text = title, .font = Text14, .class_name = LabelWhite,
-        .wrap = TextWrapNone});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = (int)title_rect.x + 10;
+        props.bounds.y = (int)title_rect.y + 8;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = title;
+        props.font = Text14;
+        props.class_name = LabelWhite;
+        props.wrap = TextWrapNone;
+        Text(props);
+    }
     EndScissorMode();
     DrawRectangleRec(content, opaque_color(content_color));
 }
@@ -6660,22 +8646,47 @@ draw_compositor_stack_test_scene(void)
     const Color lower_title = {94, 28, 36, 255};
     const Color upper_bg = {24, 172, 128, 255};
     const Color upper_title = {20, 92, 72, 255};
+    Color col;
 
-    ClearBackground((Color){8, 9, 12, 255});
-    DrawRectangle(0, 0, GetScreenWidth(), PANEL_H, (Color){20, 22, 30, 255});
-    Text((TextProps){
-        .bounds = {10, 8, 0, 0},
-        .text = "Rill visual test", .font = Text12, .class_name = LabelWhite,
-        .wrap = TextWrapNone});
+    col.r = 8;
+    col.g = 9;
+    col.b = 12;
+    col.a = 255;
+    ClearBackground(col);
+    col.r = 20;
+    col.g = 22;
+    col.b = 30;
+    col.a = 255;
+    DrawRectangle(0, 0, GetScreenWidth(), PANEL_H, col);
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = 10;
+        props.bounds.y = 8;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = "Rill visual test";
+        props.font = Text12;
+        props.class_name = LabelWhite;
+        props.wrap = TextWrapNone;
+        Text(props);
+    }
 
     draw_test_window(lower, "Lower text producer", lower_title, lower_bg, 0);
     BeginScissorMode((int)lower_content.x, (int)lower_content.y,
                      (int)lower_content.width, (int)lower_content.height);
     for(int i = 0; i < 8; i++) {
-        Text((TextProps){
-            .bounds = {RILL_TEST_LOWER_TEXT_X, RILL_TEST_LOWER_TEXT_Y + i * 26, 0, 0},
-            .text = "TEXT-HIERARCHY-LEAK TEXT-HIERARCHY-LEAK", .font = Text24, .class_name = LabelTestRed,
-            .wrap = TextWrapNone});
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = RILL_TEST_LOWER_TEXT_X;
+        props.bounds.y = RILL_TEST_LOWER_TEXT_Y + i * 26;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = "TEXT-HIERARCHY-LEAK TEXT-HIERARCHY-LEAK";
+        props.font = Text24;
+        props.class_name = LabelTestRed;
+        props.wrap = TextWrapNone;
+        Text(props);
     }
     EndScissorMode();
 
@@ -6689,34 +8700,91 @@ draw_menu_stack_test_scene(void)
     Rectangle lower_content = {lower.x + 1, lower.y + 31, lower.width - 2,
                                lower.height - 32};
     Rectangle menu = {176, 118, 238, 112};
+    Color col;
 
-    ClearBackground((Color){8, 9, 12, 255});
+    col.r = 8;
+    col.g = 9;
+    col.b = 12;
+    col.a = 255;
+    ClearBackground(col);
     DrawRectangle(0, 0, GetScreenWidth(), PANEL_H, panel_color());
-    Text((TextProps){
-        .bounds = {10, 8, 0, 0},
-        .text = "Rill visual test", .font = Text12, .class_name = LabelWhite,
-        .wrap = TextWrapNone});
+    {
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = 10;
+        props.bounds.y = 8;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = "Rill visual test";
+        props.font = Text12;
+        props.class_name = LabelWhite;
+        props.wrap = TextWrapNone;
+        Text(props);
+    }
 
-    draw_test_window(lower, "Lower text producer", (Color){92, 28, 96, 255},
-                     (Color){18, 18, 22, 255}, 1);
+    {
+        Color title_col;
+        title_col.r = 92;
+        title_col.g = 28;
+        title_col.b = 96;
+        title_col.a = 255;
+        col.r = 18;
+        col.g = 18;
+        col.b = 22;
+        col.a = 255;
+        draw_test_window(lower, "Lower text producer", title_col, col, 1);
+    }
     BeginScissorMode((int)lower_content.x, (int)lower_content.y,
                      (int)lower_content.width, (int)lower_content.height);
     for(int i = 0; i < 5; i++) {
-        Text((TextProps){
-            .bounds = {190, 138 + i * 24, 0, 0},
-            .text = "TEXT-HIERARCHY-LEAK TEXT-HIERARCHY-LEAK", .font = Text24, .class_name = LabelTestRed,
-            .wrap = TextWrapNone});
+        TextProps props;
+        memset(&props, 0, sizeof(props));
+        props.bounds.x = 190;
+        props.bounds.y = 138 + i * 24;
+        props.bounds.width = 0;
+        props.bounds.height = 0;
+        props.text = "TEXT-HIERARCHY-LEAK TEXT-HIERARCHY-LEAK";
+        props.font = Text24;
+        props.class_name = LabelTestRed;
+        props.wrap = TextWrapNone;
+        Text(props);
     }
     EndScissorMode();
 
-    draw_window_close_button((Rectangle){lower.x + lower.width - 30,
-                                         lower.y + 4, 22, 22});
+    {
+        Rectangle rect;
+        rect.x = lower.x + lower.width - 30;
+        rect.y = lower.y + 4;
+        rect.width = 22;
+        rect.height = 22;
+        draw_window_close_button(rect);
+    }
     draw_menu_panel(menu);
-    draw_menu_row((Rectangle){182, 124, 226, 28}, "Terminal", "terminal");
-    draw_menu_row((Rectangle){182, 156, 226, 28}, "Files", "files");
-    draw_menu_row((Rectangle){182, 188, 226, 28}, "Settings", "settings");
+    {
+        Rectangle rect;
+        rect.x = 182;
+        rect.y = 124;
+        rect.width = 226;
+        rect.height = 28;
+        draw_menu_row(rect, "Terminal", "terminal");
+    }
+    {
+        Rectangle rect;
+        rect.x = 182;
+        rect.y = 156;
+        rect.width = 226;
+        rect.height = 28;
+        draw_menu_row(rect, "Files", "files");
+    }
+    {
+        Rectangle rect;
+        rect.x = 182;
+        rect.y = 188;
+        rect.width = 226;
+        rect.height = 28;
+        draw_menu_row(rect, "Settings", "settings");
+    }
 }
-
 static int
 draw_test_scene(const RillTestState *test)
 {
@@ -7084,10 +9152,19 @@ main(int argc, char **argv)
         } else if(options.mode == RILL_MODE_RUN) {
             draw_run_dialog(&shell, &visuals, platform);
         } else if(options.mode == RILL_MODE_SETTINGS) {
-            draw_settings_app(&shell, (Rectangle){0, 0, GetScreenWidth(), GetScreenHeight()},
-                              &visuals, platform);
+            Rectangle rect;
+            rect.x = 0;
+            rect.y = 0;
+            rect.width = (float)GetScreenWidth();
+            rect.height = (float)GetScreenHeight();
+            draw_settings_app(&shell, rect, &visuals, platform);
         } else if(options.mode == RILL_MODE_ABOUT) {
-            draw_about_app((Rectangle){0, 0, GetScreenWidth(), GetScreenHeight()});
+            Rectangle rect;
+            rect.x = 0;
+            rect.y = 0;
+            rect.width = (float)GetScreenWidth();
+            rect.height = (float)GetScreenHeight();
+            draw_about_app(rect);
         } else {
             if(options.mode != RILL_MODE_PANEL) {
                 draw_wallpaper(&visuals);
