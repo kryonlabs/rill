@@ -8,10 +8,10 @@ BIN=/$objtype/bin
 OUT=$O.out
 
 # t9 is authored in .kry and emitted ahead of time on the host
-# (`make kry-c-plan9` in /sys/src/t9); its plan9 objects are built by
-# t9's own mkfile into $T9/build/plan9/obj. Rill compiles only the two
-# files that need the embedded-host contract: the app host entry
-# (renamed T9CreateAppHost) and the PTY boundary.
+# t9 is authored in .kry and emitted ahead of time on the host
+# (`make kry-c-plan9` in /sys/src/t9). Rill builds those generated
+# objects with the embedded-host include contract and compiles only the
+# two files that need symbol renaming: the app host entry and PTY boundary.
 T9GEN=$T9/build/plan9/generated
 T9LIST=$T9/build/plan9/generated-c-files.txt
 T9OBJ=$T9/build/plan9/obj
@@ -72,6 +72,9 @@ t9_host.$O: $T9GEN/src/app/app_ktrem_host.c
 
 t9_pty.$O: $T9/src/terminal_pty_plan9.c
 	cpp -+ $T9CPPFLAGS $prereq > t9_pty.i && $CC $CFLAGS -c t9_pty.i && mv t9_pty.i.$O t9_pty.$O && rm -f t9_pty.i
+
+$T9OBJ/%.8: $T9GEN/%.c
+	mkdir -p `{echo $target | sed 's@/[^/]*$@@'} && cpp -+ $T9CPPFLAGS $prereq > $T9OBJ/$stem.i && $CC $CFLAGS -o $target -c $T9OBJ/$stem.i && rm -f $T9OBJ/$stem.i
 
 $SHELF/src/shelf_host.$O: $SHELF/src/shelf_host.c
 	cd $SHELF/src && cpp -+ $CPPFLAGS '-DCreateAppHost=ShelfCreateAppHost' '-DDestroyAppHost=ShelfDestroyAppHost' shelf_host.c > shelf_host.i && $CC $CFLAGS -c shelf_host.i && mv shelf_host.i.$O shelf_host.$O && rm -f shelf_host.i
