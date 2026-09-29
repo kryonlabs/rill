@@ -2,6 +2,26 @@
 
 Rill is a Kryon/libdraw desktop shell for Taiji and Plan 9.
 
+Rill is being restored as TaijiOS's main desktop environment, with its entire
+implementation in current Ziran and its UI built with Kryon. The shell state,
+launcher/window behavior, service data types, and stub platform adapter now
+live in `src/*.zi`. The handwritten C implementations of the shell and stub
+were removed; both hosted and native Plan 9 builds use generated output.
+
+The conversion remains incomplete. Panel/settings persistence, graphical
+screens, file operations, Linux and Plan 9 platform services, window management,
+and the session daemon still need conversion. The C desktop entrypoint and
+two legacy `.kry` screens still depend on the former Kryon interface, so the
+full desktop build is not yet restored against current Kryon.
+
+`make shell-test` checks the generated shell against its existing C consumers
+and runs the Ziran behavior tests from source and saved IR. In TaijiOS,
+`make rill-ziran-plan9-smoke` generates the same tests through `plan9-c`, then
+compiles, links, and runs them with native `8c`/`8l` in the private guest. It
+covers launcher/task growth, application focus and stacking, recent launchers,
+platform task ID collisions, closing applications, and the stub adapter.
+Graphical desktop readiness requires separate verification after its conversion.
+
 The project keeps shell behavior outside Kryon. Kryon provides the UI runtime,
 renderer backends, widgets, and reusable platform primitives; Rill owns panels,
 launchers, task/window presentation, desktop surfaces, settings, and platform

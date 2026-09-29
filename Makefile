@@ -1,8 +1,31 @@
 APP_NAME := rill
+.DEFAULT_GOAL := all
 KRYON_DIR ?= ../kryon
 PLAN9PORT_DIR ?= ../plan9port
 KRYON_BACKEND ?= libdraw
 KRYON_WITH_SYNC ?= 0
+ZIRAN_DIR ?= ../ziran
+ZIRAN ?= $(ZIRAN_DIR)/build/bin/ziran
+
+SHELL_MODULES := native_memory platform_types shell_types shell
+SHELL_GEN := build/ziran/c
+SHELL_C := $(addprefix $(SHELL_GEN)/,$(addsuffix .c,$(SHELL_MODULES)))
+STUB_C := $(SHELL_GEN)/platform_stub.c
+SHELL_STAMP := $(SHELL_GEN)/.generated
+SHELL_SOURCES := $(addprefix src/,$(addsuffix .zi,$(SHELL_MODULES))) src/platform_stub.zi
+
+$(SHELL_STAMP): $(SHELL_SOURCES) $(ZIRAN)
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=c --root src -o $(SHELL_GEN) src/shell.zi src/platform_stub.zi
+	touch $@
+
+$(SHELL_C) $(STUB_C): $(SHELL_STAMP)
+
+.PHONY: ziran-c-plan9 shell-test
+ziran-c-plan9:
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root src -o build/ziran/plan9 src/shell.zi
+
+shell-test:
+	ZIRAN="$(abspath $(ZIRAN))" sh tests/shell_test.sh
 
 CC ?= cc
 CFLAGS ?= -Wall -Wextra -O2
@@ -33,7 +56,7 @@ ifeq ($(UNAME_S),Linux)
   PLATFORM_LDLIBS := $(X11_PKG_LIBS) $(shell pkg-config --libs sm ice) -ldl -lrt
 else
   PLATFORM := unknown
-  PLATFORM_SRC := src/platform_stub.c
+  PLATFORM_SRC := $(STUB_C)
   PLATFORM_LDLIBS :=
 endif
 
@@ -71,8 +94,8 @@ BUILD_DIR := build/$(PLATFORM)-$(ARCH)
 BIN := $(BUILD_DIR)/$(APP_NAME)
 TEST_BIN := $(BUILD_DIR)/rill_shell_test
 LINUX_LAUNCHER_TEST_BIN := $(BUILD_DIR)/rill_linux_launcher_test
-SRCS := src/main.c src/rill_settings.c src/rill_shell.c src/rill_panel.c src/rill_x11.c src/rill_dnd.c $(PLATFORM_SRC) $(WAYLAND_SRC)
-TEST_SRCS := tests/rill_shell_test.c src/rill_shell.c src/rill_panel.c src/platform_stub.c
+SRCS := src/main.c src/rill_settings.c $(SHELL_C) src/rill_panel.c src/rill_x11.c src/rill_dnd.c $(PLATFORM_SRC) $(WAYLAND_SRC)
+TEST_SRCS := tests/rill_shell_test.c $(SHELL_C) src/rill_panel.c $(STUB_C)
 LINUX_LAUNCHER_TEST_SRCS := tests/rill_linux_launcher_test.c src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC)
 DND_TEST_SRCS := tests/rill_dnd_test.c src/rill_dnd.c
 

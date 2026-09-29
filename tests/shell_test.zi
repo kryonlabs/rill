@@ -1,0 +1,188 @@
+#import "shell"
+#import "shell_types"
+#import "platform_types"
+#import "native_memory"
+#import "platform_stub"
+
+#scope_file
+shell: RillShellState;
+services: RillPlatformServices;
+launches: s32;
+focused_task: s32;
+platform_task_id: s32 = 42;
+
+Launchers :: (out: *RillLauncher, cap: s32) -> s32 {
+    if cap < 2 { return 0 }
+    SetBytes(cast(*void)out, 0, 2 * size_of(RillLauncher))
+    CopyText(*out[0].id[0], 64, TextBytes("terminal"))
+    CopyText(*out[0].name[0], 96, TextBytes("Terminal Emulator"))
+    CopyText(*out[0].command[0], 256, TextBytes("host:t9"))
+    CopyText(*out[1].id[0], 64, TextBytes("settings"))
+    CopyText(*out[1].name[0], 96, TextBytes("Settings"))
+    CopyText(*out[1].command[0], 256, TextBytes("internal:settings"))
+    return 2
+}
+
+Tasks :: (out: *RillTask, cap: s32) -> s32 {
+    if cap < 1 { return 0 }
+    SetBytes(cast(*void)out, 0, size_of(RillTask))
+    out[0].id = platform_task_id
+    CopyText(*out[0].title[0], 128, TextBytes("Rio"))
+    out[0].focused = 1
+    return 1
+}
+
+Launch :: (launcher: *RillLauncher) -> s32 {
+    if launcher == null { return 0 }
+    launches += 1
+    return 1
+}
+
+Focus :: (id: s32) -> s32 {
+    focused_task = id
+    return cast(s32)(id == platform_task_id)
+}
+
+ManyLaunchers :: (out: *RillLauncher, cap: s32) -> s32 {
+    count := cap
+    if count > 100 { count = 100 }
+    SetBytes(cast(*void)out, 0, cast(usize)count * size_of(RillLauncher))
+    index: s32 = 0
+    while index < count {
+        out[index].id[0] = cast(s8)(48 + index / 100)
+        out[index].id[1] = cast(s8)(48 + index / 10 % 10)
+        out[index].id[2] = cast(s8)(48 + index % 10)
+        CopyText(*out[index].name[0], 96, *out[index].id[0])
+        index += 1
+    }
+    return count
+}
+
+ManyTasks :: (out: *RillTask, cap: s32) -> s32 {
+    count := cap
+    if count > 80 { count = 80 }
+    SetBytes(cast(*void)out, 0, cast(usize)count * size_of(RillTask))
+    index: s32 = 0
+    while index < count {
+        out[index].id = index + 100
+        index += 1
+    }
+    return count
+}
+
+NegativeLaunchers :: (out: *RillLauncher, cap: s32) -> s32 {
+    unused out
+    unused cap
+    return -1
+}
+
+NegativeTasks :: (out: *RillTask, cap: s32) -> s32 {
+    unused out
+    unused cap
+    return -1
+}
+
+Run :: () -> s32 {
+    services.list_launchers = Launchers
+    services.list_tasks = Tasks
+    services.launch = Launch
+    services.focus_task = Focus
+    RillShellInit(*shell)
+    if shell.selected_launcher != -1 || shell.selected_task != -1 { return 1 }
+    if shell.launcher_capacity != 32 || shell.task_capacity != 32 { return 2 }
+    RillShellRefresh(*shell, *services)
+    if shell.launcher_count != 2 || shell.task_count != 1 { return 3 }
+    if RillShellSelectTask(*shell, 0) == 0 ||
+       RillShellFocusSelectedTask(*shell, *services) == 0 || focused_task != 42 { return 4 }
+    if RillShellSelectLauncher(*shell, 1) == 0 ||
+       RillShellLaunchSelected(*shell, *services) == 0 ||
+       shell.app_count != 1 || launches != 0 { return 5 }
+    if shell.apps[0].kind != RILL_APP_SETTINGS || shell.apps[0].w != 500 ||
+       shell.apps[0].h != 420 { return 6 }
+    if !TextEquals(*shell.recent_launcher_ids[0][0], TextBytes("settings")) { return 7 }
+    RillShellRefresh(*shell, *services)
+    focused_task = 0
+    if shell.task_count != 2 || RillShellSelectTask(*shell, 0) == 0 ||
+       RillShellFocusSelectedTask(*shell, *services) == 0 || focused_task != 0 { return 8 }
+    if RillShellSelectLauncher(*shell, 0) == 0 ||
+       RillShellLaunchSelected(*shell, *services) == 0 || shell.app_count != 2 { return 9 }
+    if !TextEquals(*shell.apps[1].host_id[0], TextBytes("t9")) ||
+       !TextEquals(*shell.recent_launcher_ids[0][0], TextBytes("terminal")) ||
+       shell.recent_launcher_count != 2 { return 10 }
+    // Focusing changes the stacking order. The status must describe the
+    // focused app after the move, even when its previous slot changed.
+    settings_id := shell.apps[0].id
+    terminal_id := shell.apps[1].id
+    if RillShellFocusApp(*shell, settings_id) == 0 ||
+       shell.apps[1].id != settings_id || shell.apps[0].id != terminal_id ||
+       !TextEquals(*shell.status[0], TextBytes("Settings")) { return 11 }
+    platform_task_id = terminal_id
+    RillShellRefresh(*shell, *services)
+    focused_task = 0
+    RillShellSelectTask(*shell, shell.app_count)
+    if RillShellFocusSelectedTask(*shell, *services) == 0 ||
+       focused_task != terminal_id { return 12 }
+    // Reopening an existing app changes focus rather than duplicating it.
+    if RillShellOpenLauncher(*shell, *shell.launchers[1]) == 0 || shell.app_count != 2 { return 13 }
+    services.list_launchers = ManyLaunchers
+    services.list_tasks = ManyTasks
+    RillShellRefresh(*shell, *services)
+    if shell.launcher_count != 100 || shell.task_count != 82 ||
+       !TextEquals(*shell.launchers[99].id[0], TextBytes("099")) { return 14 }
+    // A full recent list keeps newest first, moves duplicates once, and
+    // evicts its oldest entry when a new application is recorded.
+    shell.recent_launcher_count = 0
+    index: s32 = 0
+    while index < 10 {
+        RillShellRecordRecent(*shell, *shell.launchers[index])
+        index += 1
+    }
+    if shell.recent_launcher_count != 8 ||
+       !TextEquals(*shell.recent_launcher_ids[0][0], TextBytes("009")) ||
+       !TextEquals(*shell.recent_launcher_ids[7][0], TextBytes("002")) { return 15 }
+    RillShellRecordRecent(*shell, *shell.launchers[5])
+    if shell.recent_launcher_count != 8 ||
+       !TextEquals(*shell.recent_launcher_ids[0][0], TextBytes("005")) ||
+       !TextEquals(*shell.recent_launcher_ids[4][0], TextBytes("006")) { return 16 }
+    if RillShellSelectLauncher(*shell, -1) != 0 ||
+       RillShellSelectTask(*shell, shell.task_count) != 0 ||
+       RillShellCloseApp(*shell, -1) != 0 { return 17 }
+    if RillShellCloseApp(*shell, settings_id) == 0 || shell.app_count != 1 ||
+       shell.focused_app != terminal_id { return 18 }
+    if RillShellCloseApp(*shell, terminal_id) == 0 || shell.app_count != 0 ||
+       shell.focused_app != -1 { return 19 }
+    services.list_launchers = NegativeLaunchers
+    services.list_tasks = NegativeTasks
+    RillShellRefresh(*shell, *services)
+    if shell.launcher_count != 0 || shell.task_count != 0 ||
+       shell.selected_launcher != -1 || shell.selected_task != -1 { return 20 }
+    RillShellDispose(*shell)
+    if shell.launchers != null || shell.tasks != null || shell.task_capacity != 0 { return 21 }
+    RillShellDispose(null)
+    RillShellInit(null)
+    RillShellRefresh(null, null)
+    if RillShellOpenLauncher(null, null) != 0 { return 22 }
+    RillShellInit(*shell)
+    stub := RillPlatformStub()
+    if stub != RillPlatformCurrent() ||
+       !TextEquals(stub.name, TextBytes("stub")) { return 23 }
+    RillShellRefresh(*shell, stub)
+    if shell.launcher_count != 5 || shell.task_count != 1 ||
+       !TextEquals(*shell.launchers[0].command[0], TextBytes("host:t9")) ||
+       !TextEquals(*shell.launchers[4].id[0], TextBytes("inbe")) ||
+       !TextEquals(stub.settings_root(), TextBytes("/cfg/rill")) { return 24 }
+    if stub.list_launchers(shell.launchers, 1) != 1 ||
+       stub.list_launchers(null, 5) != 0 ||
+       stub.list_tasks(null, 1) != 0 || stub.launch(*shell.launchers[0]) != 0 { return 25 }
+    RillShellDispose(*shell)
+    return 0
+}
+
+#scope_export
+#program_export
+main :: () -> s32 {
+    result := Run()
+    if result != 0 { print("rill-shell-test-failed: %\n", result) }
+    else { print("rill-shell-test-ok\n") }
+    return result
+}

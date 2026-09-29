@@ -1,0 +1,255 @@
+// Shared desktop data and C-callable service boundary.
+// Remaining C consumers use these layouts until their Ziran conversion.
+RILL_MAX_LAUNCHERS :: 32;
+RILL_MAX_TASKS :: 32;
+RILL_XSETTING_NAME :: 64;
+RILL_XSETTING_STRING :: 160;
+RILL_SETTINGS_MAX :: 256;
+RILL_SETTINGS_KEY :: 96;
+RILL_SETTINGS_VALUE :: 256;
+
+FileTransferStatus :: struct {
+    #abi_incomplete
+    id: u32
+    running: s32
+    completed: s32
+    total: s32
+    cancelled: s32
+    skipped: s32
+    conflict: s32
+    queued: s32
+    bytes: u64
+    operation: [16]s8
+    current: [1024]s8
+    error: [256]s8
+    conflict_destination: [512]s8
+}
+
+FileTrashEntry :: struct {
+    #abi_incomplete
+    name: [256]s8
+    original: [1024]s8
+    deleted: [40]s8
+    is_directory: s32
+}
+
+RillLauncher :: struct {
+    #abi_incomplete
+    id: [64]s8
+    name: [96]s8
+    description: [128]s8
+    category: [64]s8
+    command: [256]s8
+    icon_path: [512]s8
+    desktop_file: [1024]s8
+    favorite: s32
+    file_path: [1024]s8
+    is_directory: s32
+}
+
+RillTask :: struct {
+    #abi_incomplete
+    id: s32
+    title: [128]s8
+    icon_path: [512]s8
+    focused: s32
+    urgent: s32
+    platform_owned: s32
+}
+
+RillTrayIcon :: struct {
+    #abi_incomplete
+    id: [160]s8
+    title: [128]s8
+    width: s32
+    height: s32
+    argb: *u32
+}
+
+RillNotification :: struct {
+    #abi_incomplete
+    id: u32
+    app_name: [96]s8
+    summary: [160]s8
+    body: [256]s8
+}
+
+RillTrayMenuRow :: struct {
+    #abi_incomplete
+    label: [160]s8
+    item_id: s32
+    depth: s16
+    toggle: s16
+    separator: u8
+    enabled: u8
+}
+
+RillXSetting :: struct {
+    #abi_incomplete
+    name: [64]s8
+    type: s32
+    integer_value: s32
+    string_value: [160]s8
+}
+
+RillDisplayOutput :: struct {
+    #abi_incomplete
+    name: [64]s8
+    width: s32
+    height: s32
+    connected: s32
+    primary: s32
+}
+
+RillDisplayMode :: struct {
+    #abi_incomplete
+    width: s32
+    height: s32
+}
+
+RillVolume :: struct {
+    #abi_incomplete
+    name: [96]s8
+    device: [128]s8
+    mount_path: [512]s8
+    mounted: s32
+    can_eject: s32
+}
+ListLaunchersProcedure :: #type (out: *RillLauncher, cap: s32) -> s32 #c_call;
+ListTasksProcedure :: #type (out: *RillTask, cap: s32) -> s32 #c_call;
+LaunchProcedure :: #type (launcher: *RillLauncher) -> s32 #c_call;
+FocusTaskProcedure :: #type (task_id: s32) -> s32 #c_call;
+CloseTaskProcedure :: #type (task_id: s32) -> s32 #c_call;
+SettingsRootProcedure :: #type () -> *s8 #c_call;
+WorkspaceCountProcedure :: #type () -> s32 #c_call;
+CurrentWorkspaceProcedure :: #type () -> s32 #c_call;
+SwitchWorkspaceProcedure :: #type (index: s32) -> s32 #c_call;
+ListWallpapersProcedure :: #type (paths: *[512]s8, cap: s32) -> s32 #c_call;
+SessionActionProcedure :: #type (action: *s8) -> s32 #c_call;
+ShowDesktopProcedure :: #type (show: s32) -> s32 #c_call;
+TrayIconsProcedure :: #type (out: *RillTrayIcon, cap: s32) -> s32 #c_call;
+TrayActivateProcedure :: #type (id: *s8, secondary: s32) -> s32 #c_call;
+TrayMenuProcedure :: #type (id: *s8, out: *RillTrayMenuRow, cap: s32) -> s32 #c_call;
+TrayMenuActivateProcedure :: #type (id: *s8, item_id: s32) -> s32 #c_call;
+ListDesktopFilesProcedure :: #type (out: *RillLauncher, cap: s32) -> s32 #c_call;
+OpenPathProcedure :: #type (path: *s8) -> s32 #c_call;
+NotificationsPollProcedure :: #type (out: *RillNotification, cap: s32) -> s32 #c_call;
+NotificationActionProcedure :: #type (id: u32, dismiss: s32) -> s32 #c_call;
+BatteryStateProcedure :: #type (percent: *s32, charging: *s32) -> s32 #c_call;
+XembedTrayCountProcedure :: #type () -> s32 #c_call;
+XembedTrayLayoutProcedure :: #type (x: s32, y: s32, height: s32, visible: s32) #c_call;
+VolumeStateProcedure :: #type (percent: *s32, muted: *s32) -> s32 #c_call;
+VolumeSetProcedure :: #type (percent: s32, muted: s32) -> s32 #c_call;
+VolumeSinksProcedure :: #type (names: *[96]s8, cap: s32, default_sink: *s8, default_size: s32) -> s32 #c_call;
+VolumeSetDefaultProcedure :: #type (name: *s8) -> s32 #c_call;
+XsettingsPublishProcedure :: #type (settings: *RillXSetting, count: s32) -> s32 #c_call;
+XsettingsReadProcedure :: #type (out: *RillXSetting, cap: s32) -> s32 #c_call;
+ClipboardHistoryProcedure :: #type (texts: **s8, cap: s32) -> s32 #c_call;
+ClipboardSelectProcedure :: #type (index: s32) -> s32 #c_call;
+DesktopDirectoryProcedure :: #type () -> *s8 #c_call;
+OpenSettingsProcedure :: #type (category: *s8) -> s32 #c_call;
+FileOperationProcedure :: #type (operation: *s8, source: *s8, destination: *s8, error: *s8, error_size: s32) -> s32 #c_call;
+FileTransferStartProcedure :: #type (operation: *s8, sources: **s8, count: s32, destination: *s8) -> s32 #c_call;
+FileTransferPollProcedure :: #type (status: *FileTransferStatus) -> s32 #c_call;
+FileTransferCancelProcedure :: #type () #c_call;
+FileTransferFinishProcedure :: #type () #c_call;
+FileClipboardCopyProcedure :: #type (paths: **s8, count: s32, cut: s32) -> s32 #c_call;
+FileClipboardPasteProcedure :: #type (destination: *s8) -> s32 #c_call;
+FileTransferConflictsProcedure :: #type () -> s32 #c_call;
+FileTransferResolveProcedure :: #type (answer: s32, apply_to_all: s32) -> s32 #c_call;
+FileTransferRetryProcedure :: #type () -> s32 #c_call;
+FileTransferUndoProcedure :: #type () -> s32 #c_call;
+FileRecoverStagingProcedure :: #type (directory: *s8, error: *s8, error_size: s32) -> s32 #c_call;
+FileTrashListProcedure :: #type (out: *FileTrashEntry, cap: s32) -> s32 #c_call;
+FileTrashRestoreProcedure :: #type (name: *s8, error: *s8, error_size: s32) -> s32 #c_call;
+FileTrashEmptyProcedure :: #type (error: *s8, error_size: s32) -> s32 #c_call;
+DisplayOutputsProcedure :: #type (out: *RillDisplayOutput, cap: s32) -> s32 #c_call;
+DisplayModesProcedure :: #type (output: *s8, out: *RillDisplayMode, cap: s32) -> s32 #c_call;
+DisplayApplyProcedure :: #type (output: *s8, width: s32, height: s32, error: *s8, error_size: s32) -> s32 #c_call;
+PointerSettingsProcedure :: #type (numerator: *s32, denominator: *s32, threshold: *s32) -> s32 #c_call;
+PointerSetProcedure :: #type (numerator: s32, denominator: s32, threshold: s32) -> s32 #c_call;
+KeyboardRepeatProcedure :: #type (delay: *s32, rate: *s32) -> s32 #c_call;
+KeyboardSetRepeatProcedure :: #type (delay: s32, rate: s32) -> s32 #c_call;
+PanelConfigLoadProcedure :: #type (json: *s8, size: s32) -> s32 #c_call;
+PanelConfigStoreProcedure :: #type (json: *s8) -> s32 #c_call;
+SessionDiagnosticsProcedure :: #type (text: *s8, size: s32) -> s32 #c_call;
+RemovableVolumesProcedure :: #type (out: *RillVolume, cap: s32) -> s32 #c_call;
+XfcePanelConfigLoadProcedure :: #type (xml: *s8, size: s32) -> s32 #c_call;
+RemovableMountProcedure :: #type (device: *s8, path: *s8, path_size: s32, error: *s8, error_size: s32) -> s32 #c_call;
+RemovableUnmountProcedure :: #type (device: *s8, error: *s8, error_size: s32) -> s32 #c_call;
+RemovableEjectProcedure :: #type (device: *s8, error: *s8, error_size: s32) -> s32 #c_call;
+
+RillPlatformServices :: struct {
+    #abi_incomplete
+    name: *s8
+    list_launchers: ListLaunchersProcedure
+    list_tasks: ListTasksProcedure
+    launch: LaunchProcedure
+    focus_task: FocusTaskProcedure
+    close_task: CloseTaskProcedure
+    settings_root: SettingsRootProcedure
+    workspace_count: WorkspaceCountProcedure
+    current_workspace: CurrentWorkspaceProcedure
+    switch_workspace: SwitchWorkspaceProcedure
+    list_wallpapers: ListWallpapersProcedure
+    session_action: SessionActionProcedure
+    show_desktop: ShowDesktopProcedure
+    tray_icons: TrayIconsProcedure
+    tray_activate: TrayActivateProcedure
+    tray_menu: TrayMenuProcedure
+    tray_menu_activate: TrayMenuActivateProcedure
+    list_desktop_files: ListDesktopFilesProcedure
+    open_path: OpenPathProcedure
+    notifications_poll: NotificationsPollProcedure
+    notification_action: NotificationActionProcedure
+    battery_state: BatteryStateProcedure
+    xembed_tray_count: XembedTrayCountProcedure
+    xembed_tray_layout: XembedTrayLayoutProcedure
+    volume_state: VolumeStateProcedure
+    volume_set: VolumeSetProcedure
+    volume_sinks: VolumeSinksProcedure
+    volume_set_default: VolumeSetDefaultProcedure
+    xsettings_publish: XsettingsPublishProcedure
+    xsettings_read: XsettingsReadProcedure
+    clipboard_history: ClipboardHistoryProcedure
+    clipboard_select: ClipboardSelectProcedure
+    desktop_directory: DesktopDirectoryProcedure
+    open_settings: OpenSettingsProcedure
+    file_operation: FileOperationProcedure
+    file_transfer_start: FileTransferStartProcedure
+    file_transfer_poll: FileTransferPollProcedure
+    file_transfer_cancel: FileTransferCancelProcedure
+    file_transfer_finish: FileTransferFinishProcedure
+    file_clipboard_copy: FileClipboardCopyProcedure
+    file_clipboard_paste: FileClipboardPasteProcedure
+    file_transfer_conflicts: FileTransferConflictsProcedure
+    file_transfer_resolve: FileTransferResolveProcedure
+    file_transfer_retry: FileTransferRetryProcedure
+    file_transfer_undo: FileTransferUndoProcedure
+    file_recover_staging: FileRecoverStagingProcedure
+    file_trash_list: FileTrashListProcedure
+    file_trash_restore: FileTrashRestoreProcedure
+    file_trash_empty: FileTrashEmptyProcedure
+    display_outputs: DisplayOutputsProcedure
+    display_modes: DisplayModesProcedure
+    display_apply: DisplayApplyProcedure
+    pointer_settings: PointerSettingsProcedure
+    pointer_set: PointerSetProcedure
+    keyboard_repeat: KeyboardRepeatProcedure
+    keyboard_set_repeat: KeyboardSetRepeatProcedure
+    panel_config_load: PanelConfigLoadProcedure
+    panel_config_store: PanelConfigStoreProcedure
+    session_diagnostics: SessionDiagnosticsProcedure
+    removable_volumes: RemovableVolumesProcedure
+    xfce_panel_config_load: XfcePanelConfigLoadProcedure
+    removable_mount: RemovableMountProcedure
+    removable_unmount: RemovableUnmountProcedure
+    removable_eject: RemovableEjectProcedure
+}
+
+RillSettings :: struct {
+    #abi_incomplete
+    keys: [256][96]s8
+    values: [256][256]s8
+    count: s32
+}

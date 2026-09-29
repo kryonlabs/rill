@@ -1,0 +1,77 @@
+#import "platform_types"
+#import "native_memory"
+
+#scope_file
+services: RillPlatformServices;
+
+Launcher :: (out: *RillLauncher, id: string, name: string,
+    description: string, category: string, command: string, favorite: s32) {
+    SetBytes(cast(*void)out, 0, size_of(RillLauncher))
+    CopyText(*out.id[0], 64, TextBytes(id))
+    CopyText(*out.name[0], 96, TextBytes(name))
+    CopyText(*out.description[0], 128, TextBytes(description))
+    CopyText(*out.category[0], 64, TextBytes(category))
+    CopyText(*out.command[0], 256, TextBytes(command))
+    out.favorite = favorite
+}
+
+ListLaunchers :: (out: *RillLauncher, cap: s32) -> s32 {
+    if out == null || cap <= 0 { return 0 }
+    Launcher(*out[0], "terminal", "Terminal", "Use the command line",
+        "Accessories", "host:t9", 1)
+    if cap > 1 {
+        Launcher(*out[1], "files", "File Manager", "Browse the file system",
+            "Accessories", "host:shelf", 1)
+    }
+    if cap > 2 {
+        Launcher(*out[2], "settings", "Settings", "Configure the desktop",
+            "Settings", "internal:settings", 1)
+    }
+    if cap > 3 {
+        Launcher(*out[3], "workbook", "Workbook", "Edit spreadsheets",
+            "Office", "external:workbook", 0)
+    }
+    if cap > 4 {
+        Launcher(*out[4], "inbe", "Inner Breeze", "Breathe and focus",
+            "Other", "external:inbe", 0)
+    }
+    if cap < 5 { return cap }
+    return 5
+}
+
+ListTasks :: (out: *RillTask, cap: s32) -> s32 {
+    if out == null || cap <= 0 { return 0 }
+    SetBytes(cast(*void)out, 0, size_of(RillTask))
+    out[0].id = 1
+    CopyText(*out[0].title[0], 128, TextBytes("Rill desktop"))
+    out[0].focused = 1
+    return 1
+}
+
+Launch :: (launcher: *RillLauncher) -> s32 {
+    unused launcher
+    return 0
+}
+
+TaskAction :: (task_id: s32) -> s32 {
+    unused task_id
+    return 0
+}
+
+SettingsRoot :: () -> *s8 { return TextBytes("/cfg/rill") }
+
+#scope_export
+#program_export
+RillPlatformStub :: () -> *RillPlatformServices {
+    services.name = TextBytes("stub")
+    services.list_launchers = ListLaunchers
+    services.list_tasks = ListTasks
+    services.launch = Launch
+    services.focus_task = TaskAction
+    services.close_task = TaskAction
+    services.settings_root = SettingsRoot
+    return *services
+}
+
+#program_export
+RillPlatformCurrent :: () -> *RillPlatformServices { return RillPlatformStub() }

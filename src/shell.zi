@@ -1,0 +1,349 @@
+#import "platform_types"
+#import "shell_types"
+#import "native_memory"
+
+#scope_file
+PLAN9 :: #defined(NATIVE_PLAN9);
+
+ClampIndex :: (value: s32, count: s32) -> s32 {
+    if count <= 0 { return -1 }
+    if value < 0 { return 0 }
+    if value >= count { return count - 1 }
+    return value
+}
+
+SetNamedStatus :: (shell: *RillShellState, prefix: string, name: *s8) {
+    used := CopyText(*shell.status[0], 160, TextBytes(prefix))
+    CopyText(*shell.status[used], 160 - used, name)
+}
+
+KindForLauncher :: (launcher: *RillLauncher) -> s32 {
+    if launcher == null { return RILL_APP_ABOUT }
+    command := *launcher.command[0]
+    if TextEquals(command, TextBytes("internal:terminal")) ||
+       TextEquals(command, TextBytes("host:t9")) { return RILL_APP_TERMINAL }
+    if TextEquals(command, TextBytes("internal:files")) ||
+       TextEquals(command, TextBytes("host:shelf")) { return RILL_APP_FILES }
+    if TextEquals(command, TextBytes("internal:settings")) { return RILL_APP_SETTINGS }
+    return RILL_APP_ABOUT
+}
+
+FocusAppIndex :: (shell: *RillShellState, index: s32) {
+    if shell == null || index < 0 || index >= shell.app_count { return }
+    app := shell.apps[index]
+    cursor := index
+    while cursor + 1 < shell.app_count {
+        shell.apps[cursor] = shell.apps[cursor + 1]
+        cursor += 1
+    }
+    shell.apps[shell.app_count - 1] = app
+    cursor = 0
+    while cursor < shell.app_count {
+        shell.apps[cursor].focused = cast(s32)(cursor == shell.app_count - 1)
+        cursor += 1
+    }
+    shell.focused_app = shell.apps[shell.app_count - 1].id
+}
+
+FocusExternalTaskIndex :: (shell: *RillShellState, index: s32) {
+    if shell == null || index < 0 || index >= shell.external_task_count { return }
+    cursor: s32 = 0
+    while cursor < shell.app_count {
+        shell.apps[cursor].focused = 0
+        cursor += 1
+    }
+    cursor = 0
+    while cursor < shell.external_task_count {
+        shell.external_tasks[cursor].focused = cast(s32)(cursor == index)
+        cursor += 1
+    }
+    shell.focused_app = -1
+}
+
+ContainedX11 :: () -> bool {
+    value := EnvironmentValue(TextBytes("RILL_CONTAINED_X11"))
+    present := value != null
+    // Native Plan 9 getenv returns an allocation; POSIX returns borrowed text.
+    #if PLAN9 {
+        ReleaseAllocation(cast(*void)value)
+    }
+    return present
+}
+
+#scope_export
+#program_export
+RillShellInit :: (shell: *RillShellState) {
+    if shell == null { return }
+    SetBytes(cast(*void)shell, 0, size_of(RillShellState))
+    shell.launchers = cast(*RillLauncher)AllocateZeroed(32, size_of(RillLauncher))
+    shell.tasks = cast(*RillTask)AllocateZeroed(32, size_of(RillTask))
+    if shell.launchers != null { shell.launcher_capacity = 32 }
+    if shell.tasks != null { shell.task_capacity = 32 }
+    shell.selected_launcher = -1
+    shell.selected_task = -1
+    shell.panel_side = RILL_PANEL_TOP
+    shell.focused_app = -1
+    shell.next_app_id = 1
+    shell.next_task_id = 1000
+    RillShellSetStatus(shell, TextBytes("Rill is starting"))
+}
+
+#program_export
+RillShellDispose :: (shell: *RillShellState) {
+    if shell == null { return }
+    ReleaseAllocation(cast(*void)shell.launchers)
+    ReleaseAllocation(cast(*void)shell.tasks)
+    SetBytes(cast(*void)shell, 0, size_of(RillShellState))
+}
+
+#program_export
+RillShellSetStatus :: (shell: *RillShellState, status: *s8) {
+    if shell == null { return }
+    CopyText(*shell.status[0], 160, status)
+}
+
+#program_export
+RillShellRefresh :: (shell: *RillShellState, platform: *RillPlatformServices) {
+    if shell == null || platform == null { return }
+    launcher_count: s32 = 0
+    if platform.list_launchers != null && shell.launcher_capacity > 0 {
+        while true {
+            launcher_count = platform.list_launchers(shell.launchers, shell.launcher_capacity)
+            if launcher_count < shell.launcher_capacity { break }
+            launcher_count = shell.launcher_capacity
+            if shell.launcher_capacity > 1073741823 { break }
+            capacity := shell.launcher_capacity * 2
+            if cast(usize)capacity > cast(usize)-1 / size_of(RillLauncher) { break }
+            items := cast(*RillLauncher)ResizeAllocation(cast(*void)shell.launchers,
+                cast(usize)capacity * size_of(RillLauncher))
+            if items == null {
+                RillShellSetStatus(shell, TextBytes("Not enough memory to list every application"))
+                break
+            }
+            shell.launchers = items
+            shell.launcher_capacity = capacity
+        }
+    }
+    if launcher_count < 0 { launcher_count = 0 }
+    shell.launcher_count = launcher_count
+    shell.task_count = 0
+    index: s32 = 0
+    while index < shell.app_count && shell.task_count < shell.task_capacity {
+        shell.tasks[index].id = shell.apps[index].id
+        CopyText(*shell.tasks[index].title[0], 128, *shell.apps[index].title[0])
+        shell.tasks[index].icon_path[0] = 0
+        shell.tasks[index].focused = shell.apps[index].focused
+        shell.tasks[index].urgent = 0
+        shell.tasks[index].platform_owned = 0
+        shell.task_count += 1
+        index += 1
+    }
+    if platform.list_tasks != null && shell.task_count < shell.task_capacity {
+        task_count: s32 = 0
+        while true {
+            available := shell.task_capacity - shell.task_count
+            task_count = platform.list_tasks(*shell.tasks[shell.task_count], available)
+            if task_count < available { break }
+            task_count = available
+            if shell.task_capacity > 1073741823 { break }
+            capacity := shell.task_capacity * 2
+            if cast(usize)capacity > cast(usize)-1 / size_of(RillTask) { break }
+            items := cast(*RillTask)ResizeAllocation(cast(*void)shell.tasks,
+                cast(usize)capacity * size_of(RillTask))
+            if items == null {
+                RillShellSetStatus(shell, TextBytes("Not enough memory to list every window"))
+                break
+            }
+            shell.tasks = items
+            shell.task_capacity = capacity
+        }
+        if task_count < 0 { task_count = 0 }
+        if task_count > shell.task_capacity - shell.task_count {
+            task_count = shell.task_capacity - shell.task_count
+        }
+        index = 0
+        while index < task_count {
+            shell.tasks[shell.task_count + index].platform_owned = 1
+            index += 1
+        }
+        shell.task_count += task_count
+    }
+    index = 0
+    while index < shell.external_task_count && shell.task_count < shell.task_capacity {
+        shell.tasks[shell.task_count] = shell.external_tasks[index]
+        shell.task_count += 1
+        index += 1
+    }
+    shell.selected_launcher = ClampIndex(shell.selected_launcher, shell.launcher_count)
+    shell.selected_task = ClampIndex(shell.selected_task, shell.task_count)
+}
+
+#program_export
+RillShellOpenLauncher :: (shell: *RillShellState, launcher: *RillLauncher) -> s32 {
+    if shell == null || launcher == null { return 0 }
+    index: s32 = 0
+    while index < shell.app_count {
+        if TextEquals(*shell.apps[index].title[0], *launcher.name[0]) {
+            FocusAppIndex(shell, index)
+            RillShellSetStatus(shell, *launcher.name[0])
+            return 1
+        }
+        index += 1
+    }
+    if shell.app_count >= RILL_MAX_APPS {
+        RillShellSetStatus(shell, TextBytes("Too many open Rill apps"))
+        return 0
+    }
+    offset := shell.app_count * 28
+    app := *shell.apps[shell.app_count]
+    shell.app_count += 1
+    SetBytes(cast(*void)app, 0, size_of(RillAppWindow))
+    app.id = shell.next_app_id
+    shell.next_app_id += 1
+    app.kind = KindForLauncher(launcher)
+    if TextStartsWith(*launcher.command[0], "host:") {
+        CopyText(*app.host_id[0], 64, *launcher.command[5])
+    }
+    CopyText(*app.title[0], 96, *launcher.name[0])
+    app.x = 150 + offset
+    app.y = 86 + offset
+    app.w = 560
+    app.h = 380
+    if app.kind == RILL_APP_SETTINGS { app.w = 500; app.h = 420 }
+    FocusAppIndex(shell, shell.app_count - 1)
+    SetNamedStatus(shell, "Opened ", *launcher.name[0])
+    return 1
+}
+
+#program_export
+RillShellRecordRecent :: (shell: *RillShellState, launcher: *RillLauncher) {
+    if shell == null || launcher == null || launcher.id[0] == 0 { return }
+    existing: s32 = -1
+    index: s32 = 0
+    while index < shell.recent_launcher_count {
+        if TextEquals(*shell.recent_launcher_ids[index][0], *launcher.id[0]) {
+            existing = index
+            break
+        }
+        index += 1
+    }
+    if existing > 0 {
+        MoveBytes(cast(*void)(*shell.recent_launcher_ids[1][0]),
+            cast(*void)(*shell.recent_launcher_ids[0][0]), cast(usize)existing * 64)
+    } else if existing < 0 {
+        if shell.recent_launcher_count < RILL_MAX_RECENT_LAUNCHERS {
+            shell.recent_launcher_count += 1
+        }
+        if shell.recent_launcher_count > 1 {
+            MoveBytes(cast(*void)(*shell.recent_launcher_ids[1][0]),
+                cast(*void)(*shell.recent_launcher_ids[0][0]),
+                cast(usize)(shell.recent_launcher_count - 1) * 64)
+        }
+    }
+    CopyText(*shell.recent_launcher_ids[0][0], 64, *launcher.id[0])
+}
+
+#program_export
+RillShellLaunchSelectedInternal :: (shell: *RillShellState) -> s32 {
+    if shell == null || shell.selected_launcher < 0 ||
+       shell.selected_launcher >= shell.launcher_count { return 0 }
+    launcher := *shell.launchers[shell.selected_launcher]
+    opened := RillShellOpenLauncher(shell, launcher)
+    if opened != 0 { RillShellRecordRecent(shell, launcher) }
+    return opened
+}
+
+#program_export
+RillShellSelectLauncher :: (shell: *RillShellState, index: s32) -> s32 {
+    if shell == null || index < 0 || index >= shell.launcher_count { return 0 }
+    shell.selected_launcher = index
+    return 1
+}
+
+#program_export
+RillShellFocusApp :: (shell: *RillShellState, app_id: s32) -> s32 {
+    if shell == null { return 0 }
+    index: s32 = 0
+    while index < shell.app_count {
+        if shell.apps[index].id == app_id {
+            FocusAppIndex(shell, index)
+            // Focus moves the window to the end of the stacking order.
+            RillShellSetStatus(shell, *shell.apps[shell.app_count - 1].title[0])
+            return 1
+        }
+        index += 1
+    }
+    return 0
+}
+
+#program_export
+RillShellCloseApp :: (shell: *RillShellState, app_id: s32) -> s32 {
+    if shell == null { return 0 }
+    index: s32 = 0
+    while index < shell.app_count {
+        if shell.apps[index].id == app_id {
+            cursor := index
+            while cursor + 1 < shell.app_count {
+                shell.apps[cursor] = shell.apps[cursor + 1]
+                cursor += 1
+            }
+            shell.app_count -= 1
+            if shell.app_count > 0 { FocusAppIndex(shell, shell.app_count - 1) }
+            else { shell.focused_app = -1 }
+            RillShellSetStatus(shell, TextBytes("Closed app"))
+            return 1
+        }
+        index += 1
+    }
+    return 0
+}
+
+#program_export
+RillShellLaunchSelected :: (shell: *RillShellState, platform: *RillPlatformServices) -> s32 {
+    if shell == null || platform == null || platform.launch == null { return 0 }
+    if shell.selected_launcher < 0 || shell.selected_launcher >= shell.launcher_count { return 0 }
+    launcher := *shell.launchers[shell.selected_launcher]
+    if TextStartsWith(*launcher.command[0], "internal:") ||
+       (TextStartsWith(*launcher.command[0], "host:") && !ContainedX11()) {
+        opened := RillShellOpenLauncher(shell, launcher)
+        if opened != 0 { RillShellRecordRecent(shell, launcher) }
+        return opened
+    }
+    if platform.launch(launcher) != 0 {
+        SetNamedStatus(shell, "Launched ", *launcher.name[0])
+        RillShellRecordRecent(shell, launcher)
+        return 1
+    }
+    SetNamedStatus(shell, "Could not launch ", *launcher.name[0])
+    return 0
+}
+
+#program_export
+RillShellSelectTask :: (shell: *RillShellState, index: s32) -> s32 {
+    if shell == null || index < 0 || index >= shell.task_count { return 0 }
+    shell.selected_task = index
+    return 1
+}
+
+#program_export
+RillShellFocusSelectedTask :: (shell: *RillShellState, platform: *RillPlatformServices) -> s32 {
+    if shell == null || platform == null || platform.focus_task == null { return 0 }
+    if shell.selected_task < 0 || shell.selected_task >= shell.task_count { return 0 }
+    task := *shell.tasks[shell.selected_task]
+    if task.platform_owned == 0 && RillShellFocusApp(shell, task.id) != 0 { return 1 }
+    index: s32 = 0
+    while task.platform_owned == 0 && index < shell.external_task_count {
+        if shell.external_tasks[index].id == task.id {
+            FocusExternalTaskIndex(shell, index)
+            RillShellSetStatus(shell, *shell.external_tasks[index].title[0])
+            return 1
+        }
+        index += 1
+    }
+    if platform.focus_task(task.id) != 0 {
+        SetNamedStatus(shell, "Focused ", *task.title[0])
+        return 1
+    }
+    SetNamedStatus(shell, "Could not focus ", *task.title[0])
+    return 0
+}

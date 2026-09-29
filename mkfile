@@ -6,6 +6,9 @@ T9=/sys/src/t9
 SHELF=/sys/src/shelf
 BIN=/$objtype/bin
 OUT=$O.out
+RILLGEN=build/ziran/plan9
+RILLOBJS=$RILLGEN/native_memory.$O $RILLGEN/platform_types.$O \
+	$RILLGEN/shell_types.$O $RILLGEN/shell.$O
 
 # t9 is authored in .kry and emitted ahead of time on the host
 # t9 is authored in .kry and emitted ahead of time on the host
@@ -31,7 +34,7 @@ CFLAGS=-FTVw
 
 OFILES=\
 	src/main.$O\
-	src/rill_shell.$O\
+	$RILLOBJS\
 	src/rill_panel.$O\
 	src/rill_settings.$O\
 	src/platform_plan9.$O\
@@ -43,9 +46,19 @@ OFILES=\
 
 LIB=/$objtype/lib/libkryon.a /$objtype/lib/libstdio.a
 
-all:V: check-t9 $OUT
+all:V: check-rill-ziran check-t9 $OUT
 
-install:V: check-t9 $BIN/$TARG
+install:V: check-rill-ziran check-t9 $BIN/$TARG
+
+check-rill-ziran:V:
+	if(! test -f $RILLGEN/shell.c) {
+		echo 'missing Ziran shell output; run make ziran-c-plan9 on the host' >[1=2]
+		exit missing
+	}
+	exit 0
+
+$RILLGEN/%.$O: $RILLGEN/%.c
+	$CC $CFLAGS -I$RILLGEN -o $target -c $prereq
 
 check-t9:V:
 	if(! test -f $T9LIST) {
@@ -65,7 +78,7 @@ src/%.$O: src/%.c
 
 clean:V:
 	rm -f src/*.[$OS] src/*.i [$OS].out $TARG t9_host.*[$OS] t9_host.i \
-		t9_pty.*[$OS] t9_pty.i $SHELF/src/*.[$OS] $SHELF/src/*.i
+		t9_pty.*[$OS] t9_pty.i $SHELF/src/*.[$OS] $SHELF/src/*.i $RILLGEN/*.[$OS]
 
 t9_host.$O: $T9GEN/src/app/app_ktrem_host.c
 	cpp -+ $T9CPPFLAGS '-DCreateAppHost=T9CreateAppHost' '-DDestroyAppHost=T9DestroyAppHost' $prereq > t9_host.i && $CC $CFLAGS -c t9_host.i && mv t9_host.i.$O t9_host.$O && rm -f t9_host.i

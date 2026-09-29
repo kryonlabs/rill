@@ -1,0 +1,58 @@
+#import "platform_types"
+
+RILL_PANEL_TOP :: 0;
+RILL_PANEL_BOTTOM :: 1;
+RILL_PANEL_LEFT :: 2;
+RILL_PANEL_RIGHT :: 3;
+RILL_APP_TERMINAL :: 0;
+RILL_APP_FILES :: 1;
+RILL_APP_SETTINGS :: 2;
+RILL_APP_ABOUT :: 3;
+RILL_MAX_APPS :: 16;
+RILL_MAX_EXTERNAL_TASKS :: 16;
+RILL_MAX_RECENT_LAUNCHERS :: 8;
+RILL_APP_MENU_SEARCH_MAX :: 80;
+
+RillAppWindow :: struct {
+    #abi_incomplete
+    id: s32
+    kind: s32
+    title: [96]s8
+    x: s32
+    y: s32
+    w: s32
+    h: s32
+    focused: s32
+    host_id: [64]s8
+}
+
+RillShellState :: struct {
+    #abi_incomplete
+    launchers: *RillLauncher
+    launcher_capacity: s32
+    launcher_count: s32
+    selected_launcher: s32
+    tasks: *RillTask
+    task_capacity: s32
+    task_count: s32
+    selected_task: s32
+    panel_side: s32
+    apps: [16]RillAppWindow
+    app_count: s32
+    external_tasks: [16]RillTask
+    external_task_count: s32
+    focused_app: s32
+    next_app_id: s32
+    next_task_id: s32
+    dragging_app: s32
+    drag_offset_x: s32
+    drag_offset_y: s32
+    menu_open: s32
+    app_menu_category: s32
+    app_menu_search_active: s32
+    app_menu_search: [80]s8
+    recent_launcher_ids: [8][64]s8
+    recent_launcher_count: s32
+    settings_open: s32
+    status: [160]s8
+}
