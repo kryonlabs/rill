@@ -1,7 +1,7 @@
 APP_NAME := rill
 .DEFAULT_GOAL := all
 KRYON_DIR ?= ../kryon
-PLAN9PORT_DIR ?= $(if $(wildcard ../../plan9port/lib/libdraw.a),../../plan9port,$(if $(wildcard ../plan9port/lib/libdraw.a),../plan9port,../../taijiosnet/plan9port))
+PLAN9PORT_DIR ?= $(if $(PLAN9),$(PLAN9),../../plan9port)
 KRYON_BACKEND ?= libdraw
 KRYON_WITH_SYNC ?= 0
 ZIRAN_DIR ?= ../../ziranlang/ziran
