@@ -148,10 +148,25 @@ Initialize :: (state: *SettingsState, app: *DesktopApplication, platform: *RillP
 
 SliderValue :: (session: Session, key: u64, bounds: Rectangle,
     label: string, value: s32, min: s32, max: s32, disabled: bool) -> SliderDiscreteStep {
+    // These compact form rows own their heading separately. A labeled
+    // slider reserves a full interaction row and grows beyond this slot.
+    heading: TextProps
+    heading.key = key + cast(u64)1000000
+    heading.bounds = Rectangle.{bounds.x, bounds.y, bounds.width - 48.0, 18.0}
+    heading.text = label
+    heading.font = 14
+    heading.disabled = disabled
+    Text(session, heading)
+    number: [32]s8
+    FormatInteger(*number[0], 32, value)
+    heading.key = key + cast(u64)2000000
+    heading.bounds = Rectangle.{bounds.x + bounds.width - 44.0, bounds.y, 44.0, 18.0}
+    heading.text = CString(*number[0])
+    Text(session, heading)
     props: DiscreteSliderProps
     props.key = key
-    props.bounds = bounds
-    props.label = label
+    props.bounds = Rectangle.{bounds.x, bounds.y + 18.0, bounds.width, bounds.height - 18.0}
+    props.semantic_label = label
     props.value = value
     props.min = min
     props.max = max

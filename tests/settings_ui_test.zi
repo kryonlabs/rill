@@ -115,6 +115,13 @@ Cases :: () -> s32 {
     if !Idle(cast(s64)100) || !CaptureConfigured() || !state.started { return 2 }
     if !Click(170.0, 124.0, cast(s64)100) ||
         !TextEquals(RillSettingsGet(*app.settings, TextBytes("panel-side"), null), TextBytes("bottom")) { return 3 }
+    // Compact sliders and the next row must have separate interaction areas.
+    if !Click(380.0, 180.0, cast(s64)100) { return 19 }
+    panel_height := RillSettingsGetInteger(*app.settings, TextBytes("panel-height"), 0)
+    if panel_height <= 40 || panel_height > 64 { return 19 }
+    if !Click(80.0, 208.0, cast(s64)100) ||
+        RillSettingsGetInteger(*app.settings, TextBytes("panel-autohide"), 0) != 1 ||
+        RillSettingsGetInteger(*app.settings, TextBytes("panel-height"), 0) != panel_height { return 20 }
     if !Click(170.0, 24.0, cast(s64)101) || state.tab != 1 ||
         !Click(200.0, 100.0, cast(s64)101) || system_calls != 1 { return 4 }
     if !Click(286.0, 24.0, cast(s64)102) || state.tab != 2 { return 5 }

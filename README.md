@@ -58,6 +58,8 @@ fixture and builds, privately installs, and captures `rill-desktop`.
 Settings and About now use `app/settings_main.zi` and `app/about_main.zi`.
 Settings retains the Desktop, System, Panels, and Input pages with current
 Kryon widgets. Preferences merge with changes made by other applications.
+Native Plan 9 merges hold an exclusive file lease until the save finishes;
+overlapping saves wait, and process exit releases the lease.
 The desktop reloads saved panel placement, sizing, autohide, wallpaper, clock,
 recent applications, and imported panel layouts. Wallpaper rotation changes
 the displayed image every five minutes without overwriting the chosen image.
@@ -101,7 +103,7 @@ through `plan9-c`, then compiles, links, and runs them with native `8c`/`8l`
 in the private guest. It covers launcher/task growth, focus and stacking,
 recent launchers, platform task ID collisions, closing applications, and the
 stub adapter, plus panel layouts, malformed input, settings merges, large
-preference files, native file operations, and interrupted-save recovery. The
+preference files, native file operations, overlapping native saves, and interrupted-save recovery. The
 Plan 9 adapter checks application and icon registry overrides, rio task
 discovery, detached process launching, and guarded focus/close commands.
 Window controls require a PID in a process group launched by this adapter;
