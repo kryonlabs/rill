@@ -5,6 +5,7 @@
 #import "platform_types"
 #import "settings"
 #import "native_memory"
+Memory :: #import "native_memory";
 using UI :: #import "Widgets";
 #import "tree_draw"
 using FrameStatus;
@@ -79,7 +80,7 @@ Cases :: () -> s32 {
     index: s32 = 0
     while index < 14 {
         CopyText(*shell.launchers[index].id[0], 64, TextBytes("app"))
-        FormatInteger(*shell.launchers[index].id[3], 61, index)
+        Memory.FormatInteger(*shell.launchers[index].id[3], 61, index)
         CopyText(*shell.launchers[index].name[0], 96, *shell.launchers[index].id[0])
         CopyText(*shell.launchers[index].command[0], 256, *shell.launchers[index].id[0])
         CopyText(*shell.launchers[index].description[0], 128, TextBytes("Private application fixture"))
