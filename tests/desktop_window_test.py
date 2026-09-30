@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import time
-from window_input import wait_for, window_for, send_input
+from window_input import wait_for, window_for, send_input, owns_window
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -70,12 +70,63 @@ def main():
             input_command("key", "--window", window, "Return")
             wait_for(marker.exists, process)
             assert process.poll() is None
+            # A separate Settings process shares preferences with the running
+            # desktop. Its edge/clock changes must preserve launcher recents.
+            preferences = subprocess.Popen([str(ROOT / "build/rill-settings")], cwd=ROOT,
+                                           env=env, stdout=subprocess.PIPE,
+                                           stderr=subprocess.PIPE, text=True)
+            try:
+                preferences_window = wait_for(lambda: window_for(preferences), preferences)
+
+                def preference_input(*args):
+                    return send_input(preferences_window, preferences, *args)
+
+                def preference_click(x, y):
+                    preference_input("mousemove", "--window", preferences_window, str(x), str(y))
+                    preference_input("mousedown", "1")
+                    time.sleep(0.1)
+                    preference_input("mouseup", "1")
+                    time.sleep(0.2)
+
+                preference_input("windowsize", preferences_window, "640", "480")
+                preference_input("windowfocus", preferences_window)
+                time.sleep(0.4)
+                preference_click(75, 124)
+                preference_click(300, 280)
+                wait_for(lambda: "panel-side = top" in settings.read_text() and
+                         "clock-format = %H:%M:%S" in settings.read_text(), preferences)
+                assert "recents = desktop-probe" in settings.read_text()
+                preference_click(595, 458)
+                preferences_stdout, preferences_stderr = preferences.communicate(timeout=10)
+                assert preferences.returncode == 0, (preferences_stdout, preferences_stderr)
+            finally:
+                if preferences.poll() is None:
+                    preferences.terminate()
+                    preferences.communicate(timeout=5)
+            time.sleep(1.5)  # desktop refreshes external preferences once a second
+            marker.unlink()
+            input_command("windowfocus", window)
+            click(50, 15)
+            input_command("type", "--window", window, "--clearmodifiers",
+                          "--delay", "60", "desktop probe")
+            input_command("key", "--window", window, "Return")
+            try:
+                wait_for(marker.exists, process)
+            except AssertionError:
+                assert owns_window(window, process)
+                subprocess.run(["xwd", "-silent", "-id", window, "-out",
+                                str(ROOT / "build/rill-desktop-window.xwd")], check=True, env=env)
+                print("settings:", settings.read_text(), flush=True)
+                raise
+            assert "panel-side = top" in settings.read_text()
+            assert "clock-format = %H:%M:%S" in settings.read_text()
+            assert "recents = desktop-probe" in settings.read_text()
         finally:
             if process.poll() is None:
                 process.terminate()
             stdout, stderr = process.communicate(timeout=5)
             assert "segmentation" not in stderr.lower(), (stdout, stderr)
-    print("rill-desktop-window-test-ok: launch, calendar, persistent panel relocation")
+    print("rill-desktop-window-test-ok: launch, calendar, panel relocation, shared Settings reload")
 
 
 if __name__ == "__main__":

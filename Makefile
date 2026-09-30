@@ -132,7 +132,7 @@ $(DESKTOP_GEN)/.generated: $(RUN_SOURCES) $(ZIRAN)
 desktop-ui-test:
 	ZIRAN="$(abspath $(ZIRAN))" ZIRAN_STD="$(abspath $(ZIRAN_DIR)/std)" KRYON_DIR="$(abspath $(KRYON_DIR))" sh tests/desktop_ui_test.sh
 
-desktop-window-test: $(DESKTOP_BIN)
+desktop-window-test: $(DESKTOP_BIN) build/rill-settings
 	env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY RILL_PRIVATE_XVFB=1 \
 		PLAN9="$(abspath $(PLAN9PORT_DIR))" DEVDRAW="$(abspath $(PLAN9PORT_DIR))/bin/devdraw" \
 		xvfb-run -a -n 100 python3 tests/desktop_window_test.py
