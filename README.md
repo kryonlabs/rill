@@ -95,6 +95,17 @@ transfer service; its Linux implementation remains C and its native Plan 9
 implementation is still pending. Native file icons also need PNG asset support.
 `make desktop-files-ui-test` checks the file controls from source and saved IR.
 
+Native document opening now uses `src/document_open.zi` and
+`app/open_main.zi`, shared with the desktop's file-open service. `rill-open`
+selects an association for each file extension, merges partial user registry
+overrides with system applications, preserves quoted arguments, and forwards
+filenames as literal arguments. Relative command-line paths resolve from the
+working directory. Linux application paths are normalized and translated
+only within the user's home directory. Missing files, malformed commands,
+missing executables, and failed starts report failure. `make open-plan9` and
+`mk -f app/open.mk install` generate, build, and install the native command;
+`make document-open-test` checks its registry and argument policies.
+
 The new entrypoint is not yet the boot default. Remaining file
 services, full tray images and menus, plugin Properties, notifications,
 and remaining services still need conversion and parity
