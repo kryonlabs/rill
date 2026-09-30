@@ -1,0 +1,244 @@
+#import "shell"
+#import "shell_types"
+#import "platform_types"
+#import "settings"
+#import "native_memory"
+
+RILL_APPLICATION_CATEGORIES :: 12;
+
+#program_export
+RillApplicationsCategoryName :: (index: s32) -> *s8 {
+    names: [12]string = .["Favorites", "Recently Used", "All Applications",
+        "Accessories", "Development", "Education", "Games", "Graphics",
+        "Internet", "Multimedia", "Office", "Other"]
+    if index < 0 || index >= 12 { return TextBytes("") }
+    return TextBytes(names[index])
+}
+
+#scope_file
+Fold :: (byte: s32) -> s32 {
+    if byte >= 65 && byte <= 90 { return byte + 32 }
+    return byte
+}
+
+LauncherCount :: (shell: *RillShellState) -> s32 {
+    if shell == null || shell.launchers == null || shell.launcher_capacity <= 0 { return 0 }
+    count := shell.launcher_count
+    if count < 0 { return 0 }
+    if count > shell.launcher_capacity { count = shell.launcher_capacity }
+    return count
+}
+
+RecentCount :: (shell: *RillShellState) -> s32 {
+    if shell == null || shell.recent_launcher_count < 0 { return 0 }
+    count := shell.recent_launcher_count
+    if count > 8 { count = 8 }
+    return count
+}
+
+RecentContains :: (shell: *RillShellState, id: *s8) -> bool {
+    index: s32 = 0
+    while index < RecentCount(shell) {
+        if TextEquals(*shell.recent_launcher_ids[index][0], id) { return true }
+        index += 1
+    }
+    return false
+}
+
+ValidRecentId :: (id: *s8) -> bool {
+    length := TextLength(id)
+    if length < 1 || length >= 64 { return false }
+    index: s32 = 0
+    while index < length {
+        byte := cast(u8)id[index]
+        if byte < cast(u8)32 || byte == cast(u8)124 || byte == cast(u8)127 { return false }
+        index += 1
+    }
+    return true
+}
+
+#scope_export
+// ASCII letters fold; non-ASCII UTF-8 bytes match exactly and are never split.
+#program_export
+RillTextContainsFold :: (text: *s8, query: *s8) -> s32 {
+    if query == null || query[0] == 0 { return 1 }
+    if text == null { return 0 }
+    start: s32 = 0
+    while text[start] != 0 {
+        index: s32 = 0
+        while query[index] != 0 && text[start + index] != 0 &&
+            Fold(cast(s32)cast(u8)query[index]) == Fold(cast(s32)cast(u8)text[start + index]) {
+            index += 1
+        }
+        if query[index] == 0 { return 1 }
+        start += 1
+    }
+    return 0
+}
+
+#program_export
+RillApplicationsMatches :: (shell: *RillShellState, launcher: *RillLauncher) -> s32 {
+    if shell == null || launcher == null { return 0 }
+    query := *shell.app_menu_search[0]
+    if query[0] != 0 {
+        return cast(s32)(RillTextContainsFold(*launcher.name[0], query) != 0 ||
+            RillTextContainsFold(*launcher.description[0], query) != 0 ||
+            RillTextContainsFold(*launcher.category[0], query) != 0)
+    }
+    category := shell.app_menu_category
+    if category == 0 { return cast(s32)(launcher.favorite != 0) }
+    if category == 1 { return cast(s32)RecentContains(shell, *launcher.id[0]) }
+    if category == 2 { return 1 }
+    if category < 3 || category >= 12 { return 0 }
+    return cast(s32)TextEquals(*launcher.category[0], RillApplicationsCategoryName(category))
+}
+
+// Return the installed launcher index, with recent entries in launch order.
+// Missing entries in saved history do not become executable commands.
+#program_export
+RillApplicationsAt :: (shell: *RillShellState, position: s32) -> s32 {
+    if shell == null || position < 0 { return -1 }
+    count := LauncherCount(shell)
+    found: s32 = 0
+    if shell.app_menu_category == 1 && shell.app_menu_search[0] == 0 {
+        recent: s32 = 0
+        while recent < RecentCount(shell) {
+            index: s32 = 0
+            while index < count {
+                if TextEquals(*shell.launchers[index].id[0], *shell.recent_launcher_ids[recent][0]) {
+                    if found == position { return index }
+                    found += 1
+                    break
+                }
+                index += 1
+            }
+            recent += 1
+        }
+        return -1
+    }
+    index: s32 = 0
+    while index < count {
+        if RillApplicationsMatches(shell, *shell.launchers[index]) != 0 {
+            if found == position { return index }
+            found += 1
+        }
+        index += 1
+    }
+    return -1
+}
+
+#program_export
+RillApplicationsCount :: (shell: *RillShellState) -> s32 {
+    count: s32 = 0
+    if shell == null { return 0 }
+    if shell.app_menu_category == 1 && shell.app_menu_search[0] == 0 {
+        while RillApplicationsAt(shell, count) >= 0 { count += 1 }
+        return count
+    }
+    index: s32 = 0
+    while index < LauncherCount(shell) {
+        if RillApplicationsMatches(shell, *shell.launchers[index]) != 0 { count += 1 }
+        index += 1
+    }
+    return count
+}
+
+#program_export
+RillApplicationsLoadRecent :: (shell: *RillShellState, settings: *RillSettings) {
+    if shell == null { return }
+    shell.recent_launcher_count = 0
+    text := RillSettingsGet(settings, TextBytes("recents"), TextBytes(""))
+    cursor: s32 = 0
+    while text != null && text[cursor] != 0 && shell.recent_launcher_count < 8 {
+        start := cursor
+        while text[cursor] != 0 && text[cursor] != 124 { cursor += 1 }
+        length := cursor - start
+        // Refuse overlong IDs rather than changing their identity by truncating.
+        if length > 0 && length < 64 {
+            id: [64]s8
+            byte: s32 = 0
+            while byte < length { id[byte] = text[start + byte]; byte += 1 }
+            id[length] = 0
+            if ValidRecentId(*id[0]) && !RecentContains(shell, *id[0]) {
+                CopyText(*shell.recent_launcher_ids[shell.recent_launcher_count][0], 64, *id[0])
+                shell.recent_launcher_count += 1
+            }
+        }
+        if text[cursor] == 124 { cursor += 1 }
+    }
+}
+
+#program_export
+RillApplicationsStoreRecent :: (shell: *RillShellState, settings: *RillSettings) {
+    if shell == null || settings == null { return }
+    text: [256]s8
+    used: s32 = 0
+    index: s32 = 0
+    while index < RecentCount(shell) {
+        id := *shell.recent_launcher_ids[index][0]
+        length := TextLength(id)
+        if ValidRecentId(id) {
+            separator: s32 = cast(s32)(used > 0)
+            if used + separator + length >= 256 { break }
+            if separator != 0 { text[used] = 124; used += 1 }
+            used += CopyText(*text[used], 256 - used, id)
+        }
+        index += 1
+    }
+    text[used] = 0
+    RillSettingsSet(settings, TextBytes("recents"), *text[0])
+}
+
+#program_export
+RillApplicationsLaunch :: (shell: *RillShellState, platform: *RillPlatformServices,
+    settings: *RillSettings, previous: *RillSettings, path: *s8, index: s32) -> s32 {
+    if index < 0 || index >= LauncherCount(shell) { return 0 }
+    launcher := *shell.launchers[index]
+    target := launcher
+    command: RillLauncher
+    // These registry entries described embedded apps in the former C desktop.
+    // Separate windows use the installed app's normal entrypoint instead.
+    if TextEquals(*launcher.command[0], TextBytes("host:t9")) ||
+       TextEquals(*launcher.command[0], TextBytes("internal:terminal")) {
+        command = launcher.*
+        CopyText(*command.command[0], 256, TextBytes("t9"))
+        target = *command
+    } else if TextEquals(*launcher.command[0], TextBytes("host:shelf")) ||
+              TextEquals(*launcher.command[0], TextBytes("internal:files")) {
+        command = launcher.*
+        CopyText(*command.command[0], 256, TextBytes("shelf"))
+        target = *command
+    } else if TextEquals(*launcher.command[0], TextBytes("internal:settings")) ||
+              TextEquals(*launcher.command[0], TextBytes("internal:about")) {
+        command = launcher.*
+        name := "rill --settings"
+        if TextEquals(*launcher.command[0], TextBytes("internal:about")) { name = "rill --about" }
+        CopyText(*command.command[0], 256, TextBytes(name))
+        target = *command
+    }
+    if platform == null || platform.launch == null || platform.launch(target) == 0 {
+        RillShellSetStatus(shell, TextBytes("Could not open the application"))
+        return 0
+    }
+    RillShellRecordRecent(shell, launcher)
+    RillApplicationsStoreRecent(shell, settings)
+    if path != null && path[0] != 0 && RillSettingsMergeSave(settings, previous, path) == 0 {
+        RillShellSetStatus(shell, TextBytes("Application opened, but its history could not be saved"))
+    }
+    return 1
+}
+
+// The remaining panel dispatches to the current Kryon application. It owns
+// no menu rendering or text editing once this request is issued.
+#program_export
+RillApplicationsOpen :: (shell: *RillShellState, platform: *RillPlatformServices) -> s32 {
+    launcher: RillLauncher
+    CopyText(*launcher.id[0], 64, TextBytes("rill-applications"))
+    CopyText(*launcher.name[0], 96, TextBytes("Applications"))
+    CopyText(*launcher.command[0], 256, TextBytes("rill-applications"))
+    if platform == null || platform.launch == null || platform.launch(*launcher) == 0 {
+        RillShellSetStatus(shell, TextBytes("Could not open Applications"))
+        return 0
+    }
+    return 1
+}

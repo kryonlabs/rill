@@ -1,61 +1,63 @@
-"""Exercise the real Run window and its private launch fixture on Xvfb."""
+"""Real Applications window, private launcher, and saved recents on Xvfb."""
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import time
 
+from window_input import wait_for, window_for, send_input
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
-from window_input import owns_window, wait_for, window_for, send_input
-
 def main():
-    # The caller scrubs inherited displays before starting its own Xvfb.
     assert os.environ.get("RILL_PRIVATE_XVFB") == "1"
     assert int(os.environ["DISPLAY"].split(".")[0][1:]) >= 100
     assert "WAYLAND_DISPLAY" not in os.environ
-    with tempfile.TemporaryDirectory(prefix="rill-run-window-") as directory:
+    with tempfile.TemporaryDirectory(prefix="rill-applications-window-") as directory:
         fixture = Path(directory)
         applications = fixture / "applications"
         applications.mkdir()
         marker = fixture / "launched"
-        (applications / "run-probe.desktop").write_text(
-            "[Desktop Entry]\nType=Application\nName=Run Probe\n"
+        (applications / "menu-probe.desktop").write_text(
+            "[Desktop Entry]\nType=Application\nName=Applications Probe\n"
             f'Exec=/bin/sh -c "printf launched > {marker}"\n'
-            "Comment=Private Run launch fixture\nCategories=Utility;\n"
+            "Comment=Private menu launch fixture\nCategories=Utility;\n"
+            "X-Rill-Favorite=true\n"
         )
         env = os.environ.copy()
         env.update(RILL_APPLICATION_DIRS=str(applications),
-                   XDG_CONFIG_HOME=str(fixture / "config"),
-                   HOME=str(fixture), winsize="480x300")
-        for mode in ("enter", "history", "escape"):
-            process = subprocess.Popen([str(ROOT / "build/rill-run")], cwd=ROOT,
+                   XDG_CONFIG_HOME=str(fixture / "config"), HOME=str(fixture),
+                   winsize="480x430")
+        for mode in ("search", "recent", "escape"):
+            process = subprocess.Popen([str(ROOT / "build/rill-applications")], cwd=ROOT,
                                        env=env, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE, text=True)
             try:
                 window = wait_for(lambda: window_for(process), process)
-                unrelated = subprocess.Popen(["sleep", "5"], cwd=fixture)
-                try:
-                    assert not owns_window(window, unrelated), "An unrelated PID acquired window authority"
-                finally:
-                    unrelated.terminate()
-                    unrelated.wait(timeout=5)
 
                 def input_command(*args):
                     return send_input(window, process, *args)
 
-                input_command("windowsize", window, "480", "300")
+                input_command("windowsize", window, "480", "430")
                 input_command("windowfocus", window)
                 time.sleep(0.3)
                 geometry = input_command("getwindowgeometry", "--shell", window)
-                assert "WIDTH=480\n" in geometry and "HEIGHT=300\n" in geometry, geometry
-                if mode == "enter":
-                    input_command("type", "--window", window, "--clearmodifiers", "--delay", "70", "run")
+                assert "WIDTH=480\n" in geometry and "HEIGHT=430\n" in geometry, geometry
+                if mode == "search":
+                    input_command("type", "--window", window, "--clearmodifiers",
+                                  "--delay", "70", "probe")
                     input_command("key", "--window", window, "Return")
-                elif mode == "history":
+                elif mode == "recent":
                     marker.unlink()
-                    input_command("mousemove", "--window", window, "80", "95")
+                    # The newest successful launcher is available on the next
+                    # application invocation, under Recently Used.
+                    input_command("mousemove", "--window", window, "350", "119")
+                    input_command("mousedown", "1")
+                    time.sleep(0.1)
+                    input_command("mouseup", "1")
+                    time.sleep(0.2)
+                    input_command("mousemove", "--window", window, "80", "104")
                     input_command("mousedown", "1")
                     time.sleep(0.1)
                     input_command("mouseup", "1")
@@ -74,8 +76,8 @@ def main():
                     process.terminate()
                     process.communicate(timeout=5)
         history = fixture / "config/rill/settings"
-        assert "run-history = Run Probe" in history.read_text()
-    print("rill-run-window-test-ok: Enter, application history, Escape")
+        assert "recents = menu-probe" in history.read_text()
+    print("rill-applications-window-test-ok: search, saved recents, Escape")
 
 
 if __name__ == "__main__":

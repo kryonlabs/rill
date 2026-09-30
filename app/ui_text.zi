@@ -1,0 +1,26 @@
+using UI :: #import "Widgets";
+#import "native_memory"
+
+// Keep storage in the application while Kryon decides the edit and caret.
+ApplyTextEdit :: (output: *s8, capacity: s32, edit: TextFieldEdit) -> bool {
+    if !edit.changed || output == null || capacity < 1 || capacity > 256 { return false }
+    length := TextLength(output)
+    replacement := cast(s32)edit.replacement.count
+    after := length - (edit.end - edit.start) + replacement
+    if edit.start < 0 || edit.end < edit.start || edit.end > length ||
+       replacement < 0 || after >= capacity { return false }
+    next: [256]s8
+    index: s32 = 0
+    while index < edit.start { next[index] = output[index]; index += 1 }
+    byte: s32 = 0
+    while byte < replacement {
+        next[index] = cast(s8)edit.replacement[byte]
+        index += 1
+        byte += 1
+    }
+    byte = edit.end
+    while byte < length { next[index] = output[byte]; index += 1; byte += 1 }
+    next[index] = 0
+    CopyText(output, capacity, *next[0])
+    return true
+}

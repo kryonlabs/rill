@@ -8,7 +8,7 @@ BIN=/$objtype/bin
 OUT=$O.out
 RILLGEN=build/ziran/plan9
 RILLOBJS=$RILLGEN/native_memory.$O $RILLGEN/platform_types.$O \
-	$RILLGEN/shell_types.$O $RILLGEN/shell.$O $RILLGEN/run_dialog.$O \
+	$RILLGEN/shell_types.$O $RILLGEN/shell.$O $RILLGEN/run_dialog.$O $RILLGEN/applications.$O \
 	$RILLGEN/c_string.$O $RILLGEN/file_plan9.$O $RILLGEN/native_files.$O \
 	$RILLGEN/panel_types.$O $RILLGEN/panel.$O $RILLGEN/settings.$O \
 	$RILLGEN/platform_plan9.$O $RILLGEN/process_plan9.$O \

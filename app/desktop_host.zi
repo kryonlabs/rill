@@ -1,0 +1,134 @@
+#import "shell"
+#import "shell_types"
+#import "platform_types"
+#import "settings"
+#import "native_memory"
+using UI :: #import "Widgets";
+#import "tree_draw"
+using FrameStatus;
+
+#if #defined(PLAN9_BUILD) {
+    using Runtime :: #import "libdraw_native";
+    using Platform :: #import "platform_plan9";
+} else {
+    using Runtime :: #import "libdraw_runtime";
+    #import "cairo_raster"
+    libc :: #system_library "libc";
+    RillPlatformCurrent :: () -> *RillPlatformServices #foreign libc;
+}
+
+DesktopApplication :: struct {
+    shell: RillShellState
+    settings: RillSettings
+    previous: RillSettings
+    settings_path: [1024]s8
+    user: [96]s8
+    closed: bool
+}
+
+DesktopFrame :: #type (session: Session, viewport: Rectangle,
+    app: *DesktopApplication, platform: *RillPlatformServices) #c_call;
+
+#scope_file
+application: DesktopApplication;
+compose: DesktopFrame;
+
+Preferences :: (platform: *RillPlatformServices) {
+    RillSettingsInit(*application.settings)
+    user := EnvironmentValue(TextBytes("USER"))
+    if user == null || user[0] == 0 {
+        #if #defined(PLAN9_BUILD) {
+            ReleaseAllocation(cast(*void)user)
+        }
+        user = EnvironmentValue(TextBytes("user"))
+    }
+    CopyText(*application.user[0], 96, user)
+    #if #defined(PLAN9_BUILD) {
+            ReleaseAllocation(cast(*void)user)
+        }
+    if application.user[0] == 0 { CopyText(*application.user[0], 96, TextBytes("glenda")) }
+    if platform == null || platform.settings_root == null { return }
+    root := platform.settings_root()
+    if root == null || root[0] == 0 { return }
+    count := TextLength(root)
+    if count + 10 >= 1024 || RillSettingsEnsureDirectory(root) == 0 { return }
+    CopyText(*application.settings_path[0], 1024, root)
+    CopyText(*application.settings_path[count], 1024 - count, TextBytes("/settings"))
+    RillSettingsLoad(*application.settings, *application.settings_path[0])
+    application.previous = application.settings
+}
+
+Draw :: (session: Session, platform: *RillPlatformServices) -> bool {
+    BeginLibdrawFrame()
+    viewport := LibdrawViewport()
+    pointer := PollPointer()
+    TreePointerUpdate(session, pointer)
+    TreeSecondaryPointerUpdate(session, PollSecondaryPointer())
+    PointerWheelSend(session, pointer.x, pointer.y, LibdrawWheelMove())
+    KeyboardModifiersSend(session, LibdrawKeyboardModifiers())
+    key := LibdrawPressedKey()
+    if key != 0 { KeyboardSend(session, key) }
+    scalar := LibdrawTypedCodepoint()
+    if scalar != 0 { TypedCodepointSend(session, scalar) }
+    if BeginFrame(session, cast(u64)1, viewport) != cast(FrameStatus)FrameOk { return false }
+    compose(session, viewport, *application, platform)
+    if EndFrame(session) != cast(FrameStatus)FrameOk { return false }
+    return EndLibdrawFrame()
+}
+
+RunApplication :: () -> s32 {
+    platform := RillPlatformCurrent()
+    RillShellInit(*application.shell)
+    RillShellRefresh(*application.shell, platform)
+    application.shell.status[0] = 0
+    Preferences(platform)
+    if !OpenLibdraw() {
+        CloseLibdraw()
+        RillShellDispose(*application.shell)
+        return 1
+    }
+    session := SessionOpen()
+    ok := SessionValid(session)
+    if CaptureRequested() { ok = ok && Draw(session, platform) && CaptureConfigured() }
+    else {
+        while ok && !application.closed && PollLibdraw() {
+            ok = Draw(session, platform)
+            if ok && !application.closed { PauseLibdraw() }
+        }
+    }
+    CloseSession(session)
+    CloseLibdraw()
+    RillShellDispose(*application.shell)
+    if ok { return 0 }
+    return 1
+}
+
+#if #defined(PLAN9_BUILD) {
+    thread_library :: #system_library "thread";
+    ThreadStart :: #type (value: *void) #c_call;
+    ThreadCreate :: (start: ThreadStart, value: *void, stack: u32) -> s32 #foreign thread_library "threadcreate";
+    ThreadExits :: (status: *s8) #foreign thread_library "threadexits";
+    ThreadExitsAll :: (status: *s8) #foreign thread_library "threadexitsall";
+    #scope_export
+    #program_export
+    ApplicationThread :: (value: *void) {
+        unused value
+        if RunApplication() == 0 { ThreadExitsAll(null) }
+        else { ThreadExitsAll(TextBytes("Rill application failed")) }
+    }
+}
+
+#scope_export
+ApplicationMain :: (frame: DesktopFrame) -> s32 {
+    compose = frame
+    #if #defined(PLAN9_BUILD) {
+        // Widget composition needs more than libthread's initial 8 KiB stack.
+        if ThreadCreate(ApplicationThread, null, 1048576) < 0 {
+            ThreadExitsAll(TextBytes("Could not start Rill application"))
+        }
+        ThreadExits(null)
+        return 1
+    } else {
+        return RunApplication()
+    }
+}

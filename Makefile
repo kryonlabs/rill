@@ -7,7 +7,7 @@ KRYON_WITH_SYNC ?= 0
 ZIRAN_DIR ?= ../../ziranlang/ziran
 ZIRAN ?= $(ZIRAN_DIR)/build/bin/ziran
 
-SHELL_MODULES := native_memory platform_types shell_types shell run_dialog
+SHELL_MODULES := native_memory platform_types shell_types shell run_dialog applications
 SHELL_GEN := build/ziran/c
 SHELL_C := $(addprefix $(SHELL_GEN)/,$(addsuffix .c,$(SHELL_MODULES)))
 PERSISTENCE_MODULES := c_string file_linux native_files panel_types panel settings
@@ -21,7 +21,7 @@ PERSISTENCE_SOURCES := src/native_files.zi src/panel_types.zi src/panel.zi src/s
 	$(ZIRAN_DIR)/std/c_string.zi $(ZIRAN_DIR)/std/file_linux.zi $(ZIRAN_DIR)/std/file_plan9.zi
 
 $(SHELL_STAMP): $(SHELL_SOURCES) $(PERSISTENCE_SOURCES) $(ZIRAN)
-	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=c --root src --module-path $(ZIRAN_DIR)/std -o $(SHELL_GEN) src/shell.zi src/platform_stub.zi src/panel.zi src/settings.zi src/run_dialog.zi
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=c --root src --module-path $(ZIRAN_DIR)/std -o $(SHELL_GEN) src/shell.zi src/platform_stub.zi src/panel.zi src/settings.zi src/run_dialog.zi src/applications.zi
 	touch $@
 
 $(SHELL_C) $(PERSISTENCE_C) $(STUB_C): $(SHELL_STAMP)
@@ -31,7 +31,7 @@ $(PLAN9_C): src/platform_plan9.zi src/platform_types.zi src/native_memory.zi $(P
 
 .PHONY: ziran-c-plan9 shell-test persistence-test
 ziran-c-plan9:
-	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root src --module-path $(ZIRAN_DIR)/std -o build/ziran/plan9 src/shell.zi src/panel.zi src/settings.zi src/platform_plan9.zi src/run_dialog.zi
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root src --module-path $(ZIRAN_DIR)/std -o build/ziran/plan9 src/shell.zi src/panel.zi src/settings.zi src/platform_plan9.zi src/run_dialog.zi src/applications.zi
 	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root tests --module-path src --module-path $(ZIRAN_DIR)/std -o build/ziran/plan9-test tests/persistence_test.zi
 
 shell-test:
@@ -67,6 +67,30 @@ run-window-test: $(RUN_BIN)
 	env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY RILL_PRIVATE_XVFB=1 \
 		PLAN9="$(abspath $(PLAN9PORT_DIR))" DEVDRAW="$(abspath $(PLAN9PORT_DIR))/bin/devdraw" \
 		xvfb-run -a -n 100 python3 tests/run_window_test.py
+
+APPLICATIONS_GEN := build/ziran/applications-c
+APPLICATIONS_BIN := build/rill-applications
+
+.PHONY: applications-build applications-plan9 applications-test applications-ui-test applications-window-test
+applications-build: $(APPLICATIONS_BIN)
+
+applications-plan9:
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --define PLAN9_BUILD --root app --module-path src --module-path $(KRYON_DIR)/src/ui --module-path $(KRYON_DIR)/src/backend --module-path $(ZIRAN_DIR)/std -o build/ziran/applications-plan9 app/applications_main.zi
+
+$(APPLICATIONS_GEN)/.generated: $(RUN_SOURCES) $(ZIRAN)
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=c --root app --module-path src --module-path $(KRYON_DIR)/src/ui --module-path $(KRYON_DIR)/src/backend --module-path $(ZIRAN_DIR)/std -o $(APPLICATIONS_GEN) app/applications_main.zi
+	touch $@
+
+applications-test:
+	ZIRAN="$(abspath $(ZIRAN))" ZIRAN_STD="$(abspath $(ZIRAN_DIR)/std)" sh tests/applications_test.sh
+
+applications-ui-test:
+	ZIRAN="$(abspath $(ZIRAN))" ZIRAN_STD="$(abspath $(ZIRAN_DIR)/std)" KRYON_DIR="$(abspath $(KRYON_DIR))" sh tests/applications_ui_test.sh
+
+applications-window-test: $(APPLICATIONS_BIN)
+	env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY RILL_PRIVATE_XVFB=1 \
+		PLAN9="$(abspath $(PLAN9PORT_DIR))" DEVDRAW="$(abspath $(PLAN9PORT_DIR))/bin/devdraw" \
+		xvfb-run -a -n 100 python3 tests/applications_window_test.py
 
 CC ?= cc
 CFLAGS ?= -Wall -Wextra -O2
@@ -104,6 +128,13 @@ endif
 $(RUN_BIN): $(RUN_GEN)/.generated src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(wildcard include/*.h)
 	$(CC) $(CPPFLAGS) -I$(RUN_GEN) $(CFLAGS) \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $(RUN_GEN)/*.c \
+		src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(GTK_PKG_LIBS) $(PLATFORM_LDLIBS) \
+		$(shell pkg-config --libs wayland-client 2>/dev/null) \
+		-Wl,-E -L$(PLAN9PORT_DIR)/lib -ldraw -lmemdraw -lmux -lthread -l9 -lpthread -lm -lcairo
+
+$(APPLICATIONS_BIN): $(APPLICATIONS_GEN)/.generated src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(wildcard include/*.h)
+	$(CC) $(CPPFLAGS) -I$(APPLICATIONS_GEN) $(CFLAGS) \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $(APPLICATIONS_GEN)/*.c \
 		src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(GTK_PKG_LIBS) $(PLATFORM_LDLIBS) \
 		$(shell pkg-config --libs wayland-client 2>/dev/null) \
 		-Wl,-E -L$(PLAN9PORT_DIR)/lib -ldraw -lmemdraw -lmux -lthread -l9 -lpthread -lm -lcairo
@@ -276,18 +307,24 @@ xfce-smoke: $(BIN)
 	PLAN9PORT_DIR="$(abspath $(PLAN9PORT_DIR))" RILL_BIN="$(abspath $(BIN))" sh tests/rill_xfce_smoke.sh
 
 PREFIX ?= /usr/local
-.PHONY: install run-dialog-install session-test
-install: $(BIN) $(RUN_BIN)
+.PHONY: install run-dialog-install applications-install session-test
+install: $(BIN) $(RUN_BIN) $(APPLICATIONS_BIN)
 	install -Dm755 $(WM_BIN) $(DESTDIR)$(PREFIX)/bin/rill-wm
 	install -Dm755 $(SESSIOND_BIN) $(DESTDIR)$(PREFIX)/bin/rill-sessiond
 	install -Dm755 $(BIN) $(DESTDIR)$(PREFIX)/bin/rill
 	install -Dm755 $(RUN_BIN) $(DESTDIR)$(PREFIX)/bin/rill-run
+	install -Dm755 $(APPLICATIONS_BIN) $(DESTDIR)$(PREFIX)/bin/rill-applications
 	install -Dm755 scripts/rill-session $(DESTDIR)$(PREFIX)/bin/rill-session
 	install -Dm755 scripts/rill-window $(DESTDIR)$(PREFIX)/bin/rill-window
 	install -Dm644 session/rill.desktop $(DESTDIR)$(PREFIX)/share/xsessions/rill.desktop
 	install -Dm644 session/rill-xfce.desktop $(DESTDIR)$(PREFIX)/share/xsessions/rill-xfce.desktop
 	install -Dm644 session/applications/rill-settings.desktop $(DESTDIR)$(PREFIX)/share/applications/rill-settings.desktop
 	install -Dm644 session/applications/rill-run.desktop $(DESTDIR)$(PREFIX)/share/applications/rill-run.desktop
+	install -Dm644 session/applications/rill-applications.desktop $(DESTDIR)$(PREFIX)/share/applications/rill-applications.desktop
+
+applications-install: $(APPLICATIONS_BIN)
+	install -Dm755 $(APPLICATIONS_BIN) $(DESTDIR)$(PREFIX)/bin/rill-applications
+	install -Dm644 session/applications/rill-applications.desktop $(DESTDIR)$(PREFIX)/share/applications/rill-applications.desktop
 
 run-dialog-install: $(RUN_BIN)
 	install -Dm755 $(RUN_BIN) $(DESTDIR)$(PREFIX)/bin/rill-run

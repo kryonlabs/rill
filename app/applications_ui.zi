@@ -1,0 +1,299 @@
+using UI :: #import "Widgets";
+using Applications :: #import "applications";
+#import "shell"
+#import "shell_types"
+#import "platform_types"
+#import "settings"
+#import "native_memory"
+#import "ui_text"
+
+ApplicationsState :: struct {
+    cursor: s32
+    anchor: s32
+    search_scroll: s32
+    list_scroll: s32
+    category_scroll: s32
+    selected: s32
+    focused: bool
+    started: bool
+    closed: bool
+    session_open: bool
+    session_action: s32
+    list_input: ScrollInput
+    category_input: ScrollInput
+}
+
+#scope_file
+MenuScroll :: (session: Session, key: u64, bounds: Rectangle, height: s32,
+    offset: s32, input: *ScrollInput) -> ScrollResult {
+    pointer := PointerSample(session)
+    input.enabled = true
+    input.pointer_allowed = true
+    input.mouse = Vector2.{pointer.x, pointer.y}
+    input.pressed = pointer.pressed
+    input.down = pointer.down
+    input.released = pointer.released
+    input.wheel = PointerWheelTake(session, bounds)
+    props: ScrollProps
+    props.key = key
+    props.bounds = bounds
+    props.content_height = height
+    props.scroll_offset = offset
+    props.input = input.*
+    result := Scroll(session, props)
+    if result.frame.start_drag { input.owns_drag = true }
+    if result.frame.clear_drag { input.owns_drag = false }
+    input.grab = result.frame.grab
+    return result
+}
+
+Label :: (session: Session, key: u64, bounds: Rectangle, text: string, font: s32) {
+    props: TextProps
+    props.key = key
+    props.bounds = bounds
+    props.text = text
+    props.font = font
+    props.wrap = cast(TextWrap)1
+    Text(session, props)
+}
+
+Launch :: (state: *ApplicationsState, shell: *RillShellState,
+    platform: *RillPlatformServices, settings: *RillSettings,
+    previous: *RillSettings, path: *s8, index: s32) {
+    if RillApplicationsLaunch(shell, platform, settings, previous, path, index) != 0 {
+        state.closed = true
+    }
+}
+
+LaunchNamed :: (state: *ApplicationsState, shell: *RillShellState,
+    platform: *RillPlatformServices, settings: *RillSettings,
+    previous: *RillSettings, path: *s8, id: string) {
+    index: s32 = 0
+    while index < shell.launcher_count && index < shell.launcher_capacity {
+        if TextEquals(*shell.launchers[index].id[0], TextBytes(id)) {
+            Launch(state, shell, platform, settings, previous, path, index)
+            return
+        }
+        index += 1
+    }
+    RillShellSetStatus(shell, TextBytes("The application is not installed"))
+}
+
+SessionActions :: (session: Session, bounds: Rectangle, state: *ApplicationsState,
+    shell: *RillShellState, platform: *RillPlatformServices) {
+    names: [4]string = .["Log out", "Suspend", "Restart", "Shut down"]
+    actions: [4]string = .["logout", "suspend", "reboot", "shutdown"]
+    Label(session, cast(u64)12200, Rectangle.{bounds.x + 12.0, bounds.y + 8.0,
+        bounds.width - 24.0, 24.0}, "Session", 18)
+    if state.session_action < 0 {
+        index: s32 = 0
+        while index < 4 {
+            button: ButtonProps
+            button.key = cast(u64)(12210 + index)
+            button.bounds = Rectangle.{bounds.x + 12.0, bounds.y + 42.0 + cast(float32)index * 34.0,
+                bounds.width - 24.0, 28.0}
+            button.label = names[index]
+            button.disabled = platform == null || platform.session_action == null
+            if Button(session, button) > 0 { state.session_action = index }
+            index += 1
+        }
+    } else {
+        Label(session, cast(u64)12220, Rectangle.{bounds.x + 12.0, bounds.y + 44.0,
+            bounds.width - 24.0, 24.0}, names[state.session_action], 16)
+        Label(session, cast(u64)12221, Rectangle.{bounds.x + 12.0, bounds.y + 76.0,
+            bounds.width - 24.0, 24.0}, "Confirm this session action", 14)
+        confirm: ButtonProps
+        confirm.key = cast(u64)12222
+        confirm.bounds = Rectangle.{bounds.x + 12.0, bounds.y + 112.0, bounds.width - 24.0, 28.0}
+        confirm.label = "Confirm"
+        confirm.disabled = platform == null || platform.session_action == null
+        if Button(session, confirm) > 0 {
+            if platform.session_action(TextBytes(actions[state.session_action])) != 0 {
+                state.closed = true
+            } else {
+                RillShellSetStatus(shell, TextBytes("The session action failed"))
+            }
+        }
+    }
+    cancel: ButtonProps
+    cancel.key = cast(u64)12223
+    cancel.bounds = Rectangle.{bounds.x + 12.0, bounds.y + bounds.height - 40.0,
+        bounds.width - 24.0, 28.0}
+    cancel.label = "Back to applications"
+    if Button(session, cancel) > 0 { state.session_open = false; state.session_action = -1 }
+}
+
+#scope_export
+#program_export
+ApplicationsMenu :: (session: Session, viewport: Rectangle, state: *ApplicationsState,
+    shell: *RillShellState, platform: *RillPlatformServices, settings: *RillSettings,
+    previous: *RillSettings, path: *s8, user: string) {
+    if state == null || shell == null || state.closed { return }
+    if !state.started {
+        state.focused = true
+        state.started = true
+        state.session_action = -1
+    }
+    key := KeyboardTake(session)
+    if key == KeyEscape {
+        if state.session_open { state.session_open = false; state.session_action = -1 }
+        else { state.closed = true }
+        return
+    }
+    header: BoxProps
+    header.key = cast(u64)12000
+    header.bounds = Rectangle.{viewport.x, viewport.y, viewport.width, 36.0}
+    header.fill = Color.{229, 231, 235, 255}
+    Box(session, header)
+    Label(session, cast(u64)12001, Rectangle.{viewport.x + 12.0, viewport.y + 10.0,
+        viewport.width - 222.0, 20.0}, user, 14)
+    index: s32 = 0
+    names: [3]string = .["Settings", "About", "Session"]
+    while index < 3 {
+        button: ButtonProps
+        button.key = cast(u64)(12002 + index)
+        button.bounds = Rectangle.{viewport.x + viewport.width - 208.0 + cast(float32)index * 68.0,
+            viewport.y + 4.0, 64.0, 28.0}
+        button.label = names[index]
+        if Button(session, button) > 0 {
+            if index == 0 { LaunchNamed(state, shell, platform, settings, previous, path, "settings") }
+            if index == 1 { LaunchNamed(state, shell, platform, settings, previous, path, "about") }
+            if index == 2 { state.session_open = !state.session_open; state.session_action = -1 }
+            if state.closed { return }
+        }
+        index += 1
+    }
+    content := Rectangle.{viewport.x + 8.0, viewport.y + 84.0,
+        viewport.width - 16.0, viewport.height - 114.0}
+    if content.width < 1.0 || content.height < 1.0 { return }
+    if state.session_open {
+        SessionActions(session, content, state, shell, platform)
+    } else {
+        typed: [128]u8
+        text := TypedTextTake(session, typed[:])
+        if text != "" { state.focused = true }
+        field: TextFieldProps
+        field.key = cast(u64)12010
+        field.focus_id = 12010
+        field.bounds = Rectangle.{viewport.x + 8.0, viewport.y + 44.0, viewport.width - 16.0, 32.0}
+        field.value = CString(*shell.app_menu_search[0])
+        field.placeholder = "Search applications"
+        field.max_bytes = 79
+        field.cursor = state.cursor
+        field.anchor = state.anchor
+        field.scroll_x = state.search_scroll
+        field.focused = state.focused
+        field.input = TextFieldInputFor(key, KeyboardModifiers(session), text)
+        result := TextField(session, field)
+        if ApplyTextEdit(*shell.app_menu_search[0], 80, result.edit) {
+            state.selected = 0
+            state.list_scroll = 0
+        }
+        state.cursor = result.cursor
+        state.anchor = result.anchor
+        state.search_scroll = result.scroll_x
+        state.focused = result.focused
+        count := RillApplicationsCount(shell)
+        if state.selected >= count { state.selected = count - 1 }
+        if state.selected < 0 { state.selected = 0 }
+        category_width: float32 = 132.0
+        if viewport.width < 400.0 { category_width = 112.0 }
+        list := content
+        list.width -= category_width + 8.0
+        categories := Rectangle.{list.x + list.width + 8.0, content.y, category_width, content.height}
+        moved: bool = false
+        step: s32 = 1
+        if key == KeyPageUp || key == KeyPageDown {
+            step = cast(s32)list.height / 48
+            if step < 1 { step = 1 }
+        }
+        if key == KeyDown || key == KeyPageDown { state.selected += step; moved = true }
+        if key == KeyUp || key == KeyPageUp { state.selected -= step; moved = true }
+        if state.selected >= count { state.selected = count - 1 }
+        if state.selected < 0 { state.selected = 0 }
+        if moved {
+            top := state.selected * 48
+            bottom := top + 44
+            if top < state.list_scroll { state.list_scroll = top }
+            if bottom > state.list_scroll + cast(s32)list.height {
+                state.list_scroll = bottom - cast(s32)list.height
+            }
+        }
+        if result.committed || (key == KeyEnter && !state.focused) {
+            Launch(state, shell, platform, settings, previous, path,
+                RillApplicationsAt(shell, state.selected))
+            if state.closed { return }
+        }
+        view := MenuScroll(session, cast(u64)12020, list, count * 48,
+            state.list_scroll, *state.list_input)
+        state.list_scroll = view.scroll_offset
+        if count == 0 {
+            hint := "No applications in this category"
+            if shell.app_menu_search[0] != 0 { hint = "No matching applications" }
+            Label(session, cast(u64)12021, Rectangle.{list.x + 8.0, list.y + 12.0,
+                list.width - 16.0, 44.0}, hint, 12)
+        }
+        index = 0
+        while index < count {
+            y := view.content.y + cast(float32)index * 48.0
+            if y + 44.0 > list.y && y < list.y + list.height {
+                launcher_index := RillApplicationsAt(shell, index)
+                launcher := *shell.launchers[launcher_index]
+                row: ButtonProps
+                row.key = cast(u64)(13000 + launcher_index)
+                row.bounds = Rectangle.{list.x, y, view.content.width, 44.0}
+                row.selected = index == state.selected
+                if Button(session, row) > 0 {
+                    state.selected = index
+                    Launch(state, shell, platform, settings, previous, path, launcher_index)
+                }
+                image: ImageProps
+                image.key = cast(u64)(23000 + launcher_index)
+                image.asset_path = CString(*launcher.icon_path[0])
+                image.alt_text = "App"
+                image.bounds = Rectangle.{list.x + 6.0, y + 7.0, 30.0, 30.0}
+                image.fit = cast(ImageFit)1
+                Image(session, image)
+                Label(session, cast(u64)(33000 + launcher_index),
+                    Rectangle.{list.x + 44.0, y + 5.0, view.content.width - 50.0, 20.0},
+                    CString(*launcher.name[0]), 14)
+                description := *launcher.description[0]
+                if description[0] == 0 { description = *launcher.category[0] }
+                Label(session, cast(u64)(43000 + launcher_index),
+                    Rectangle.{list.x + 44.0, y + 25.0, view.content.width - 50.0, 16.0},
+                    CString(description), 12)
+            }
+            index += 1
+        }
+        if view.opened { End(session) }
+        category_view := MenuScroll(session, cast(u64)12030, categories, 12 * 26,
+            state.category_scroll, *state.category_input)
+        state.category_scroll = category_view.scroll_offset
+        index = 0
+        while index < 12 {
+            row: ButtonProps
+            row.key = cast(u64)(12100 + index)
+            row.bounds = Rectangle.{categories.x, category_view.content.y + cast(float32)index * 26.0,
+                category_view.content.width, 24.0}
+            row.label = CString(RillApplicationsCategoryName(index))
+            row.selected = shell.app_menu_search[0] == 0 && shell.app_menu_category == index
+            if Button(session, row) > 0 {
+                shell.app_menu_category = index
+                shell.app_menu_search[0] = 0
+                state.cursor = 0
+                state.anchor = 0
+                state.search_scroll = 0
+                state.selected = 0
+                state.list_scroll = 0
+                state.focused = true
+            }
+            index += 1
+        }
+        if category_view.opened { End(session) }
+    }
+    if shell.status[0] != 0 {
+        Label(session, cast(u64)12040, Rectangle.{viewport.x + 12.0,
+            viewport.y + viewport.height - 24.0, viewport.width - 24.0, 20.0},
+            CString(*shell.status[0]), 12)
+    }
+}

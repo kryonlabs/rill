@@ -1,5 +1,6 @@
 #include "rill_shell.h"
 #include "rill_run.h"
+#include "rill_applications.h"
 
 #include "kryon.h"
 #include "rill_panel.h"
@@ -340,26 +341,6 @@ typedef struct RillRuntimeOptions {
     int panel_deskbar;
     char launch_command[512];
 } RillRuntimeOptions;
-
-typedef struct RillMenuCategory {
-    const char *name;
-    const char *icon_id;
-} RillMenuCategory;
-
-static const RillMenuCategory rill_menu_categories[] = {
-    {"Favorites", "favorite"},
-    {"Recently Used", "recent"},
-    {"All Applications", "all"},
-    {"Accessories", "accessories"},
-    {"Development", "development"},
-    {"Education", "education"},
-    {"Games", "games"},
-    {"Graphics", "graphics"},
-    {"Internet", "internet"},
-    {"Multimedia", "multimedia"},
-    {"Office", "office"},
-    {"Other", "other"}
-};
 
 static void
 include_panel_popup(Rectangle bounds)
@@ -757,23 +738,9 @@ configure_system_look(RillVisualState *visuals, const RillTestState *test)
 static void
 rill_settings_persist(const RillShellState *shell)
 {
-    char recents[64 * RILL_MAX_RECENT_LAUNCHERS];
-    int length = 0;
-
     if(rill_settings_path[0] == '\0')
         return;
-    if(shell != NULL) {
-        recents[0] = '\0';
-        for(int i = 0; i < shell->recent_launcher_count && i < RILL_MAX_RECENT_LAUNCHERS; i++) {
-            int written = snprintf(recents + length, sizeof(recents) - (size_t)length,
-                                   "%s%s", i > 0 ? "|" : "",
-                                   shell->recent_launcher_ids[i]);
-            if(written < 0 || (size_t)written >= sizeof(recents) - (size_t)length)
-                break;
-            length += written;
-        }
-        RillSettingsSet(&rill_settings, "recents", recents);
-    }
+    RillApplicationsStoreRecent(shell, &rill_settings);
     RillSettingsMergeSave(&rill_settings, &settings_previous, rill_settings_path);
 }
 
@@ -806,7 +773,6 @@ static void
 apply_saved_settings(RillShellState *shell, RillVisualState *visuals)
 {
     const char *wallpaper;
-    const char *recents;
     int height;
 
     snprintf(visuals->clock_format, sizeof(visuals->clock_format), "%s",
@@ -828,21 +794,8 @@ apply_saved_settings(RillShellState *shell, RillVisualState *visuals)
     if(wallpaper != NULL && wallpaper[0] != '\0' &&
        strcmp(wallpaper, visuals->wallpaper_path) != 0)
         apply_wallpaper(shell, visuals, wallpaper, 0);
-    recents = RillSettingsGet(&rill_settings, "recents", NULL);
-    if(shell->recent_launcher_count == 0 && recents != NULL && recents[0] != '\0') {
-        char copy[64 * RILL_MAX_RECENT_LAUNCHERS];
-        char *item;
-
-        snprintf(copy, sizeof(copy), "%s", recents);
-        item = strtok(copy, "|");
-        while(item != NULL &&
-              shell->recent_launcher_count < RILL_MAX_RECENT_LAUNCHERS) {
-            snprintf(shell->recent_launcher_ids[shell->recent_launcher_count],
-                     sizeof(shell->recent_launcher_ids[0]), "%s", item);
-            shell->recent_launcher_count++;
-            item = strtok(NULL, "|");
-        }
-    }
+    if(shell->recent_launcher_count == 0)
+        RillApplicationsLoadRecent(shell, &rill_settings);
 }
 
 static void
@@ -1855,7 +1808,7 @@ select_desktop_item(RillVisualState *visuals, int index, int control, int shift)
     visuals->desktop_selected = index;
 }
 
-static int ascii_contains_fold(const char *haystack, const char *needle);
+#define ascii_contains_fold RillTextContainsFold
 
 /* Accessibility: report selection changes through the shell status line. */
 static void
@@ -4257,505 +4210,17 @@ draw_menu_row(Rectangle row, const char *label, const char *icon_id)
     return hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
 }
 
-static int
-ascii_fold(int c)
-{
-    if(c >= 'A' && c <= 'Z')
-        return c - 'A' + 'a';
-    return c;
-}
-
-static int
-ascii_contains_fold(const char *haystack, const char *needle)
-{
-    int h;
-    int n;
-
-    if(needle == NULL || needle[0] == '\0')
-        return 1;
-    if(haystack == NULL)
-        return 0;
-    for(h = 0; haystack[h] != '\0'; h++) {
-        for(n = 0; needle[n] != '\0'; n++) {
-            if(haystack[h + n] == '\0' ||
-               ascii_fold((unsigned char)haystack[h + n]) !=
-               ascii_fold((unsigned char)needle[n]))
-                break;
-        }
-        if(needle[n] == '\0')
-            return 1;
-    }
-    return 0;
-}
-
-static int
-launcher_is_recent(const RillShellState *shell, const RillLauncher *launcher)
-{
-    if(shell == NULL || launcher == NULL)
-        return 0;
-    for(int i = 0; i < shell->recent_launcher_count; i++)
-        if(strcmp(shell->recent_launcher_ids[i], launcher->id) == 0)
-            return 1;
-    return 0;
-}
-
-static int
-launcher_in_app_menu_category(const RillShellState *shell,
-                              const RillLauncher *launcher, int category)
-{
-    if(launcher == NULL)
-        return 0;
-    if(category <= 0)
-        return launcher->favorite != 0;
-    if(category == 1)
-        return launcher_is_recent(shell, launcher);
-    if(category == 2)
-        return 1;
-    if(category >= 0 &&
-       category < (int)(sizeof(rill_menu_categories) /
-                        sizeof(rill_menu_categories[0])))
-        return strcmp(launcher->category,
-                      rill_menu_categories[category].name) == 0;
-    return 0;
-}
-
-static int
-launcher_matches_app_menu(const RillShellState *shell,
-                          const RillLauncher *launcher)
-{
-    if(shell == NULL || launcher == NULL)
-        return 0;
-    if(shell->app_menu_search[0] != '\0')
-        return ascii_contains_fold(launcher->name, shell->app_menu_search) ||
-               ascii_contains_fold(launcher->description,
-                                   shell->app_menu_search) ||
-               ascii_contains_fold(launcher->category, shell->app_menu_search);
-    return launcher_in_app_menu_category(shell, launcher,
-                                         shell->app_menu_category);
-}
-
-static const char *
-rill_user_name(void)
-{
-    const char *user;
-
-    user = getenv("USER");
-    if(user != NULL && user[0] != '\0')
-        return user;
-    user = getenv("user");
-    if(user != NULL && user[0] != '\0')
-        return user;
-    return "glenda";
-}
-
-static void
-update_app_menu_search_input(RillShellState *shell)
-{
-    int c;
-    int len;
-
-    if(shell == NULL || shell->menu_open != 1 || !shell->app_menu_search_active)
-        return;
-    while((c = GetCharPressed()) > 0) {
-        len = (int)strlen(shell->app_menu_search);
-        if(c >= 32 && c < 127 && len < RILL_APP_MENU_SEARCH_MAX - 1) {
-            shell->app_menu_search[len] = (char)c;
-            shell->app_menu_search[len + 1] = '\0';
-        }
-    }
-    if(IsKeyPressed(KEY_BACKSPACE)) {
-        len = (int)strlen(shell->app_menu_search);
-        if(len > 0)
-            shell->app_menu_search[len - 1] = '\0';
-    }
-    if(IsKeyPressed(KEY_ESCAPE)) {
-        shell->app_menu_search[0] = '\0';
-        shell->app_menu_search_active = 0;
-    }
-}
-
-static void
-draw_search_mark(Rectangle r, Color color)
-{
-    float cx = r.x + r.width * 0.42f;
-    float cy = r.y + r.height * 0.42f;
-
-    DrawCircleLines((int)cx, (int)cy, r.width * 0.22f, color);
-    DrawLine((int)(cx + r.width * 0.16f), (int)(cy + r.height * 0.16f),
-             (int)(r.x + r.width - 4), (int)(r.y + r.height - 4), color);
-}
-
-static void
-draw_whisker_header(Rectangle menu, RillShellState *shell,
-                    const RillPlatformServices *platform,
-                    RillVisualState *visuals)
-{
-    Rectangle user_icon = {menu.x + 12, menu.y + 11, 30, 30};
-    Rectangle search = {menu.x + 10, menu.y + 50, menu.width - 20, 30};
-    Vector2 mouse = GetMousePosition();
-    int hover;
-
-    DrawCircle((int)(user_icon.x + 15), (int)(user_icon.y + 15), 15,
-               StyleTokenColor("accent-hover"));
-    DrawCircle((int)(user_icon.x + 15), (int)(user_icon.y + 11), 5,
-               Fade(WHITE, 0.88f));
-    DrawCircle((int)(user_icon.x + 15), (int)(user_icon.y + 26), 10,
-               Fade(WHITE, 0.35f));
-    {
-        TextProps props;
-        memset(&props, 0, sizeof(props));
-        props.bounds.x = (int)menu.x + 50;
-        props.bounds.y = (int)menu.y + 18;
-        props.bounds.width = (int)menu.width - 150;
-        props.bounds.height = 0;
-        props.text = rill_user_name();
-        props.font = Text16;
-        props.class_name = LabelPrimary;
-        props.wrap = TextWrapNone;
-        draw_text_fit(props);
-    }
-
-
-    {
-        Rectangle rect;
-        rect.x = menu.x + menu.width - 86;
-        rect.y = menu.y + 14;
-        rect.width = 22;
-        rect.height = 22;
-        draw_symbol_icon(rect, "settings", StyleTokenColor("accent-hover"));
-    }
-
-    {
-        Rectangle rect;
-        rect.x = menu.x + menu.width - 54;
-        rect.y = menu.y + 14;
-        rect.width = 22;
-        rect.height = 22;
-        draw_symbol_icon(rect, "power", StyleTokenColor("link"));
-    }
-
-    {
-        Rectangle rect;
-        rect.x = menu.x + menu.width - 25;
-        rect.y = menu.y + 14;
-        rect.width = 20;
-        rect.height = 20;
-        draw_symbol_icon(rect, "about", StyleTokenColor("icon"));
-    }
-
-    if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        {
-            Rectangle rect;
-            Rectangle rect1;
-            Rectangle rect2;
-            rect.x = menu.x + menu.width - 88;
-            rect.y = menu.y + 12;
-            rect.width = 26;
-            rect.height = 26;
-            rect1.x = menu.x + menu.width - 56;
-            rect1.y = menu.y + 12;
-            rect1.width = 26;
-            rect1.height = 26;
-            rect2.x = menu.x + menu.width - 28;
-            rect2.y = menu.y + 12;
-            rect2.width = 24;
-            rect2.height = 24;
-            if(CheckCollisionPointRec(mouse, rect)) {
-            open_launcher_id(shell, platform, "settings");
-            shell->menu_open = 0;
-        } else if(CheckCollisionPointRec(mouse, rect1)) {
-            shell->menu_open = 0;
-            if(visuals != NULL)
-                visuals->logout_open = 1;
-        } else if(CheckCollisionPointRec(mouse, rect2)) {
-            open_launcher_id(shell, platform, "about");
-            shell->menu_open = 0;
-        }
-    
-        }
-}
-
-    hover = CheckCollisionPointRec(GetMousePosition(), search);
-    DrawRectangleRounded(search, 0.04f, 5, Fade(BLACK, 0.20f));
-    DrawRectangleRoundedLinesEx(search, 0.04f, 5, 1.0f,
-                                shell->app_menu_search_active ?
-                                StyleTokenColor("accent-hover") :
-                                (hover ? StyleTokenColor("link") :
-                                 Fade(StyleTokenColor("text"), 0.38f)));
-    {
-        Rectangle rect;
-        rect.x = search.x + 8;
-        rect.y = search.y + 7;
-        rect.width = 16;
-        rect.height = 16;
-        draw_search_mark(rect,
-                     StyleTokenColor("icon"));
-    }
-
-    {
-        TextProps props;
-        memset(&props, 0, sizeof(props));
-        props.bounds.x = (int)search.x + 30;
-        props.bounds.y = (int)search.y + 8;
-        props.bounds.width = (int)search.width - 38;
-        props.bounds.height = 0;
-        props.text = shell->app_menu_search;
-        props.font = Text12;
-        props.class_name = LabelPrimary;
-        props.wrap = TextWrapNone;
-        if(shell->app_menu_search[0] != '\0')
-        draw_text_fit(props);
-    }
-
-    if(hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
-        shell->app_menu_search_active = 1;
-}
-
-static int
-draw_whisker_category_row(Rectangle row, const RillMenuCategory *category,
-                          int active)
-{
-    int hover = CheckCollisionPointRec(GetMousePosition(), row);
-    Color icon = active ? WHITE : StyleTokenColor("accent-hover");
-    int icon_size = (int)row.height - 6;
-    int text_y = (int)(row.y + (row.height - 12) * 0.5f);
-
-    if(icon_size > 20)
-        icon_size = 20;
-    if(icon_size < 12)
-        icon_size = 12;
-
-    if(active)
-        DrawRectangleRounded(row, 0.02f, 4, panel_active_color());
-    else if(hover)
-        DrawRectangleRec(row, panel_item_hover_color());
-    {
-        Rectangle rect;
-        rect.x = row.x + 6;
-        rect.y = row.y + (row.height - icon_size) * 0.5f;
-        rect.width = icon_size;
-        rect.height = icon_size;
-        draw_symbol_icon(rect,
-                     category->icon_id, icon);
-    }
-
-    {
-        TextProps props;
-        memset(&props, 0, sizeof(props));
-        props.bounds.x = (int)row.x + 32;
-        props.bounds.y = text_y;
-        props.bounds.width = (int)row.width - 38;
-        props.bounds.height = 0;
-        props.text = category->name;
-        props.font = Text12;
-        props.class_name = active || hover ? LabelPanel : LabelPrimary;
-        props.wrap = TextWrapNone;
-        draw_text_fit(props);
-    }
-
-    return hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
-}
-
-static int
-draw_whisker_launcher_row(RillVisualState *visuals,
-                          const RillLauncher *launcher, Rectangle row)
-{
-    int hover = CheckCollisionPointRec(GetMousePosition(), row);
-
-    if(hover)
-        DrawRectangleRounded(row, 0.02f, 4, panel_item_hover_color());
-    {
-        Rectangle rect;
-        rect.x = row.x + 8;
-        rect.y = row.y + 6;
-        rect.width = 30;
-        rect.height = 30;
-        draw_launcher_icon(visuals, launcher,
-                       rect,
-                       StyleTokenColor("link"));
-    }
-
-    {
-        TextProps props;
-        memset(&props, 0, sizeof(props));
-        props.bounds.x = (int)row.x + 48;
-        props.bounds.y = (int)row.y + 7;
-        props.bounds.width = (int)row.width - 56;
-        props.bounds.height = 0;
-        props.text = launcher->name;
-        props.font = Text14;
-        props.class_name = hover ? LabelPanel : LabelPrimary;
-        props.wrap = TextWrapNone;
-        draw_text_fit(props);
-    }
-
-    {
-        TextProps props;
-        memset(&props, 0, sizeof(props));
-        props.bounds.x = (int)row.x + 48;
-        props.bounds.y = (int)row.y + 25;
-        props.bounds.width = (int)row.width - 56;
-        props.bounds.height = 0;
-        props.text = launcher->description[0] != '\0' ?
-                  launcher->description : launcher->category;
-        props.font = Text12;
-        props.class_name = hover ? LabelPanelDim : LabelMuted;
-        props.wrap = TextWrapNone;
-        draw_text_fit(props);
-    }
-
-    return hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
-}
-
-static int
-draw_window_close_button(Rectangle close)
-{
-    int hover;
-    Color stroke;
-
-    hover = CheckCollisionPointRec(GetMousePosition(), close);
-    DrawRectangleRec(close, hover ? panel_active_color() : panel_item_color());
-    DrawRectangleLinesEx(close, 1.0f, Fade(StyleTokenColor("text"), 0.36f));
-    stroke = hover ? WHITE : StyleTokenColor("text");
-    DrawLine((int)close.x + 7, (int)close.y + 7,
-             (int)close.x + (int)close.width - 7,
-             (int)close.y + (int)close.height - 7, stroke);
-    DrawLine((int)close.x + (int)close.width - 7, (int)close.y + 7,
-             (int)close.x + 7,
-             (int)close.y + (int)close.height - 7, stroke);
-    return hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
-}
-
 static void
 draw_applications_menu(RillShellState *shell,
                        const RillPlatformServices *platform,
                        RillVisualState *visuals)
 {
-    Rectangle menu;
-    Rectangle app_area;
-    Rectangle category_area;
-    int i;
-    int y;
-    int matches;
-    int category_count;
-    int screen_w;
-    int screen_h;
-    int menu_w;
-    int menu_h;
-    int category_w;
-    int category_step;
-
-    if(shell->menu_open != 1)
+    (void)visuals;
+    if(shell == NULL || shell->menu_open != 1)
         return;
-
-    update_app_menu_search_input(shell);
-    category_count = (int)(sizeof(rill_menu_categories) /
-                           sizeof(rill_menu_categories[0]));
-    if(shell->app_menu_category < 0 ||
-       shell->app_menu_category >= category_count)
-        shell->app_menu_category = 0;
-
-    screen_w = GetScreenWidth();
-    screen_h = GetScreenHeight();
-    menu_w = screen_w < 456 ? screen_w - 8 : 440;
-    if(menu_w < 320)
-        menu_w = screen_w - 8;
-    menu_h = screen_h - rill_panel_visible_height(visuals) - 10;
-    if(menu_h > 430)
-        menu_h = 430;
-    if(menu_h < 300)
-        menu_h = screen_h - rill_panel_visible_height(visuals) - 4;
-    category_w = menu_w >= 400 ? 128 : 112;
-    menu.x = 4;
-    menu.y = (float)rill_menu_anchor_y(visuals, menu_h);
-    menu.width = menu_w;
-    menu.height = (float)menu_h;
-    draw_menu_panel(menu);
-
-    draw_whisker_header(menu, shell, platform, visuals);
-
-    category_area.x = menu.x + menu.width - category_w - 6;
-    category_area.y = menu.y + 88;
-    category_area.width = category_w;
-    category_area.height = menu.height - 96;
-    app_area.x = menu.x + 8;
-    app_area.y = menu.y + 88;
-    app_area.width = menu.width - category_w - 18;
-    app_area.height = category_area.height;
-    category_step = (int)(category_area.height / category_count);
-    if(category_step > 30)
-        category_step = 30;
-    if(category_step < 18)
-        category_step = 18;
-
-    DrawRectangle((int)(category_area.x - 7), (int)app_area.y, 1,
-                  (int)app_area.height, Fade(BLACK, 0.45f));
-    DrawRectangle((int)(category_area.x - 6), (int)app_area.y, 1,
-                  (int)app_area.height, Fade(WHITE, 0.12f));
-
-    BeginScissorMode((int)app_area.x, (int)app_area.y,
-                     (int)app_area.width, (int)app_area.height);
-    y = (int)app_area.y;
-    matches = 0;
-    for(i = 0; i < shell->launcher_count; i++) {
-        Rectangle row;
-
-        if(!launcher_matches_app_menu(shell, &shell->launchers[i]))
-            continue;
-        row.x = app_area.x;
-        row.y = y;
-        row.width = app_area.width;
-        row.height = 44;
-        matches++;
-        if(draw_whisker_launcher_row(visuals, &shell->launchers[i], row)) {
-            RillShellSelectLauncher(shell, i);
-            RillShellLaunchSelected(shell, platform);
-            shell->menu_open = 0;
-            shell->app_menu_search_active = 0;
-        }
-        y += 48;
-    }
-    if(matches == 0) {
-        const char *message = shell->app_menu_search[0] != '\0' ?
-                              "No matching applications" :
-                              "No applications in this category";
-        {
-            TextProps props;
-            memset(&props, 0, sizeof(props));
-            props.bounds.x = (int)app_area.x + 8;
-            props.bounds.y = (int)app_area.y + 10;
-            props.bounds.width = (int)app_area.width - 16;
-            props.bounds.height = 0;
-            props.text = message;
-            props.font = Text12;
-            props.class_name = LabelMuted;
-            props.wrap = TextWrapNone;
-            draw_text_fit(props);
-        }
-
-    }
-    EndScissorMode();
-
-    BeginScissorMode((int)category_area.x, (int)category_area.y,
-                     (int)category_area.width, (int)category_area.height);
-    y = (int)category_area.y;
-    for(i = 0; i < category_count; i++) {
-        Rectangle row = {category_area.x, y, category_area.width,
-                         category_step - 2};
-        if(draw_whisker_category_row(row, &rill_menu_categories[i],
-                                     i == shell->app_menu_category)) {
-            shell->app_menu_category = i;
-            shell->app_menu_search[0] = '\0';
-        }
-        y += category_step;
-    }
-    EndScissorMode();
-
-    if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
-       !CheckCollisionPointRec(GetMousePosition(), menu)) {
-        shell->menu_open = 0;
-        shell->app_menu_search_active = 0;
-    }
+    shell->menu_open = 0;
+    shell->app_menu_search_active = 0;
+    RillApplicationsOpen(shell, platform);
 }
 
 static void

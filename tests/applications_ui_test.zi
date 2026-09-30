@@ -1,0 +1,165 @@
+#import "applications_ui"
+#import "applications"
+#import "shell"
+#import "shell_types"
+#import "platform_types"
+#import "settings"
+#import "native_memory"
+using UI :: #import "Widgets";
+#import "tree_draw"
+using FrameStatus;
+#if #defined(PLAN9_BUILD) {
+    #import "libdraw_native"
+} else {
+    #import "cairo_raster"
+    #program_export
+    SystemClipboardOpenHost :: () -> s32 { return -1 }
+    #program_export
+    SystemClipboardByteHost :: (index: s32) -> s32 { unused index; return -1 }
+    #program_export
+    SystemClipboardWriteHost :: (value: string) -> bool { unused value; return true }
+}
+
+state: ApplicationsState;
+shell: RillShellState;
+settings: RillSettings;
+previous: RillSettings;
+platform: RillPlatformServices;
+session: Session;
+last_command: [256]s8;
+launch_ok: bool;
+launch_count: s32;
+action_count: s32;
+
+Launch :: (launcher: *RillLauncher) -> s32 {
+    CopyText(*last_command[0], 256, *launcher.command[0])
+    launch_count += 1
+    return cast(s32)launch_ok
+}
+
+SessionAction :: (action: *s8) -> s32 {
+    CopyText(*last_command[0], 256, action)
+    action_count += 1
+    return 1
+}
+
+Draw :: (key: s32, scalar: s32, x: float32, y: float32,
+    down: bool, pressed: bool, released: bool, wheel: float32) -> bool {
+    BeginRasterFrame()
+    pointer := PointerFrame.{x, y, down, pressed, released}
+    TreePointerUpdate(session, pointer)
+    PointerWheelSend(session, x, y, wheel)
+    KeyboardSend(session, key)
+    if scalar != 0 { TypedCodepointSend(session, scalar) }
+    viewport := Rectangle.{0.0, 0.0, 480.0, 300.0}
+    if BeginFrame(session, cast(u64)1, viewport) != cast(FrameStatus)FrameOk { return false }
+    ApplicationsMenu(session, viewport, *state, *shell, *platform, *settings, *previous, null, "glenda")
+    return EndFrame(session) == cast(FrameStatus)FrameOk && FinishRasterFrame()
+}
+
+Key :: (key: s32, scalar: s32) -> bool { return Draw(key, scalar, 80.0, 110.0, false, false, false, 0.0) }
+Click :: (x: float32, y: float32) -> bool {
+    return Draw(0, 0, x, y, true, true, false, 0.0) && Draw(0, 0, x, y, false, false, true, 0.0)
+}
+Reset :: () {
+    CloseSession(session)
+    session = SessionOpen()
+    state = .{}
+    shell.app_menu_search[0] = 0
+    shell.app_menu_category = 2
+    shell.status[0] = 0
+}
+
+Cases :: () -> s32 {
+    RillShellInit(*shell)
+    RillSettingsInit(*settings)
+    shell.launcher_count = 14
+    shell.app_menu_category = 2
+    shell.status[0] = 0
+    index: s32 = 0
+    while index < 14 {
+        CopyText(*shell.launchers[index].id[0], 64, TextBytes("app"))
+        FormatInteger(*shell.launchers[index].id[3], 61, index)
+        CopyText(*shell.launchers[index].name[0], 96, *shell.launchers[index].id[0])
+        CopyText(*shell.launchers[index].command[0], 256, *shell.launchers[index].id[0])
+        CopyText(*shell.launchers[index].description[0], 128, TextBytes("Private application fixture"))
+        CopyText(*shell.launchers[index].category[0], 64, TextBytes("Accessories"))
+        index += 1
+    }
+    CopyText(*shell.launchers[12].name[0], 96, TextBytes("Éditeur"))
+    platform.launch = Launch
+    platform.session_action = SessionAction
+    if !OpenRaster(480, 300) { return 1 }
+    session = SessionOpen()
+    if !Key(0, 0) || !CaptureConfigured() { return 2 }
+    index = 0
+    while index < 9 { if !Key(KeyDown, 0) { return 3 }; index += 1 }
+    if state.selected != 9 || state.list_scroll <= 0 || !Key(KeyEnter, 0) ||
+       state.closed || launch_count != 1 || !TextEquals(*last_command[0], TextBytes("app9")) { return 4 }
+    Reset()
+    if !Key(0, 201) || !Key(0, 100) ||
+       !TextEquals(*shell.app_menu_search[0], TextBytes("Éd")) ||
+       RillApplicationsCount(*shell) != 1 || !Key(KeyBackspace, 0) ||
+       !TextEquals(*shell.app_menu_search[0], TextBytes("É")) { return 5 }
+    launch_ok = true
+    if !Key(KeyEnter, 0) || !state.closed || launch_count != 2 ||
+       !TextEquals(*last_command[0], TextBytes("app12")) { return 6 }
+    Reset()
+    if !Key(0, 0) || !Click(350.0, 92.0) || shell.app_menu_category != 0 ||
+       RillApplicationsCount(*shell) != 0 || !Key(0, 0) ||
+       !Click(350.0, 145.0) || shell.app_menu_category != 2 { return 7 }
+    if !Draw(0, 0, 80.0, 110.0, false, false, false, -5.0) || state.list_scroll <= 0 { return 8 }
+    // A wheel-scrolled row runs the application that is actually under it.
+    expected := RillApplicationsAt(*shell, (state.list_scroll + 36) / 48)
+    if !Click(80.0, 120.0) || !state.closed || launch_count != 3 ||
+       !TextEquals(*last_command[0], *shell.launchers[expected].command[0]) { return 9 }
+    Reset()
+    if !Key(0, 0) || !Click(350.0, 280.0) || shell.app_menu_category != 2 ||
+       launch_count != 3 || !Draw(0, 0, 350.0, 110.0, false, false, false, -8.0) ||
+       state.category_scroll <= 0 { return 10 }
+    Reset()
+    if !Key(0, 0) || !Click(440.0, 16.0) || !state.session_open ||
+       !Key(0, 0) || !Click(80.0, 140.0) || state.session_action != 0 || action_count != 0 { return 11 }
+    if !Key(0, 0) || !Click(80.0, 210.0) || !state.closed || action_count != 1 ||
+       !TextEquals(*last_command[0], TextBytes("logout")) { return 12 }
+    Reset()
+    if !Key(0, 0) || !Click(440.0, 16.0) || !Key(KeyEscape, 0) ||
+       state.session_open || state.closed || !Key(KeyEscape, 0) || !state.closed || action_count != 1 { return 13 }
+    CloseSession(session)
+    CloseRaster()
+    RillShellDispose(*shell)
+    return 0
+}
+
+Report :: () -> s32 {
+    result := Cases()
+    if result != 0 { print("rill-applications-ui-test-failed: %\n", result) }
+    else { print("rill-applications-ui-test-ok\n") }
+    return result
+}
+
+#if #defined(PLAN9_BUILD) {
+    thread_library :: #system_library "thread";
+    ThreadStart :: #type (value: *void) #c_call;
+    ThreadCreate :: (start: ThreadStart, value: *void, stack: u32) -> s32 #foreign thread_library "threadcreate";
+    ThreadExits :: (status: *s8) #foreign thread_library "threadexits";
+    ThreadExitsAll :: (status: *s8) #foreign thread_library "threadexitsall";
+    #program_export
+    TestThread :: (value: *void) {
+        unused value
+        if Report() == 0 { ThreadExitsAll(null) }
+        else { ThreadExitsAll(TextBytes("Applications UI failed")) }
+    }
+    #program_export
+    threadmain :: (argc: s32, argv: **s8) {
+        unused argc
+        unused argv
+        if ThreadCreate(TestThread, null, 1048576) < 0 {
+            ThreadExitsAll(TextBytes("Could not start Applications UI test"))
+        }
+        ThreadExits(null)
+    }
+} else {
+    #program_export
+    main :: () -> s32 { return Report() }
+}

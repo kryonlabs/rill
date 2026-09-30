@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Applications
+Comment=Browse and search installed applications
+Exec=rill-applications
+Icon=applications-other
+Categories=System;
+NoDisplay=true
+Terminal=false

@@ -1,0 +1,28 @@
+#import "applications_ui"
+#import "applications"
+#import "desktop_host"
+#import "platform_types"
+#import "native_memory"
+using UI :: #import "Widgets";
+
+state: ApplicationsState;
+
+DrawApplications :: (session: Session, viewport: Rectangle,
+    app: *DesktopApplication, platform: *RillPlatformServices) {
+    if !state.started { RillApplicationsLoadRecent(*app.shell, *app.settings) }
+    ApplicationsMenu(session, viewport, *state, *app.shell, platform,
+        *app.settings, *app.previous, *app.settings_path[0], CString(*app.user[0]))
+    app.closed = state.closed
+}
+
+#if #defined(PLAN9_BUILD) {
+    #program_export
+    threadmain :: (argc: s32, argv: **s8) {
+        unused argc
+        unused argv
+        ApplicationMain(DrawApplications)
+    }
+} else {
+    #program_export
+    main :: () -> s32 { return ApplicationMain(DrawApplications) }
+}

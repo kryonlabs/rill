@@ -15,6 +15,17 @@ execution, and recent-command history live in `src/run_dialog.zi`, shared with
 the remaining C desktop during conversion. The former Run `.kry` screen was
 removed. The desktop launcher and WM Run shortcut use `rill-run`.
 
+The Applications menu now uses current Ziran and Kryon as well. Its category
+and search policy and bounded recent-launcher persistence are in
+`src/applications.zi`. The panel delegates Applications to `rill-applications`;
+the former C menu renderer and its text editor were removed. The new menu
+supports UTF-8 text editing, scrolling application and category lists, arrow
+and page keys to select applications, Enter to launch, and Escape to close.
+Successful launches are saved under Recently Used; failures keep the menu
+open. Settings and About use installed application entrypoints, and session
+actions require confirmation. The separate menu opens an ordinary libdraw
+window while the rest of the panel is being converted.
+
 The conversion remains incomplete. Other graphical screens, file operations,
 Linux platform services, window management, and the session daemon still need
 conversion. The C desktop entrypoint and legacy Settings `.kry` screen depend on
@@ -49,6 +60,22 @@ row clicks, application matching, launch failures, Unicode editing, cursor
 movement, Enter, and Escape. The Taiji guest gate also compiles and runs the
 Run behavior and UI cases from source and saved IR, using native libdraw for
 offscreen rendering.
+
+`make applications-build` builds `build/rill-applications`; its Linux service
+adapter remains C. `make applications-plan9` emits the entire native menu and
+host through `plan9-c`, and `mk -f app/applications.mk` builds it in the guest.
+Run and Applications share `app/desktop_host.zi` for libdraw input, preferences,
+frame composition, and window lifetime. Their text fields use Kryon's shared
+keyboard and Unicode input APIs.
+
+`make applications-test applications-ui-test applications-window-test` checks
+category/search matching, recent ordering and complete ID storage, launch
+failure and settings merging, actual Kryon rendering and clipped input,
+keyboard and wheel scrolling, Unicode editing, session confirmation, and a
+real menu window on a private Xvfb display. Both graphical window tests verify
+PID ownership before input and assert the actual window dimensions. Taiji's
+native gate also runs menu policy and UI cases from source and saved IR and
+builds and captures the actual native Applications executable.
 
 The project keeps shell behavior outside Kryon. Kryon provides the UI runtime,
 renderer backends, widgets, and reusable platform primitives; Rill owns panels,

@@ -1,11 +1,11 @@
 < /$objtype/mkfile
 
 # Host-generated current Ziran application and Kryon, compiled by native 8c.
-TARG=rill-run
-GEN=build/ziran/run-plan9
+TARG=rill-applications
+GEN=build/ziran/applications-plan9
 OFILES=`{ls $GEN/*.c | sed 's@\.c$@.'$O'@'}
 BIN=/$objtype/bin
-OUT=build/rill-run.$O.out
+OUT=build/rill-applications.$O.out
 CFLAGS=-FTVw
 LIB=/$objtype/lib/libdraw.a /$objtype/lib/libmemdraw.a /$objtype/lib/libthread.a
 

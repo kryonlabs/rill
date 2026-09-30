@@ -3,6 +3,7 @@ using Run :: #import "run_dialog";
 #import "shell_types"
 #import "platform_types"
 #import "native_memory"
+#import "ui_text"
 
 // Application-owned text storage; Kryon's TextField owns editing and rendering.
 RunDialogState :: struct {
@@ -26,61 +27,6 @@ Label :: (session: Session, key: u64, bounds: Rectangle, text: string, font: s32
     Text(session, props)
 }
 
-// Collect typed scalars into one bounded UTF-8 edit. Physical navigation keys
-// remain independent, so a letter is inserted only once.
-TypedText :: (session: Session, output: []u8) -> s32 {
-    used: s32 = 0
-    while true {
-        scalar := TypedCodepointTake(session)
-        if scalar == 0 { break }
-        if scalar < 32 || scalar == 127 { continue }
-        count: s32 = 1
-        if scalar >= 128 { count = 2 }
-        if scalar >= 2048 { count = 3 }
-        if scalar >= 65536 { count = 4 }
-        if used + count > cast(s32)output.count { break }
-        if count == 1 { output[used] = cast(u8)scalar }
-        if count == 2 {
-            output[used] = cast(u8)(192 | (scalar >> 6))
-            output[used + 1] = cast(u8)(128 | (scalar & 63))
-        }
-        if count == 3 {
-            output[used] = cast(u8)(224 | (scalar >> 12))
-            output[used + 1] = cast(u8)(128 | ((scalar >> 6) & 63))
-            output[used + 2] = cast(u8)(128 | (scalar & 63))
-        }
-        if count == 4 {
-            output[used] = cast(u8)(240 | (scalar >> 18))
-            output[used + 1] = cast(u8)(128 | ((scalar >> 12) & 63))
-            output[used + 2] = cast(u8)(128 | ((scalar >> 6) & 63))
-            output[used + 3] = cast(u8)(128 | (scalar & 63))
-        }
-        used += count
-    }
-    return used
-}
-
-ApplyEdit :: (state: *RunDialogState, edit: TextFieldEdit) {
-    if !edit.changed { return }
-    length := TextLength(*state.text[0])
-    replacement := cast(s32)edit.replacement.count
-    after := length - (edit.end - edit.start) + replacement
-    if edit.start < 0 || edit.end < edit.start || edit.end > length || after >= 256 { return }
-    next: [256]s8
-    index: s32 = 0
-    while index < edit.start { next[index] = state.text[index]; index += 1 }
-    byte: s32 = 0
-    while byte < replacement {
-        next[index] = cast(s8)edit.replacement[byte]
-        index += 1
-        byte += 1
-    }
-    byte = edit.end
-    while byte < length { next[index] = state.text[byte]; index += 1; byte += 1 }
-    next[index] = 0
-    CopyText(*state.text[0], 256, *next[0])
-}
-
 Launch :: (state: *RunDialogState, shell: *RillShellState,
     platform: *RillPlatformServices, settings: *RillSettings,
     previous: *RillSettings, path: *s8, match: *RillLauncher, text: *s8) {
@@ -97,7 +43,7 @@ RunDialog :: (session: Session, viewport: Rectangle, state: *RunDialogState,
     if state == null || shell == null || state.closed { return }
     if !state.started { state.focused = true; state.started = true }
     key := KeyboardTake(session)
-    if key == 256 { state.closed = true; return }
+    if key == KeyEscape { state.closed = true; return }
     header: BoxProps
     header.key = cast(u64)9800
     header.bounds = Rectangle.{viewport.x, viewport.y, viewport.width, 30.0}
@@ -108,7 +54,7 @@ RunDialog :: (session: Session, viewport: Rectangle, state: *RunDialogState,
         "Run program", 14)
 
     typed: [128]u8
-    count := TypedText(session, typed[:])
+    text_input := TypedTextTake(session, typed[:])
     field: TextFieldProps
     field.key = cast(u64)9801
     field.focus_id = 9801
@@ -120,25 +66,9 @@ RunDialog :: (session: Session, viewport: Rectangle, state: *RunDialogState,
     field.scroll_x = state.scroll_x
     field.focused = state.focused
     field.max_bytes = 255
-    field.input.text = TextView(typed[:count])
-    field.input.left = key == 263
-    field.input.right = key == 262
-    field.input.home = key == 268
-    field.input.end = key == 269
-    field.input.backspace = key == 259
-    field.input.delete_forward = key == 261
-    field.input.commit = key == 257
-    modifiers := KeyboardModifiers(session)
-    field.input.shift = (modifiers & KeyModifierShift) != 0
-    if (modifiers & KeyModifierControl) != 0 {
-        field.input.select_all = key == 65
-        field.input.copy = key == 67
-        field.input.cut = key == 88
-        field.input.paste = key == 86
-        field.input.text = ""
-    }
+    field.input = TextFieldInputFor(key, KeyboardModifiers(session), text_input)
     result := TextField(session, field)
-    ApplyEdit(state, result.edit)
+    ApplyTextEdit(*state.text[0], 256, result.edit)
     state.cursor = result.cursor
     state.anchor = result.anchor
     state.scroll_x = result.scroll_x

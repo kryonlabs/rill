@@ -1,0 +1,118 @@
+#import "applications"
+#import "shell"
+#import "shell_types"
+#import "platform_types"
+#import "settings"
+#import "native_memory"
+
+shell: RillShellState;
+settings: RillSettings;
+previous: RillSettings;
+loaded: RillSettings;
+platform: RillPlatformServices;
+last_command: [256]s8;
+launch_ok: bool;
+launch_count: s32;
+
+Launch :: (launcher: *RillLauncher) -> s32 {
+    CopyText(*last_command[0], 256, *launcher.command[0])
+    launch_count += 1
+    return cast(s32)launch_ok
+}
+
+Cases :: () -> s32 {
+    RillShellInit(*shell)
+    shell.launcher_count = 3
+    CopyText(*shell.launchers[0].id[0], 64, TextBytes("editor"))
+    CopyText(*shell.launchers[0].name[0], 96, TextBytes("Éditeur"))
+    CopyText(*shell.launchers[0].description[0], 128, TextBytes("Write documents"))
+    CopyText(*shell.launchers[0].category[0], 64, TextBytes("Office"))
+    CopyText(*shell.launchers[0].command[0], 256, TextBytes("editor --new"))
+    shell.launchers[0].favorite = 1
+    CopyText(*shell.launchers[1].id[0], 64, TextBytes("terminal"))
+    CopyText(*shell.launchers[1].name[0], 96, TextBytes("Terminal"))
+    CopyText(*shell.launchers[1].category[0], 64, TextBytes("Accessories"))
+    CopyText(*shell.launchers[1].command[0], 256, TextBytes("host:t9"))
+    CopyText(*shell.launchers[2].id[0], 64, TextBytes("browser"))
+    CopyText(*shell.launchers[2].name[0], 96, TextBytes("Web Browser"))
+    CopyText(*shell.launchers[2].category[0], 64, TextBytes("Internet"))
+    CopyText(*shell.launchers[2].command[0], 256, TextBytes("browser"))
+    if RillApplicationsCount(*shell) != 1 || RillApplicationsAt(*shell, 0) != 0 ||
+       RillApplicationsAt(*shell, 1) != -1 || RillApplicationsAt(null, 0) != -1 ||
+       RillApplicationsAt(*shell, -1) != -1 || RillApplicationsMatches(null, null) != 0 { return 1 }
+    shell.app_menu_category = 8
+    if RillApplicationsCount(*shell) != 1 || RillApplicationsAt(*shell, 0) != 2 { return 2 }
+    CopyText(*shell.app_menu_search[0], 80, TextBytes("DOCUMENTS"))
+    if RillApplicationsCount(*shell) != 1 || RillApplicationsAt(*shell, 0) != 0 { return 3 }
+    CopyText(*shell.app_menu_search[0], 80, TextBytes("Éd"))
+    if RillApplicationsCount(*shell) != 1 || RillApplicationsAt(*shell, 0) != 0 { return 4 }
+    CopyText(*shell.app_menu_search[0], 80, TextBytes("ACCESS"))
+    if RillApplicationsAt(*shell, 0) != 1 { return 5 }
+    shell.app_menu_search[0] = 0
+    shell.app_menu_category = 12
+    if RillApplicationsCount(*shell) != 0 || RillApplicationsCategoryName(-1)[0] != 0 { return 6 }
+    shell.app_menu_category = 2
+    shell.launcher_count = 500
+    shell.launcher_capacity = 3
+    if RillApplicationsCount(*shell) != 3 { return 7 }
+    shell.launcher_count = 3
+    shell.launcher_capacity = 32
+    RillSettingsInit(*settings)
+    RillSettingsSet(*settings, TextBytes("recents"), TextBytes("|missing|browser||editor|browser|terminal|"))
+    RillApplicationsLoadRecent(*shell, *settings)
+    shell.app_menu_category = 1
+    if shell.recent_launcher_count != 4 || RillApplicationsCount(*shell) != 3 ||
+       RillApplicationsAt(*shell, 0) != 2 || RillApplicationsAt(*shell, 1) != 0 ||
+       RillApplicationsAt(*shell, 2) != 1 { return 8 }
+    platform.launch = Launch
+    if RillApplicationsLaunch(*shell, *platform, *settings, *previous, null, 0) != 0 ||
+       shell.recent_launcher_count != 4 ||
+       !TextEquals(*shell.recent_launcher_ids[0][0], TextBytes("missing")) { return 9 }
+    launch_ok = true
+    root := EnvironmentValue(TextBytes("RILL_TEST_ROOT"))
+    if root == null { return 10 }
+    path: [1024]s8
+    used := CopyText(*path[0], 1024, root)
+    CopyText(*path[used], 1024 - used, TextBytes("/applications-settings"))
+    previous = settings
+    if RillApplicationsLaunch(*shell, *platform, *settings, *previous, *path[0], 0) != 1 ||
+       !TextEquals(*last_command[0], TextBytes("editor --new")) ||
+       RillSettingsLoad(*loaded, *path[0]) != 1 ||
+       !TextEquals(RillSettingsGet(*loaded, TextBytes("recents"), null),
+           TextBytes("editor|missing|browser|terminal")) { return 11 }
+    RillSettingsSet(*loaded, TextBytes("wallpaper"), TextBytes("external.png"))
+    if RillSettingsSave(*loaded, *path[0]) != 1 ||
+       RillApplicationsLaunch(*shell, *platform, *settings, *previous, *path[0], 1) != 1 ||
+       !TextEquals(*last_command[0], TextBytes("t9")) ||
+       !TextEquals(*shell.launchers[1].command[0], TextBytes("host:t9")) ||
+       RillSettingsLoad(*loaded, *path[0]) != 1 ||
+       !TextEquals(RillSettingsGet(*loaded, TextBytes("wallpaper"), null), TextBytes("external.png")) { return 12 }
+    before := launch_count
+    if RillApplicationsLaunch(*shell, *platform, *settings, *previous, null, 3) != 0 ||
+       RillApplicationsLaunch(*shell, *platform, *settings, *previous, null, -1) != 0 ||
+       launch_count != before { return 13 }
+    if RillApplicationsOpen(*shell, *platform) != 1 ||
+       !TextEquals(*last_command[0], TextBytes("rill-applications")) { return 14 }
+    // A full settings value contains whole IDs, never the prefix of the next.
+    index: s32 = 0
+    while index < 8 {
+        byte: s32 = 0
+        while byte < 63 { shell.recent_launcher_ids[index][byte] = cast(s8)(65 + index); byte += 1 }
+        shell.recent_launcher_ids[index][63] = 0
+        index += 1
+    }
+    shell.recent_launcher_count = 8
+    RillApplicationsStoreRecent(*shell, *settings)
+    RillApplicationsLoadRecent(*shell, *settings)
+    if shell.recent_launcher_count != 4 || TextLength(*shell.recent_launcher_ids[3][0]) != 63 { return 15 }
+    RillShellDispose(*shell)
+    return 0
+}
+
+#program_export
+main :: () -> s32 {
+    result := Cases()
+    if result != 0 { print("rill-applications-test-failed: %\n", result) }
+    else { print("rill-applications-test-ok\n") }
+    return result
+}
