@@ -90,9 +90,16 @@ boxes, group dragging, folder drops, context menus, rename, New Folder, and
 file transfer progress and conflict choices. Layout saves merge with other
 desktop changes. Native Plan 9 services enumerate the desktop directory,
 create private folders exclusively, and rename without replacing existing
-files. Clipboard, copy/move, Trash, retry, and undo still depend on the platform
-transfer service; its Linux implementation remains C and its native Plan 9
-implementation is still pending. Native file icons also need PNG asset support.
+files. Native regular-file Copy/Paste and Duplicate now use Ziran services
+with literal file URIs on `/dev/snarf`, bounded progress updates, cancellation,
+Skip, and Keep Both. Copies retain permissions and modification times, check
+that the source stayed unchanged, and publish a private sibling only after
+the complete copy succeeds. Native folder transfers, Cut/Move, Trash, Replace,
+retry, and undo remain pending; unsupported operations refuse to start.
+The Linux transfer implementation remains C. Native file icons also need PNG
+asset support. The Taiji native gate's `file_transfer` suite checks actual
+file contents, metadata, clipboard filenames, cancellation, and collisions
+from both source and saved IR.
 `make desktop-files-ui-test` checks the file controls from source and saved IR.
 
 Native document opening now uses `src/document_open.zi` and

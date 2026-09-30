@@ -240,6 +240,7 @@ DesktopFileGrid :: (session: Session, work: Rectangle, state: *DesktopFilesState
         state.files = cast(*DesktopFiles)AllocateZeroed(1, size_of(DesktopFiles))
         if state.files == null { Status(app, "Could not allocate desktop files"); return }
         DesktopFilesInitialize(state.files, platform)
+        if platform != null && platform.file_transfer_conflicts != null { platform.file_transfer_conflicts() }
         state.press_index = -1
         state.started = true
         state.refresh = true

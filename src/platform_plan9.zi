@@ -9,6 +9,8 @@ PLAN9 :: #defined(NATIVE_PLAN9);
     File :: #import "file_plan9"
     #import "document_open"
     #import "document_native"
+    #import "file_transfer_plan9"
+    #import "file_clipboard_plan9"
 } else {
     File :: #import "file_linux"
 }
@@ -510,5 +512,15 @@ RillPlatformCurrent :: () -> *RillPlatformServices {
     services.list_desktop_files = ListDesktopFiles
     services.open_path = OpenPath
     services.file_operation = FileOperation
+    #if PLAN9 {
+        services.file_transfer_start = NativeCopyStart
+        services.file_transfer_poll = NativeCopyPoll
+        services.file_transfer_cancel = NativeCopyCancel
+        services.file_transfer_finish = NativeCopyFinish
+        services.file_transfer_conflicts = NativeCopyConflicts
+        services.file_transfer_resolve = NativeCopyResolve
+        services.file_clipboard_copy = NativeFileClipboardCopy
+        services.file_clipboard_paste = NativeFileClipboardPaste
+    }
     return *services
 }

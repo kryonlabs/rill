@@ -1,0 +1,271 @@
+// Native transfers advance at most one 32 KiB block per desktop poll.
+// A private sibling is published only after a complete, unchanged copy.
+File :: #import "file_plan9";
+Process :: #import "process_plan9";
+Paths :: #import "path";
+#import "platform_types"
+#import "native_memory"
+
+#scope_file
+ItemLimit :: 256;
+CopyItem :: struct { source: [1024]s8; info: File.FileInfo; }
+CopyJob :: struct {
+    items: [256]CopyItem
+    directory: [1024]s8
+    target: [1024]s8
+    staging: [1024]s8
+    input: File.FileHandle
+    output: File.FileHandle
+    offset: s64
+    buffer: [32768]u8
+    status: FileTransferStatus
+    index: s32
+    phase: s32 // 0 choose target, 1 copy bytes
+    sticky: s32 // 0 ask, 1 skip, 3 keep both
+}
+job: *CopyJob;
+sequence: u32;
+conflicts: bool;
+
+Same :: (left: File.FileInfo, right: File.FileInfo) -> bool {
+    return left.valid && right.valid && left.type == right.type && left.device == right.device &&
+        left.identity == right.identity && left.version == right.version && left.identity_type == right.identity_type &&
+        left.mode == right.mode && left.modified == right.modified && left.length == right.length
+}
+
+Regular :: (info: File.FileInfo) -> bool {
+    // Mounted files have a server-provided length and do not expose devices
+    // such as console, snarf, or process control streams as ordinary files.
+    return info.valid && info.type == cast(u16)77 && info.length >= 0 && (info.mode & cast(u32)0xfffffe00) == 0
+}
+
+Join :: (directory: *s8, name: *s8, output: *s8) -> bool {
+    length := TextLength(directory)
+    extra: s32 = 1
+    if length == 1 { extra = 0 }
+    if length == 0 || name == null || name[0] == 0 || length + extra + TextLength(name) >= 1024 { return false }
+    CopyText(output, 1024, directory)
+    if extra != 0 { output[length] = 47; length += 1 }
+    CopyText(*output[length], 1024 - length, name)
+    return true
+}
+
+Base :: (path: *s8) -> *s8 {
+    index: s32 = 0
+    start: s32 = 0
+    while path[index] != 0 { if path[index] == 47 { start = index + 1 }; index += 1 }
+    return *path[start]
+}
+
+Cleanup :: () -> bool {
+    ok := true
+    if job.input.valid { if !File.CloseFile(job.input) { ok = false }; job.input.valid = false }
+    if job.output.valid { if !File.CloseFile(job.output) { ok = false }; job.output.valid = false }
+    if job.staging[0] != 0 {
+        if !File.RemoveFile(CString(*job.staging[0])) { ok = false }
+        else { job.staging[0] = 0 }
+    }
+    return ok
+}
+
+Fail :: (message: string) {
+    cleaned := Cleanup()
+    job.status.running = 0
+    job.status.conflict = 0
+    CopyText(*job.status.error[0], 256, TextBytes(message))
+    if !cleaned { CopyText(*job.status.error[0], 256, TextBytes("The copy failed and its staging file could not be removed")) }
+}
+
+UniqueTarget :: () -> bool {
+    name := Base(*job.items[job.index].source[0])
+    split := TextLength(name)
+    index: s32 = 1
+    while name[index] != 0 { if name[index] == 46 { split = index }; index += 1 }
+    attempt: s32 = 1
+    while attempt <= 999 {
+        candidate: [1024]s8
+        if split + 32 + TextLength(*name[split]) >= 1024 { return false }
+        index = 0
+        while index < split { candidate[index] = name[index]; index += 1 }
+        used := split + CopyText(*candidate[split], 1024 - split, TextBytes(" (copy "))
+        used += FormatInteger(*candidate[used], 1024 - used, attempt)
+        used += CopyText(*candidate[used], 1024 - used, TextBytes(")"))
+        CopyText(*candidate[used], 1024 - used, *name[split])
+        if !Join(*job.directory[0], *candidate[0], *job.target[0]) { return false }
+        if !File.PathExists(CString(*job.target[0])) { return true }
+        attempt += 1
+    }
+    return false
+}
+
+Next :: (skipped: bool) {
+    if skipped { job.status.skipped += 1 }
+    else { job.status.completed += 1 }
+    job.index += 1
+    job.phase = 0
+    job.status.conflict = 0
+    job.status.conflict_destination[0] = 0
+    if job.index >= job.status.total { job.status.running = 0 }
+}
+
+OpenStaging :: () -> bool {
+    attempt: s32 = 0
+    while attempt < 32 {
+        name: [96]s8
+        used := CopyText(*name[0], 96, TextBytes(".transfer-"))
+        used += FormatInteger(*name[used], 96 - used, Process.CurrentProcessId())
+        used += CopyText(*name[used], 96 - used, TextBytes("-"))
+        used += FormatInteger(*name[used], 96 - used, cast(s32)(job.status.id & cast(u32)2147483647))
+        used += CopyText(*name[used], 96 - used, TextBytes("-"))
+        used += FormatInteger(*name[used], 96 - used, job.index)
+        used += CopyText(*name[used], 96 - used, TextBytes("-"))
+        FormatInteger(*name[used], 96 - used, attempt)
+        candidate: [1024]s8
+        if !Join(*job.directory[0], *name[0], *candidate[0]) { return false }
+        created := File.CreatePrivateExclusive(CString(*candidate[0]), false)
+        if created.valid {
+            job.output = created
+            CopyText(*job.staging[0], 1024, *candidate[0])
+            return true
+        }
+        attempt += 1
+    }
+    return false
+}
+
+BeginItem :: () {
+    item := *job.items[job.index]
+    CopyText(*job.status.current[0], 1024, *item.source[0])
+    if !Join(*job.directory[0], Base(*item.source[0]), *job.target[0]) { Fail("The destination name is too long"); return }
+    duplicate := TextEquals(*job.status.operation[0], TextBytes("duplicate"))
+    if duplicate {
+        if !UniqueTarget() { Fail("Could not find an unused copy name"); return }
+    } else if File.PathExists(CString(*job.target[0])) {
+        if job.sticky == 1 { Next(true); return }
+        if job.sticky == 3 {
+            if !UniqueTarget() { Fail("Could not find an unused copy name"); return }
+        } else if conflicts {
+            job.status.conflict = 1
+            CopyText(*job.status.conflict_destination[0], 512, *job.target[0])
+            return
+        } else { Fail("The destination already exists"); return }
+    }
+    job.input = File.OpenRead(CString(*item.source[0]))
+    if !Same(item.info, File.HandleInfo(job.input)) { Fail("The source changed before it could be copied"); return }
+    if !OpenStaging() { Fail("Could not create the private staging file"); return }
+    job.offset = 0
+    job.phase = 1
+}
+
+CopyBlock :: () {
+    item := *job.items[job.index]
+    remaining := item.info.length - job.offset
+    if remaining > 0 {
+        count := remaining
+        if count > 32768 { count = 32768 }
+        read := File.ReadAt(job.input, job.buffer[0:count], job.offset)
+        if read <= 0 || read > count { Fail("Could not read the complete source file"); return }
+        written: s64 = 0
+        while written < read {
+            amount := File.WriteAt(job.output, job.buffer[written:read], job.offset + written)
+            if amount <= 0 || amount > read - written { Fail("Could not write the complete copy"); return }
+            written += amount
+        }
+        job.offset += read
+        job.status.bytes += cast(u64)read
+        return
+    }
+    if !Same(item.info, File.HandleInfo(job.input)) || !Same(item.info, File.PathInfo(CString(*item.source[0]))) {
+        Fail("The source changed during the copy"); return
+    }
+    if !File.SetFileAttributes(job.output, item.info.mode & cast(u32)511, item.info.modified) {
+        Fail("Could not preserve the file attributes"); return
+    }
+    input_closed := File.CloseFile(job.input)
+    job.input.valid = false
+    output_closed := File.CloseFile(job.output)
+    job.output.valid = false
+    if !input_closed || !output_closed { Fail("Could not close the complete copy"); return }
+    if !File.RenameNoReplace(CString(*job.staging[0]), CString(*job.target[0])) { Fail("The copy could not be published without replacing another file"); return }
+    job.staging[0] = 0
+    Next(false)
+}
+
+#scope_export
+NativeCopyStart :: (operation: *s8, sources: **s8, count: s32, destination: *s8) -> s32 {
+    if (job != null && job.status.running != 0) || sources == null || count <= 0 || count > ItemLimit ||
+        destination == null || (!TextEquals(operation, TextBytes("copy")) && !TextEquals(operation, TextBytes("duplicate"))) { return 0 }
+    next := cast(*CopyJob)AllocateZeroed(1, size_of(CopyJob))
+    if next == null { return 0 }
+    directory: [1024]u8
+    canonical := Paths.CleanAbsolute(CString(destination), directory[:])
+    ok := canonical.count > 0 && File.DirectoryExists(canonical)
+    if ok { CopyText(*next.directory[0], 1024, cast(*s8)(*directory[0])) }
+    index: s32 = 0
+    while ok && index < count {
+        source: [1024]u8
+        value := Paths.CleanAbsolute(CString(sources[index]), source[:])
+        if value.count <= 1 { ok = false; break }
+        info := File.PathInfo(value)
+        if !Regular(info) { ok = false; break }
+        CopyText(*next.items[index].source[0], 1024, cast(*s8)(*source[0]))
+        next.items[index].info = info
+        index += 1
+    }
+    if !ok { ReleaseAllocation(cast(*void)next); return 0 }
+    if job != null {
+        if !Cleanup() { ReleaseAllocation(cast(*void)next); return 0 }
+        ReleaseAllocation(cast(*void)job)
+    }
+    sequence += 1
+    if sequence == 0 { sequence = 1 }
+    next.status.id = sequence
+    next.status.running = 1
+    next.status.total = count
+    CopyText(*next.status.operation[0], 16, operation)
+    job = next
+    return 1
+}
+
+NativeCopyPoll :: (status: *FileTransferStatus) -> s32 {
+    if job == null || status == null { return 0 }
+    if job.status.running != 0 && job.status.conflict == 0 {
+        if job.phase == 0 { BeginItem() } else { CopyBlock() }
+    }
+    status.* = job.status
+    return 1
+}
+
+NativeCopyCancel :: () {
+    if job == null || job.status.running == 0 { return }
+    job.status.cancelled = 1
+    Fail("The copy was cancelled")
+}
+
+NativeCopyFinish :: () {
+    if job == null { return }
+    Cleanup()
+    ReleaseAllocation(cast(*void)job)
+    job = null
+}
+
+NativeCopyConflicts :: () -> s32 { conflicts = true; return 1 }
+
+NativeCopyResolve :: (answer: s32, apply_to_all: s32) -> s32 {
+    if job == null || job.status.running == 0 || job.status.conflict == 0 { return 0 }
+    if answer == 0 { NativeCopyCancel(); return 1 }
+    if answer == 1 { if apply_to_all != 0 { job.sticky = 1 }; Next(true); return 1 }
+    // Replacement awaits recoverable native Trash support. Refuse it while
+    // keeping the conflict open so the user can skip or keep both instead.
+    if answer != 3 { return 0 }
+    if apply_to_all != 0 { job.sticky = 3 }
+    if !UniqueTarget() { Fail("Could not find an unused copy name"); return 0 }
+    item := *job.items[job.index]
+    job.input = File.OpenRead(CString(*item.source[0]))
+    if !Same(item.info, File.HandleInfo(job.input)) || !OpenStaging() { Fail("The source or destination could not be opened"); return 0 }
+    job.offset = 0
+    job.phase = 1
+    job.status.conflict = 0
+    job.status.conflict_destination[0] = 0
+    return 1
+}

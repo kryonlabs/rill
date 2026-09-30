@@ -1,0 +1,222 @@
+#import "file_transfer_plan9"
+#import "platform_plan9"
+#import "platform_types"
+#import "native_memory"
+File :: #import "file_plan9";
+Process :: #import "process_plan9";
+
+#scope_file
+root: [1024]s8;
+path: [1024]s8;
+source_names: [2][1024]s8;
+sources: [2]*s8;
+destination: [1024]s8;
+buffer: [32768]u8;
+libc :: #system_library "libc";
+SetEnvironment :: (name: *s8, value: *s8) -> s32 #foreign libc "putenv";
+
+Path :: (suffix: string) -> string {
+    used := CopyText(*path[0], 1024, *root[0])
+    CopyText(*path[used], 1024 - used, TextBytes(suffix))
+    return CString(*path[0])
+}
+
+Put :: (suffix: string, count: s64) -> bool {
+    file := File.OpenReplace(Path(suffix))
+    if !file.valid { return false }
+    offset: s64 = 0
+    while offset < count {
+        length := count - offset
+        if length > 32768 { length = 32768 }
+        index: s64 = 0
+        while index < length { buffer[index] = cast(u8)((offset + index) % 251); index += 1 }
+        if File.WriteAt(file, buffer[0:length], offset) != length { File.CloseFile(file); return false }
+        offset += length
+    }
+    ok := File.SetFileAttributes(file, cast(u32)416, cast(u32)1700000000)
+    return File.CloseFile(file) && ok
+}
+
+Content :: (suffix: string, count: s64) -> bool {
+    file := File.OpenRead(Path(suffix))
+    if !file.valid { return false }
+    info := File.HandleInfo(file)
+    if info.length != count || (info.mode & cast(u32)511) != cast(u32)416 || info.modified != cast(u32)1700000000 {
+        File.CloseFile(file); return false
+    }
+    offset: s64 = 0
+    while offset < count {
+        length := count - offset
+        if length > 32768 { length = 32768 }
+        if File.ReadAt(file, buffer[0:length], offset) != length { File.CloseFile(file); return false }
+        index: s64 = 0
+        while index < length {
+            if buffer[index] != cast(u8)((offset + index) % 251) { File.CloseFile(file); return false }
+            index += 1
+        }
+        offset += length
+    }
+    return File.CloseFile(file)
+}
+
+Choose :: (suffix: string, at: s32) {
+    CopyText(*source_names[at][0], 1024, TextBytes(Path(suffix)))
+    sources[at] = *source_names[at][0]
+}
+
+Drain :: (platform: *RillPlatformServices, status: *FileTransferStatus) -> bool {
+    polls: s32 = 0
+    while polls < 64 {
+        if platform.file_transfer_poll(status) == 0 { return false }
+        if status.running == 0 || status.conflict != 0 { return true }
+        polls += 1
+    }
+    return false
+}
+
+NoStaging :: () -> bool {
+    cursor := File.OpenDirectory(CString(*destination[0]))
+    if !cursor.valid { return false }
+    ok := true
+    while true {
+        entry := File.NextDirectoryEntry(*cursor)
+        if !entry.valid { break }
+        if TextStartsWith(cast(*s8)(*entry.name[0]), ".transfer-") { ok = false; break }
+    }
+    return File.CloseDirectory(*cursor) && ok
+}
+
+PutText :: (suffix: string, value: string) -> bool {
+    file := File.OpenPrivateReplace(Path(suffix))
+    if !file.valid || value.count > 32768 { return false }
+    index: s64 = 0
+    while index < value.count { buffer[index] = value[index]; index += 1 }
+    ok := File.Write(file, buffer[0:value.count]) == value.count
+    return File.CloseFile(file) && ok
+}
+
+Clipboard :: (platform: *RillPlatformServices) -> s32 {
+    if platform.file_clipboard_copy == null || platform.file_clipboard_paste == null ||
+        !File.CreateDirectory(Path("/clipboard-destination")) ||
+        SetEnvironment(TextBytes("RILL_SNARF_PATH"), TextBytes(Path("/snarf"))) != 0 { return 22 }
+    Choose("/source/Space's $x; 文档.txt", 0)
+    Choose("/source/empty", 1)
+    if platform.file_clipboard_copy(*sources[0], 2, 0) == 0 { return 23 }
+    file := File.OpenRead(Path("/snarf"))
+    count := File.Read(file, buffer[:])
+    closed := File.CloseFile(file)
+    if !closed || count <= 10 || TextView(buffer[0:5]) != "copy\n" { return 24 }
+    // Quotes, shell punctuation and UTF-8 bytes are literal URI payloads.
+    found := false
+    index: s64 = 0
+    while index + 38 <= count {
+        if TextStartsWith(cast(*s8)(*buffer[index]), "Space%27s%20%24x%3B%20%E6%96%87%E6%A1%A3.txt") { found = true; break }
+        index += 1
+    }
+    if !found || platform.file_clipboard_copy(*sources[0], 1, 1) != 0 { return 25 }
+    CopyText(*destination[0], 1024, TextBytes(Path("/clipboard-destination")))
+    status: FileTransferStatus
+    if platform.file_clipboard_paste(*destination[0]) == 0 || !Drain(platform, *status) ||
+        status.error[0] != 0 || status.completed != 2 ||
+        !Content("/clipboard-destination/Space's $x; 文档.txt", 100003) || !Content("/clipboard-destination/empty", 0) { return 26 }
+    if !PutText("/snarf", "copy\nfile:///tmp/valid\nfile:///bad%00path\n") ||
+        platform.file_clipboard_paste(*destination[0]) != 0 ||
+        !PutText("/snarf", "copy\nfile://remote/secret\n") || platform.file_clipboard_paste(*destination[0]) != 0 ||
+        !PutText("/snarf", "cut\nfile:///tmp/example\n") || platform.file_clipboard_paste(*destination[0]) != 0 ||
+        !PutText("/snarf", "copy\nfile:///bad%ZZpath\n") || platform.file_clipboard_paste(*destination[0]) != 0 { return 27 }
+    return 0
+}
+
+Run :: () -> s32 {
+    platform := RillPlatformCurrent()
+    if platform.file_transfer_start == null || platform.file_transfer_poll == null ||
+        platform.file_transfer_cancel == null || platform.file_transfer_finish == null ||
+        platform.file_transfer_conflicts == null || platform.file_transfer_resolve == null { return 1 }
+    if platform.file_transfer_poll(null) != 0 ||
+        !File.CreateDirectory(Path("/source")) || !File.CreateDirectory(Path("/destination")) ||
+        !File.CreateDirectory(Path("/source/folder")) || !Put("/source/Space's $x; 文档.txt", 100003) { return 2 }
+    CopyText(*destination[0], 1024, TextBytes(Path("/destination")))
+    Choose("/source/Space's $x; 文档.txt", 0)
+    if platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, *destination[0]) == 0 { return 3 }
+    // The service snapshots caller-owned path buffers before returning.
+    CopyText(*source_names[0][0], 1024, TextBytes("/missing"))
+    status: FileTransferStatus
+    if platform.file_transfer_poll(*status) == 0 || status.running != 1 || status.bytes != 0 ||
+        File.PathExists(Path("/destination/Space's $x; 文档.txt")) ||
+        platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, *destination[0]) != 0 { return 4 }
+    if platform.file_transfer_poll(*status) == 0 || status.bytes != cast(u64)32768 ||
+        File.PathExists(Path("/destination/Space's $x; 文档.txt")) { return 5 }
+    if !Drain(platform, *status) || status.error[0] != 0 || status.completed != 1 || status.bytes != cast(u64)100003 ||
+        !Content("/destination/Space's $x; 文档.txt", 100003) || !Content("/source/Space's $x; 文档.txt", 100003) ||
+        !NoStaging() { return 6 }
+
+    Choose("/source/Space's $x; 文档.txt", 0)
+    if platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, *destination[0]) == 0 ||
+        !Drain(platform, *status) || status.error[0] == 0 || status.completed != 0 ||
+        !Content("/destination/Space's $x; 文档.txt", 100003) { return 7 }
+    if platform.file_transfer_conflicts() == 0 ||
+        platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, *destination[0]) == 0 ||
+        !Drain(platform, *status) || status.conflict != 1 || status.running != 1 ||
+        platform.file_transfer_resolve(2, 0) != 0 || !Content("/destination/Space's $x; 文档.txt", 100003) ||
+        platform.file_transfer_resolve(3, 0) == 0 || !Drain(platform, *status) || status.error[0] != 0 ||
+        status.completed != 1 || !Content("/destination/Space's $x; 文档 (copy 1).txt", 100003) || !NoStaging() { return 8 }
+    if platform.file_transfer_start(TextBytes("duplicate"), *sources[0], 1, *destination[0]) == 0 ||
+        !Drain(platform, *status) || status.error[0] != 0 || status.completed != 1 ||
+        !Content("/destination/Space's $x; 文档 (copy 2).txt", 100003) { return 9 }
+
+    if !Put("/source/cancel.bin", 100003) { return 10 }
+    Choose("/source/cancel.bin", 0)
+    if platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, *destination[0]) == 0 ||
+        platform.file_transfer_poll(*status) == 0 || platform.file_transfer_poll(*status) == 0 ||
+        status.bytes != cast(u64)32768 { return 11 }
+    platform.file_transfer_cancel()
+    if platform.file_transfer_poll(*status) == 0 || status.running != 0 || status.cancelled != 1 || status.completed != 0 ||
+        File.PathExists(Path("/destination/cancel.bin")) || !Content("/source/cancel.bin", 100003) || !NoStaging() { return 12 }
+
+    if !Put("/source/changed.bin", 100003) { return 13 }
+    Choose("/source/changed.bin", 0)
+    if platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, *destination[0]) == 0 ||
+        platform.file_transfer_poll(*status) == 0 || platform.file_transfer_poll(*status) == 0 ||
+        !Put("/source/changed.bin", 3) || !Drain(platform, *status) || status.error[0] == 0 ||
+        File.PathExists(Path("/destination/changed.bin")) || !Content("/source/changed.bin", 3) || !NoStaging() { return 14 }
+
+    if !Put("/source/race.bin", 100003) { return 15 }
+    Choose("/source/race.bin", 0)
+    if platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, *destination[0]) == 0 ||
+        platform.file_transfer_poll(*status) == 0 || !Put("/destination/race.bin", 7) || !Drain(platform, *status) ||
+        status.error[0] == 0 || !Content("/destination/race.bin", 7) || !NoStaging() { return 16 }
+
+    if !Put("/source/empty", 0) { return 17 }
+    Choose("/source/empty", 0)
+    if platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, *destination[0]) == 0 ||
+        !Drain(platform, *status) || status.error[0] != 0 || !Content("/destination/empty", 0) { return 18 }
+    Choose("/source/Space's $x; 文档.txt", 0)
+    Choose("/source/empty", 1)
+    if platform.file_transfer_start(TextBytes("copy"), *sources[0], 2, *destination[0]) == 0 ||
+        !Drain(platform, *status) || status.conflict != 1 || platform.file_transfer_resolve(1, 1) == 0 ||
+        !Drain(platform, *status) || status.running != 0 || status.completed != 0 || status.skipped != 2 { return 19 }
+    Choose("/source/folder", 1)
+    if platform.file_transfer_start(TextBytes("copy"), *sources[0], 2, *destination[0]) != 0 ||
+        platform.file_transfer_start(TextBytes("move"), *sources[0], 1, *destination[0]) != 0 ||
+        platform.file_transfer_start(TextBytes("trash"), *sources[0], 1, *destination[0]) != 0 ||
+        platform.file_transfer_start(TextBytes("copy"), null, 1, *destination[0]) != 0 ||
+        platform.file_transfer_start(TextBytes("copy"), *sources[0], 257, *destination[0]) != 0 ||
+        platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, TextBytes("relative")) != 0 { return 20 }
+    platform.file_transfer_finish()
+    if platform.file_transfer_poll(*status) != 0 { return 21 }
+    return Clipboard(platform)
+}
+
+#scope_export
+#program_export
+main :: () -> s32 {
+    value := EnvironmentValue(TextBytes("RILL_TEST_ROOT"))
+    if value == null || value[0] != 47 || TextLength(value) >= 1000 { return 99 }
+    CopyText(*root[0], 1024, value)
+    ReleaseAllocation(cast(*void)value)
+    result := Run()
+    NativeCopyFinish()
+    if result != 0 { print("rill-file-transfer-test-failed: %\n", result) }
+    else { print("rill-file-transfer-test-ok\n") }
+    return result
+}

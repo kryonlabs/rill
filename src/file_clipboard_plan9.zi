@@ -1,0 +1,170 @@
+File :: #import "file_plan9";
+Paths :: #import "path";
+#import "native_memory"
+#import "file_transfer_plan9"
+
+#scope_file
+Capacity :: 1048576;
+ClipboardText :: struct { bytes: [1048576]u8; count: s64; }
+ClipboardFiles :: struct { names: [256][1024]s8; pointers: [256]*s8; count: s32; }
+
+DevicePath :: (output: *s8) -> bool {
+    value := EnvironmentValue(TextBytes("RILL_SNARF_PATH"))
+    if value == null { CopyText(output, 1024, TextBytes("/dev/snarf")); return false }
+    valid := value[0] == 47 && TextLength(value) < 1024
+    if valid { CopyText(output, 1024, value) } else { output[0] = 0 }
+    ReleaseAllocation(cast(*void)value)
+    return true
+}
+
+Add :: (text: *ClipboardText, value: string) -> bool {
+    if text.count + value.count >= Capacity { return false }
+    index: s64 = 0
+    while index < value.count { text.bytes[text.count] = value[index]; text.count += 1; index += 1 }
+    return true
+}
+
+Encode :: (text: *ClipboardText, path: string) -> bool {
+    if !Add(text, "file://") { return false }
+    hex := "0123456789ABCDEF"
+    index: s64 = 0
+    while index < path.count {
+        byte := path[index]
+        plain := (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) ||
+            (byte >= 48 && byte <= 57) || byte == 47 || byte == 45 || byte == 46 || byte == 95 || byte == 126
+        if text.count + 4 >= Capacity { return false }
+        if plain { text.bytes[text.count] = byte; text.count += 1 }
+        else {
+            text.bytes[text.count] = cast(u8)37
+            text.bytes[text.count + 1] = hex[cast(s32)(byte >> cast(u8)4)]
+            text.bytes[text.count + 2] = hex[cast(s32)(byte & cast(u8)15)]
+            text.count += 3
+        }
+        index += 1
+    }
+    return Add(text, "\n")
+}
+
+Hex :: (byte: u8) -> s32 {
+    if byte >= 48 && byte <= 57 { return cast(s32)byte - 48 }
+    if byte >= 65 && byte <= 70 { return cast(s32)byte - 55 }
+    if byte >= 97 && byte <= 102 { return cast(s32)byte - 87 }
+    return -1
+}
+
+Decode :: (value: string, output: *s8) -> bool {
+    if value.count < 8 || value[0:8] != "file:///" { return false }
+    index: s64 = 7
+    used: s32 = 0
+    while index < value.count {
+        byte := value[index]
+        if byte == cast(u8)37 {
+            if index + 2 >= value.count { return false }
+            first := Hex(value[index + 1])
+            second := Hex(value[index + 2])
+            if first < 0 || second < 0 { return false }
+            byte = cast(u8)(first * 16 + second)
+            index += 2
+        } else if byte == cast(u8)63 || byte == cast(u8)35 { return false }
+        if byte == cast(u8)0 || used >= 1023 { return false }
+        output[used] = cast(s8)byte
+        used += 1
+        index += 1
+    }
+    output[used] = 0
+    canonical: [1024]u8
+    path := Paths.CleanAbsolute(CString(output), canonical[:])
+    if path.count <= 1 { return false }
+    CopyText(output, 1024, cast(*s8)(*canonical[0]))
+    return true
+}
+
+Read :: (text: *ClipboardText) -> bool {
+    path: [1024]s8
+    DevicePath(*path[0])
+    if path[0] == 0 { return false }
+    file := File.OpenRead(CString(*path[0]))
+    if !file.valid { return false }
+    before := File.HandleInfo(file)
+    ok := true
+    while text.count < Capacity {
+        count := File.Read(file, text.bytes[text.count:])
+        if count < 0 { ok = false; break }
+        if count == 0 { break }
+        text.count += count
+    }
+    after := File.HandleInfo(file)
+    closed := File.CloseFile(file)
+    stable := before.valid && after.valid && before.type == after.type && before.device == after.device &&
+        before.identity == after.identity && before.version == after.version && before.length == after.length
+    return closed && ok && stable && text.count > 0 && text.count < Capacity
+}
+
+Parse :: (text: *ClipboardText, files: *ClipboardFiles) -> bool {
+    start: s64 = 0
+    while start < text.count {
+        end := start
+        while end < text.count && text.bytes[end] != cast(u8)10 { end += 1 }
+        next := end + 1
+        if end > start && text.bytes[end - 1] == cast(u8)13 { end -= 1 }
+        line := TextView(text.bytes[start:end])
+        if start == 0 && line == "cut" { return false }
+        if !(start == 0 && line == "copy") && line.count > 0 && line[0] != cast(u8)35 {
+            if files.count >= 256 || !Decode(line, *files.names[files.count][0]) { return false }
+            files.pointers[files.count] = *files.names[files.count][0]
+            files.count += 1
+        }
+        start = next
+    }
+    return files.count > 0
+}
+
+#scope_export
+NativeFileClipboardCopy :: (paths: **s8, count: s32, cut: s32) -> s32 {
+    if paths == null || count <= 0 || count > 256 || cut != 0 { return 0 }
+    text := cast(*ClipboardText)AllocateZeroed(1, size_of(ClipboardText))
+    if text == null { return 0 }
+    ok := Add(text, "copy\n")
+    index: s32 = 0
+    while ok && index < count {
+        name: [1024]u8
+        path := Paths.CleanAbsolute(CString(paths[index]), name[:])
+        info := File.PathInfo(path)
+        ok = path.count > 1 && info.valid && info.type == cast(u16)77 && info.length >= 0 &&
+            (info.mode & cast(u32)0xfffffe00) == 0 && Encode(text, path)
+        index += 1
+    }
+    if ok {
+        name: [1024]s8
+        overridden := DevicePath(*name[0])
+        file: File.FileHandle
+        if name[0] != 0 {
+            if overridden { file = File.OpenPrivateReplace(CString(*name[0])) }
+            else { file = File.OpenWrite(CString(*name[0])) }
+        }
+        ok = file.valid
+        if file.valid {
+            offset: s64 = 0
+            while offset < text.count {
+                written := File.Write(file, text.bytes[offset:text.count])
+                if written <= 0 { ok = false; break }
+                offset += written
+            }
+            if !File.CloseFile(file) { ok = false }
+        }
+    }
+    ReleaseAllocation(cast(*void)text)
+    return cast(s32)ok
+}
+
+NativeFileClipboardPaste :: (destination: *s8) -> s32 {
+    if destination == null { return 0 }
+    text := cast(*ClipboardText)AllocateZeroed(1, size_of(ClipboardText))
+    files := cast(*ClipboardFiles)AllocateZeroed(1, size_of(ClipboardFiles))
+    ok := text != null && files != null && Read(text) && Parse(text, files)
+    result: s32 = 0
+    if ok { result = NativeCopyStart(TextBytes("copy"), *files.pointers[0], files.count, destination) }
+    ReleaseAllocation(cast(*void)files)
+    ReleaseAllocation(cast(*void)text)
+    return result
+}

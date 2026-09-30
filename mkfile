@@ -14,6 +14,7 @@ RILLOBJS=$RILLGEN/native_memory.$O $RILLGEN/platform_types.$O \
 	$RILLGEN/panel_types.$O $RILLGEN/panel.$O $RILLGEN/settings.$O \
 	$RILLGEN/platform_plan9.$O $RILLGEN/process_plan9.$O \
 	$RILLGEN/document_open.$O $RILLGEN/document_native.$O $RILLGEN/path.$O \
+	$RILLGEN/file_transfer_plan9.$O $RILLGEN/file_clipboard_plan9.$O \
 	$RILLGEN/number_text.$O $RILLGEN/text_buffer.$O \
 	$RILLGEN/clock.$O $RILLGEN/date_time_types.$O \
 	$RILLGEN/date_time_plan9.$O $RILLGEN/calendar.$O
