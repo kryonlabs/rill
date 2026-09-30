@@ -7,6 +7,7 @@ SHELF=/sys/src/shelf
 BIN=/$objtype/bin
 OUT=$O.out
 RILLGEN=build/ziran/plan9
+RILLHEADERS=`{ls $RILLGEN/*.h}
 RILLOBJS=$RILLGEN/native_memory.$O $RILLGEN/platform_types.$O \
 	$RILLGEN/shell_types.$O $RILLGEN/shell.$O $RILLGEN/run_dialog.$O $RILLGEN/applications.$O \
 	$RILLGEN/c_string.$O $RILLGEN/file_plan9.$O $RILLGEN/native_files.$O \
@@ -16,6 +17,7 @@ RILLOBJS=$RILLGEN/native_memory.$O $RILLGEN/platform_types.$O \
 	$RILLGEN/clock.$O $RILLGEN/date_time_types.$O \
 	$RILLGEN/date_time_plan9.$O $RILLGEN/calendar.$O
 RILLTEST=build/ziran/plan9-test
+RILLTESTHEADERS=`{ls $RILLTEST/*.h}
 RILLTESTOBJS=$RILLTEST/native_memory.$O $RILLTEST/platform_types.$O \
 	$RILLTEST/c_string.$O $RILLTEST/file_plan9.$O $RILLTEST/native_files.$O \
 	$RILLTEST/panel_types.$O $RILLTEST/panel.$O $RILLTEST/settings.$O \
@@ -68,11 +70,11 @@ check-rill-ziran:V:
 	}
 	exit 0
 
-$RILLGEN/%.$O: $RILLGEN/%.c
-	$CC $CFLAGS -I$RILLGEN -o $target -c $prereq
+$RILLGEN/%.$O: $RILLGEN/%.c $RILLHEADERS
+	$CC $CFLAGS -I$RILLGEN -o $target -c $RILLGEN/$stem^.c
 
-$RILLTEST/%.$O: $RILLTEST/%.c
-	$CC $CFLAGS -I$RILLTEST -o $target -c $prereq
+$RILLTEST/%.$O: $RILLTEST/%.c $RILLTESTHEADERS
+	$CC $CFLAGS -I$RILLTEST -o $target -c $RILLTEST/$stem^.c
 
 check-t9:V:
 	if(! test -f $T9LIST) {

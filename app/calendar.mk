@@ -3,6 +3,7 @@
 TARG=rill-calendar
 GEN=build/ziran/calendar-plan9
 OFILES=`{ls $GEN/*.c | sed 's@\.c$@.'$O'@'}
+HEADERS=`{ls $GEN/*.h}
 BIN=/$objtype/bin
 OUT=build/rill-calendar.$O.out
 CFLAGS=-FTVw
@@ -12,8 +13,8 @@ all:V: $OUT
 
 install:V: $BIN/$TARG
 
-$GEN/%.$O: $GEN/%.c
-	$CC $CFLAGS -I$GEN -o $target -c $prereq
+$GEN/%.$O: $GEN/%.c $HEADERS
+	$CC $CFLAGS -I$GEN -o $target -c $GEN/$stem^.c
 
 $OUT: $OFILES $LIB
 	$LD -o $target $prereq
