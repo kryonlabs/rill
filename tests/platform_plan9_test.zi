@@ -1,0 +1,174 @@
+#import "platform_plan9"
+#import "platform_types"
+#import "native_memory"
+#if #defined(NATIVE_PLAN9) {
+    File :: #import "file_plan9"
+    Process :: #import "process_plan9"
+} else {
+    File :: #import "file_linux"
+}
+
+#scope_file
+PLAN9 :: #defined(NATIVE_PLAN9);
+libc :: #system_library "libc";
+#if PLAN9 {
+    SetEnvironmentRaw :: (name: *s8, value: *s8) -> s32 #foreign libc "putenv";
+    SleepRaw :: (milliseconds: isize) -> s32 #foreign libc "sleep";
+} else {
+    SetEnvironmentRaw :: (name: *s8, value: *s8, replace: s32) -> s32 #foreign libc "setenv";
+}
+root: [512]s8;
+path: [1024]s8;
+launchers: [32]RillLauncher;
+tasks: [8]RillTask;
+
+SetEnvironment :: (name: string, value: *s8) -> bool {
+    #if PLAN9 {
+        return SetEnvironmentRaw(TextBytes(name), value) == 0
+    } else {
+        return SetEnvironmentRaw(TextBytes(name), value, 1) == 0
+    }
+}
+
+Path :: (suffix: string) -> string {
+    used := CopyText(*path[0], 1024, *root[0])
+    CopyText(*path[used], 1024 - used, TextBytes(suffix))
+    return CString(*path[0])
+}
+
+Put :: (suffix: string, text: string) -> bool {
+    file := File.OpenReplace(Path(suffix))
+    if !file.valid { return false }
+    bytes: [1024]u8
+    if text.count > 1024 { File.CloseFile(file); return false }
+    index: s64 = 0
+    while index < text.count { bytes[index] = text[index]; index += 1 }
+    written := File.Write(file, bytes[0:text.count])
+    closed := File.CloseFile(file)
+    return written == text.count && closed
+}
+
+Read :: (suffix: string, output: *s8, capacity: s32) -> bool {
+    file := File.OpenRead(Path(suffix))
+    if !file.valid { return false }
+    bytes: [512]u8
+    count := File.Read(file, bytes[0:capacity - 1])
+    File.CloseFile(file)
+    if count <= 0 { return false }
+    index: s32 = 0
+    while index < cast(s32)count { output[index] = cast(s8)bytes[index]; index += 1 }
+    output[index] = 0
+    return true
+}
+
+Run :: () -> s32 {
+    platform := RillPlatformCurrent()
+    if platform == null || !TextEquals(platform.name, TextBytes("plan9")) { return 1 }
+    value := EnvironmentValue(TextBytes("RILL_TEST_ROOT"))
+    if value == null { return 2 }
+    CopyText(*root[0], 512, value)
+    #if PLAN9 {
+        ReleaseAllocation(cast(*void)value)
+    }
+    if !SetEnvironment("home", *root[0]) ||
+        !TextEquals(platform.settings_root(), TextBytes(Path("/lib/rill"))) { return 3 }
+    if !File.CreateDirectory(Path("/lib")) || !File.CreateDirectory(Path("/lib/rill")) { return 4 }
+    if !Put("/lib/rill/icon.map", "terminal=/first.png\nterminal=/latest.png\n") ||
+        !Put("/lib/rill/applications", "# ignored\n[Desktop Entry]\nId=terminal\nName=Old\nExec=old\n[Desktop Entry]\nId=terminal\nName=My Terminal\nComment=User override\nCategories=Accessories;Utility;\nExec=echo hello\nIcon=terminal\nX-Rill-Favorite=true\n[Desktop Entry]\nName=Incomplete\nExec=bad\n") { return 5 }
+    count := platform.list_launchers(*launchers[0], 32)
+    index: s32 = 0
+    found: s32 = 0
+    while index < count {
+        if TextEquals(*launchers[index].id[0], TextBytes("terminal")) {
+            found += 1
+            if !TextEquals(*launchers[index].name[0], TextBytes("My Terminal")) ||
+                !TextEquals(*launchers[index].category[0], TextBytes("Accessories")) ||
+                !TextEquals(*launchers[index].icon_path[0], TextBytes("/latest.png")) ||
+                launchers[index].favorite == 0 { return 6 }
+        }
+        index += 1
+    }
+    if found != 1 || platform.list_launchers(null, 32) != 0 ||
+        platform.list_launchers(*launchers[0], 0) != 0 { return 7 }
+    if !File.CreateDirectory(Path("/wsys")) ||
+        !File.CreateDirectory(Path("/wsys/700001")) ||
+        !File.CreateDirectory(Path("/wsys/700002")) ||
+        !File.CreateDirectory(Path("/wsys/700003")) ||
+        !File.CreateDirectory(Path("/wsys/not-a-window")) ||
+        !SetEnvironment("RILL_WSYS_DIR", TextBytes(Path("/wsys"))) { return 8 }
+    if !Put("/wsys/700001/label", "Acme\r\n") ||
+        !Put("/wsys/700001/wctl", "0 0 640 480 hidden notcurrent\n") ||
+        !Put("/wsys/700002/label", "Desktop\n") ||
+        !Put("/wsys/700002/winfo", "0 0 640 480 current visible desktop pid 1\n") ||
+        !Put("/wsys/700003/label", "Terminal\n") ||
+        !Put("/wsys/700003/winfo", "0 0 640 480 current visible window pid 1\n") ||
+        !Put("/wsys/700003/wctl", "untouched") { return 9 }
+    count = platform.list_tasks(*tasks[0], 8)
+    if count != 2 || platform.list_tasks(null, 8) != 0 ||
+        platform.list_tasks(*tasks[0], 0) != 0 || platform.list_tasks(*tasks[0], 1) != 1 { return 10 }
+    count = platform.list_tasks(*tasks[0], 8)
+    found = 0
+    index = 0
+    while index < count {
+        if tasks[index].id == 700001 {
+            if tasks[index].focused != 0 || !TextEquals(*tasks[index].title[0], TextBytes("Acme")) { return 11 }
+            found |= 1
+        }
+        if tasks[index].id == 700003 {
+            if tasks[index].focused == 0 { return 12 }
+            found |= 2
+        }
+        index += 1
+    }
+    if found != 3 || platform.focus_task(700003) != 0 || platform.close_task(700003) != 0 ||
+        platform.focus_task(-1) != 0 || platform.close_task(999) != 0 || platform.launch(null) != 0 { return 13 }
+    buffer: [512]s8
+    if !Read("/wsys/700003/wctl", *buffer[0], 512) ||
+        !TextEquals(*buffer[0], TextBytes("untouched")) { return 14 }
+    launcher: RillLauncher
+    CopyText(*launcher.command[0], 256, TextBytes("internal:settings"))
+    if platform.launch(*launcher) != 0 { return 15 }
+    CopyText(*launcher.command[0], 256, TextBytes("host:t9"))
+    if platform.launch(*launcher) != 0 { return 16 }
+    #if PLAN9 {
+        used := CopyText(*launcher.command[0], 256, TextBytes("echo $pid > "))
+        used += CopyText(*launcher.command[used], 256 - used, TextBytes(Path("/childpid")))
+        CopyText(*launcher.command[used], 256 - used, TextBytes("; sleep 10"))
+        if platform.launch(*launcher) == 0 { return 17 }
+        tries: s32 = 0
+        while !Read("/childpid", *buffer[0], 512) && tries < 400 { SleepRaw(10); tries += 1 }
+        if tries >= 400 { return 18 }
+        pid: s32 = 0
+        index = 0
+        while buffer[index] >= 48 && buffer[index] <= 57 {
+            pid = pid * 10 + cast(s32)(buffer[index] - 48)
+            index += 1
+        }
+        if pid <= 0 { return 19 }
+        snapshot: [128]s8
+        used = CopyText(*snapshot[0], 128, TextBytes("0 0 640 480 current visible window pid "))
+        used += FormatInteger(*snapshot[used], 128 - used, pid)
+        CopyText(*snapshot[used], 128 - used, TextBytes("\n"))
+        if !Put("/wsys/700003/winfo", CString(*snapshot[0])) || platform.focus_task(700003) == 0 ||
+            !Read("/wsys/700003/wctl", *buffer[0], 512) || !TextStartsWith(*buffer[0], "activate -pid ") { return 20 }
+        if !Put("/wsys/700003/wctl", "") || platform.close_task(700003) == 0 ||
+            !Read("/wsys/700003/wctl", *buffer[0], 512) || !TextStartsWith(*buffer[0], "delete -pid ") { return 21 }
+        used = CopyText(*snapshot[0], 128, TextBytes("0 0 640 480 current visible window pid "))
+        used += FormatInteger(*snapshot[used], 128 - used, Process.CurrentProcessId())
+        CopyText(*snapshot[used], 128 - used, TextBytes("\n"))
+        if !Put("/wsys/700003/winfo", CString(*snapshot[0])) || !Put("/wsys/700003/wctl", "untouched") ||
+            platform.focus_task(700003) != 0 || platform.close_task(700003) != 0 ||
+            !Read("/wsys/700003/wctl", *buffer[0], 512) || !TextEquals(*buffer[0], TextBytes("untouched")) { return 22 }
+        if platform.focus_task(700001) != 0 || platform.close_task(700001) != 0 { return 23 }
+    }
+    return 0
+}
+
+#scope_export
+#program_export
+main :: () -> s32 {
+    result := Run()
+    if result != 0 { print("rill-platform-test-failed: %\n", result) }
+    else { print("rill-platform-test-ok\n") }
+    return result
+}

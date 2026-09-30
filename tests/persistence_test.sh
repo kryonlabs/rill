@@ -10,9 +10,9 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 unset DISPLAY WAYLAND_DISPLAY RILL_CONTAINED_X11
 
 "$ziran" build --target=c --root src --module-path "$std" \
-    -o "$work/abi" src/panel.zi src/settings.zi
+    -o "$work/abi" src/panel.zi src/settings.zi src/platform_plan9.zi
 "${CC:-cc}" -std=c11 -D_GNU_SOURCE -O2 -Iinclude -I"$work/abi" \
-    tests/rill_platform_test.c src/platform_plan9.c "$work/abi"/*.c -o "$work/abi/test"
+    tests/rill_platform_test.c "$work/abi"/*.c -o "$work/abi/test"
 "$work/abi/test"
 
 "$ziran" ir --root tests --module-path src --module-path "$std" \

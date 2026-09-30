@@ -13,6 +13,8 @@ SHELL_C := $(addprefix $(SHELL_GEN)/,$(addsuffix .c,$(SHELL_MODULES)))
 PERSISTENCE_MODULES := c_string file_linux native_files panel_types panel settings
 PERSISTENCE_C := $(addprefix $(SHELL_GEN)/,$(addsuffix .c,$(PERSISTENCE_MODULES)))
 STUB_C := $(SHELL_GEN)/platform_stub.c
+PLAN9_HOST_GEN := build/ziran/platform-c
+PLAN9_C := $(PLAN9_HOST_GEN)/platform_plan9.c
 SHELL_STAMP := $(SHELL_GEN)/.generated
 SHELL_SOURCES := $(addprefix src/,$(addsuffix .zi,$(SHELL_MODULES))) src/platform_stub.zi
 PERSISTENCE_SOURCES := src/native_files.zi src/panel_types.zi src/panel.zi src/settings.zi \
@@ -24,9 +26,12 @@ $(SHELL_STAMP): $(SHELL_SOURCES) $(PERSISTENCE_SOURCES) $(ZIRAN)
 
 $(SHELL_C) $(PERSISTENCE_C) $(STUB_C): $(SHELL_STAMP)
 
+$(PLAN9_C): src/platform_plan9.zi src/platform_types.zi src/native_memory.zi $(PERSISTENCE_SOURCES) $(ZIRAN)
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=c --root src --module-path $(ZIRAN_DIR)/std -o $(PLAN9_HOST_GEN) src/platform_plan9.zi
+
 .PHONY: ziran-c-plan9 shell-test persistence-test
 ziran-c-plan9:
-	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root src --module-path $(ZIRAN_DIR)/std -o build/ziran/plan9 src/shell.zi src/panel.zi src/settings.zi
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root src --module-path $(ZIRAN_DIR)/std -o build/ziran/plan9 src/shell.zi src/panel.zi src/settings.zi src/platform_plan9.zi
 	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root tests --module-path src --module-path $(ZIRAN_DIR)/std -o build/ziran/plan9-test tests/persistence_test.zi
 
 shell-test:
@@ -160,8 +165,8 @@ run: $(BIN)
 clean:
 	rm -rf build
 
-$(BUILD_DIR)/rill_platform_test: tests/rill_platform_test.c src/platform_plan9.c $(SHELL_GEN)/native_memory.c $(SHELL_GEN)/platform_types.c $(PERSISTENCE_C) $(wildcard include/*.h) | $(BUILD_DIR)
-	$(CC) -Iinclude $(CFLAGS) -o $@ tests/rill_platform_test.c src/platform_plan9.c $(SHELL_GEN)/native_memory.c $(SHELL_GEN)/platform_types.c $(PERSISTENCE_C)
+$(BUILD_DIR)/rill_platform_test: tests/rill_platform_test.c $(PLAN9_C) $(SHELL_GEN)/native_memory.c $(SHELL_GEN)/platform_types.c $(PERSISTENCE_C) $(wildcard include/*.h) | $(BUILD_DIR)
+	$(CC) -Iinclude $(CFLAGS) -o $@ tests/rill_platform_test.c $(PLAN9_C) $(SHELL_GEN)/native_memory.c $(SHELL_GEN)/platform_types.c $(PERSISTENCE_C)
 
 $(BUILD_DIR)/rill_x11_protocol_test: tests/rill_x11_protocol_test.c src/rill_x11.c $(wildcard include/*.h) $(KRYON_LIB) | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ tests/rill_x11_protocol_test.c src/rill_x11.c $(PLATFORM_LDLIBS)
@@ -180,7 +185,8 @@ $(BUILD_DIR)/rill_clipboard_test: tests/rill_clipboard_test.c src/platform_linux
 
 .PHONY: platform-test protocol-test xembed-test xsettings-test clipboard-test
 platform-test: $(BUILD_DIR)/rill_platform_test
-	$(BUILD_DIR)/rill_platform_test
+	env -u DISPLAY -u WAYLAND_DISPLAY $(BUILD_DIR)/rill_platform_test
+	ZIRAN="$(abspath $(ZIRAN))" ZIRAN_STD="$(abspath $(ZIRAN_DIR)/std)" sh tests/platform_plan9_test.sh
 
 protocol-test: $(BUILD_DIR)/rill_x11_protocol_test
 	xvfb-run -a $(BUILD_DIR)/rill_x11_protocol_test

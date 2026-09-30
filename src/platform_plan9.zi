@@ -1,0 +1,373 @@
+#import "platform_types"
+#import "native_memory"
+#import "native_files"
+
+#scope_file
+PLAN9 :: #defined(NATIVE_PLAN9);
+#if PLAN9 {
+    Process :: #import "process_plan9"
+    File :: #import "file_plan9"
+} else {
+    File :: #import "file_linux"
+}
+
+IconMapEntry :: struct { key: [64]s8; path: [512]s8; }
+icon_map: [64]IconMapEntry;
+icon_map_count: s32;
+services: RillPlatformServices;
+settings_path: [512]s8;
+#if PLAN9 {
+    groups: *Process.ProcessGroup;
+    group_count: s32;
+    group_capacity: s32;
+}
+
+Environment :: (name: string, output: *s8, capacity: s32) -> bool {
+    value := EnvironmentValue(TextBytes(name))
+    if value == null { return false }
+    fits := TextLength(value) < capacity
+    CopyText(output, capacity, value)
+    #if PLAN9 {
+        ReleaseAllocation(cast(*void)value)
+    }
+    return fits
+}
+
+Home :: (output: *s8, capacity: s32) -> bool {
+    if Environment("home", output, capacity) { return true }
+    return Environment("HOME", output, capacity)
+}
+
+Append :: (output: *s8, capacity: s32, text: *s8) -> bool {
+    used := TextLength(output)
+    if used + TextLength(text) >= capacity { return false }
+    CopyText(*output[used], capacity - used, text)
+    return true
+}
+
+TrimLine :: (line: *s8) {
+    count := TextLength(line)
+    while count > 0 && (line[count - 1] == 10 || line[count - 1] == 13) {
+        count -= 1
+        line[count] = 0
+    }
+}
+
+Contains :: (text: *s8, part: string) -> bool {
+    index: s32 = 0
+    while text[index] != 0 {
+        if TextStartsWith(*text[index], part) { return true }
+        index += 1
+    }
+    return false
+}
+
+LoadIconMap :: (path: *s8) {
+    reader := OpenReader(path)
+    if reader == null { return }
+    line: [512]s8
+    while icon_map_count < 64 && ReadLine(reader, *line[0], 512) {
+        TrimLine(*line[0])
+        if line[0] == 35 || line[0] == 0 { continue }
+        separator: s32 = 0
+        while line[separator] != 0 && line[separator] != 61 { separator += 1 }
+        if line[separator] == 0 { continue }
+        line[separator] = 0
+        CopyText(*icon_map[icon_map_count].key[0], 64, *line[0])
+        CopyText(*icon_map[icon_map_count].path[0], 512, *line[separator + 1])
+        icon_map_count += 1
+    }
+    CloseReader(reader)
+}
+
+LookupIcon :: (key: *s8) -> *s8 {
+    index := icon_map_count
+    while index > 0 {
+        index -= 1
+        if TextEquals(*icon_map[index].key[0], key) { return *icon_map[index].path[0] }
+    }
+    return null
+}
+
+StoreLauncher :: (out: *RillLauncher, cap: s32, count: *s32, entry: *RillLauncher) {
+    if entry.id[0] == 0 || entry.name[0] == 0 || entry.command[0] == 0 { return }
+    index: s32 = 0
+    while index < count.* {
+        if TextEquals(*out[index].id[0], *entry.id[0]) { out[index] = entry.*; return }
+        index += 1
+    }
+    if count.* < cap { out[count.*] = entry.*; count.* += 1 }
+}
+
+ParseApplications :: (path: *s8, out: *RillLauncher, cap: s32, count: *s32) {
+    reader := OpenReader(path)
+    if reader == null { return }
+    line: [512]s8
+    entry: RillLauncher
+    in_entry: bool = false
+    while ReadLine(reader, *line[0], 512) {
+        TrimLine(*line[0])
+        if line[0] == 35 || line[0] == 0 { continue }
+        if line[0] == 91 {
+            if in_entry { StoreLauncher(out, cap, count, *entry) }
+            SetBytes(cast(*void)(*entry), 0, size_of(RillLauncher))
+            in_entry = true
+            continue
+        }
+        if !in_entry { continue }
+        text := *line[0]
+        if TextStartsWith(text, "Id=") {
+            CopyText(*entry.id[0], 64, *line[3])
+        } else if TextStartsWith(text, "Name=") {
+            CopyText(*entry.name[0], 96, *line[5])
+        } else if TextStartsWith(text, "Comment=") {
+            CopyText(*entry.description[0], 128, *line[8])
+        }
+        else if TextStartsWith(text, "Categories=") {
+            index: s32 = 0
+            while line[11 + index] != 0 && line[11 + index] != 59 && index < 63 {
+                entry.category[index] = line[11 + index]
+                index += 1
+            }
+            entry.category[index] = 0
+        }
+        else if TextStartsWith(text, "Exec=") {
+            CopyText(*entry.command[0], 256, *line[5])
+        } else if TextStartsWith(text, "Icon=") {
+            key: [64]s8
+            CopyText(*key[0], 64, *line[5])
+            icon := LookupIcon(*key[0])
+            if icon != null { CopyText(*entry.icon_path[0], 512, icon) }
+        }
+        else if TextStartsWith(text, "X-Rill-Favorite=") {
+            entry.favorite = cast(s32)(TextEquals(*line[16], TextBytes("true")) ||
+                TextEquals(*line[16], TextBytes("1")))
+        }
+    }
+    if in_entry { StoreLauncher(out, cap, count, *entry) }
+    CloseReader(reader)
+}
+
+Launcher :: (out: *RillLauncher, id: string, name: string,
+    description: string, category: string, command: string, favorite: s32) {
+    SetBytes(cast(*void)out, 0, size_of(RillLauncher))
+    CopyText(*out.id[0], 64, TextBytes(id))
+    CopyText(*out.name[0], 96, TextBytes(name))
+    CopyText(*out.description[0], 128, TextBytes(description))
+    CopyText(*out.category[0], 64, TextBytes(category))
+    CopyText(*out.command[0], 256, TextBytes(command))
+    out.favorite = favorite
+}
+
+ListLaunchers :: (out: *RillLauncher, cap: s32) -> s32 {
+    if out == null || cap <= 0 { return 0 }
+    icon_map_count = 0
+    LoadIconMap(TextBytes("/lib/rill/icon.map"))
+    home: [512]s8
+    path: [512]s8
+    has_home := Home(*home[0], 512)
+    if has_home {
+        CopyText(*path[0], 512, *home[0])
+        if Append(*path[0], 512, TextBytes("/lib/rill/icon.map")) { LoadIconMap(*path[0]) }
+    }
+    count: s32 = 0
+    ParseApplications(TextBytes("/lib/rill/applications"), out, cap, *count)
+    if has_home {
+        CopyText(*path[0], 512, *home[0])
+        if Append(*path[0], 512, TextBytes("/lib/rill/applications")) {
+            ParseApplications(*path[0], out, cap, *count)
+        }
+    }
+    if count > 0 { return count }
+    Launcher(*out[0], "terminal", "Terminal", "Use the command line",
+        "Accessories", "host:t9", 1)
+    if cap > 1 { Launcher(*out[1], "files", "File Manager", "Browse the file system",
+        "Accessories", "host:shelf", 1) }
+    if cap > 2 { Launcher(*out[2], "settings", "Settings", "Configure the desktop",
+        "Settings", "internal:settings", 1) }
+    if cap > 3 { Launcher(*out[3], "about", "About Rill", "Desktop information",
+        "System", "window -m -dx 500 -dy 460 rill --about", 0) }
+    if cap < 4 { return cap }
+    return 4
+}
+
+WindowRoot :: (output: *s8, capacity: s32) -> bool {
+    if Environment("RILL_WSYS_DIR", output, capacity) && output[0] != 0 { return true }
+    CopyText(output, capacity, TextBytes("/dev/wsys"))
+    return true
+}
+
+WindowPath :: (id: s32, name: string, output: *s8, capacity: s32) -> bool {
+    if id <= 0 || !WindowRoot(output, capacity) { return false }
+    digits: [16]s8
+    FormatInteger(*digits[0], 16, id)
+    return Append(output, capacity, TextBytes("/")) && Append(output, capacity, *digits[0]) &&
+        Append(output, capacity, TextBytes("/")) && Append(output, capacity, TextBytes(name))
+}
+
+ReadSnapshot :: (path: string, output: *s8, capacity: s32) -> bool {
+    if capacity < 2 || capacity > 512 { return false }
+    file := File.OpenRead(path)
+    if !file.valid { return false }
+    bytes: [512]u8
+    // Rio's wctl is an event stream: a second read could block forever.
+    count := File.Read(file, bytes[0:capacity - 1])
+    File.CloseFile(file)
+    if count <= 0 { return false }
+    index: s32 = 0
+    while index < cast(s32)count { output[index] = cast(s8)bytes[index]; index += 1 }
+    output[index] = 0
+    return true
+}
+
+ReadWindowFile :: (id: s32, name: string, output: *s8, capacity: s32) -> bool {
+    path: [1024]s8
+    return WindowPath(id, name, *path[0], 1024) && ReadSnapshot(CString(*path[0]), output, capacity)
+}
+
+PositiveInteger :: (text: *s8, trailing_space: bool) -> s32 {
+    index: s32 = 0
+    if trailing_space { while text[index] == 32 || text[index] == 9 { index += 1 } }
+    value: s64 = 0
+    digits: s32 = 0
+    while text[index] >= 48 && text[index] <= 57 {
+        value = value * 10 + cast(s64)(text[index] - 48)
+        if value > 2147483647 { return 0 }
+        index += 1
+        digits += 1
+    }
+    if trailing_space {
+        while text[index] == 32 || text[index] == 9 || text[index] == 10 || text[index] == 13 {
+            index += 1
+        }
+    }
+    if digits == 0 || text[index] != 0 { return 0 }
+    return cast(s32)value
+}
+
+AddTask :: (name: *s8, own_id: s32, task: *RillTask) -> bool {
+    id := PositiveInteger(name, false)
+    if id <= 0 || id == own_id { return false }
+    SetBytes(cast(*void)task, 0, size_of(RillTask))
+    task.id = id
+    if !ReadWindowFile(id, "label", *task.title[0], 128) { return false }
+    TrimLine(*task.title[0])
+    state: [128]s8
+    if ReadWindowFile(id, "winfo", *state[0], 128) || ReadWindowFile(id, "wctl", *state[0], 128) {
+        if Contains(*state[0], " desktop") { return false }
+        task.focused = cast(s32)(Contains(*state[0], "current") && !Contains(*state[0], "notcurrent"))
+    }
+    return true
+}
+
+ListTasks :: (out: *RillTask, cap: s32) -> s32 {
+    if out == null || cap <= 0 { return 0 }
+    own: [32]s8
+    own_id: s32 = 0
+    if ReadSnapshot("/dev/winid", *own[0], 32) { own_id = PositiveInteger(*own[0], true) }
+    path: [1024]s8
+    if !WindowRoot(*path[0], 1024) { return 0 }
+    cursor := File.OpenDirectory(CString(*path[0]))
+    if !cursor.valid { return 0 }
+    count: s32 = 0
+    while count < cap {
+        entry := File.NextDirectoryEntry(*cursor)
+        if !entry.valid { break }
+        if AddTask(cast(*s8)(*entry.name[0]), own_id, *out[count]) { count += 1 }
+    }
+    File.CloseDirectory(*cursor)
+    return count
+}
+
+OwnedWindowPid :: (id: s32) -> s32 {
+    #if PLAN9 {
+        if id <= 0 || group_count == 0 { return 0 }
+        state: [128]s8
+        if !ReadWindowFile(id, "winfo", *state[0], 128) { return 0 }
+        index: s32 = 0
+        while state[index] != 0 && !TextStartsWith(*state[index], " pid ") { index += 1 }
+        if state[index] == 0 { return 0 }
+        pid := PositiveInteger(*state[index + 5], true)
+        index = 0
+        while index < group_count {
+            if Process.ProcessInGroup(groups[index], pid) { return pid }
+            index += 1
+        }
+    } else { unused id }
+    return 0
+}
+
+WriteControl :: (id: s32, action: string) -> s32 {
+    pid := OwnedWindowPid(id)
+    if pid <= 0 { return 0 }
+    path: [1024]s8
+    if !WindowPath(id, "wctl", *path[0], 1024) { return 0 }
+    command: [64]s8
+    digits: [16]s8
+    CopyText(*command[0], 64, TextBytes(action))
+    FormatInteger(*digits[0], 16, pid)
+    if !Append(*command[0], 64, TextBytes(" -pid ")) || !Append(*command[0], 64, *digits[0]) { return 0 }
+    file := File.OpenWrite(CString(*path[0]))
+    if !file.valid { return 0 }
+    text := CString(*command[0])
+    bytes: [64]u8
+    index: s32 = 0
+    while index < cast(s32)text.count { bytes[index] = text[index]; index += 1 }
+    // Rio verifies the same PID when it applies the command, closing the
+    // snapshot-to-control race if a window changes owners in between.
+    written := File.Write(file, bytes[0:index])
+    closed := File.CloseFile(file)
+    return cast(s32)(written == text.count && closed)
+}
+
+Launch :: (launcher: *RillLauncher) -> s32 {
+    #if PLAN9 {
+        if launcher == null || launcher.command[0] == 0 ||
+            TextStartsWith(*launcher.command[0], "internal:") ||
+            TextStartsWith(*launcher.command[0], "host:") { return 0 }
+        if group_count == group_capacity {
+            capacity: s32 = 16
+            if group_capacity > 0 {
+                if group_capacity > 1073741823 { return 0 }
+                capacity = group_capacity * 2
+            }
+            if cast(usize)capacity > cast(usize)-1 / size_of(Process.ProcessGroup) { return 0 }
+            allocation := cast(*Process.ProcessGroup)ResizeAllocation(cast(*void)groups,
+                cast(usize)capacity * size_of(Process.ProcessGroup))
+            if allocation == null { return 0 }
+            groups = allocation
+            group_capacity = capacity
+        }
+        arguments: [3]string = .["/bin/rc", "-c", CString(*launcher.command[0])]
+        group := Process.StartDetached(arguments[:])
+        if !group.valid { return 0 }
+        groups[group_count] = group
+        group_count += 1
+        return 1
+    } else {
+        unused launcher
+        return 0
+    }
+}
+
+FocusTask :: (id: s32) -> s32 { return WriteControl(id, "activate") }
+CloseTask :: (id: s32) -> s32 { return WriteControl(id, "delete") }
+
+SettingsRoot :: () -> *s8 {
+    if !Home(*settings_path[0], 512) || settings_path[0] != 47 { return null }
+    if !Append(*settings_path[0], 512, TextBytes("/lib/rill")) { return null }
+    return *settings_path[0]
+}
+
+#scope_export
+#program_export
+RillPlatformCurrent :: () -> *RillPlatformServices {
+    services.name = TextBytes("plan9")
+    services.list_launchers = ListLaunchers
+    services.list_tasks = ListTasks
+    services.launch = Launch
+    services.focus_task = FocusTask
+    services.close_task = CloseTask
+    services.settings_root = SettingsRoot
+    return *services
+}

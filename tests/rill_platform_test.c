@@ -96,8 +96,9 @@ int main(void)
     assert(strcmp(tasks[0].title, "Acme") == 0);
     put(path, "0 0 640 480 hidden notcurrent\n");
     assert(platform->list_tasks(tasks, 4) == 1 && !tasks[0].focused);
-    assert(platform->focus_task(7));
-    assert(platform->close_task(7));
+    /* Discovery is not authority to control a foreign process's window. */
+    assert(!platform->focus_task(7));
+    assert(!platform->close_task(7));
     assert(!platform->focus_task(-1));
     assert(!platform->close_task(999));
     unlink(path);
