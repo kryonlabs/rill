@@ -1,0 +1,12 @@
+#import "shell_types"
+#import "platform_types"
+
+DesktopApplication :: struct {
+    shell: RillShellState
+    settings: RillSettings
+    previous: RillSettings
+    settings_path: [1024]s8
+    user: [96]s8
+    closed: bool
+}
+

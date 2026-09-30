@@ -1,0 +1,36 @@
+#import "desktop_ui"
+#import "desktop_host"
+#import "desktop_types"
+#import "desktop_overlay"
+#import "panel_ui"
+#import "shell"
+#import "native_memory"
+#import "clock"
+#import "platform_types"
+using UI :: #import "Widgets";
+
+state: DesktopState;
+overlay: DesktopOverlayState;
+style_ready: bool;
+
+DrawDesktop :: (session: Session, viewport: Rectangle,
+    app: *DesktopApplication, platform: *RillPlatformServices) {
+    if !style_ready { style_ready = PanelStyle() }
+    Desktop(session, viewport, *state, app, platform, ClockNow())
+    DesktopOverlayBegin(*overlay)
+    DesktopOverlayRect(*overlay, state.panel.bar)
+    DesktopOverlayRect(*overlay, state.panel.popup_bounds)
+    if !DesktopOverlayPublish(*overlay) { RillShellSetStatus(*app.shell, TextBytes("Could not publish desktop panels")) }
+}
+
+#if #defined(PLAN9_BUILD) {
+    #program_export
+    threadmain :: (argc: s32, argv: **s8) {
+        unused argc
+        unused argv
+        DesktopMain(DrawDesktop)
+    }
+} else {
+    #program_export
+    main :: () -> s32 { return DesktopMain(DrawDesktop) }
+}

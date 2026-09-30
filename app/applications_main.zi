@@ -1,6 +1,7 @@
 #import "applications_ui"
 #import "applications"
 #import "desktop_host"
+#import "desktop_types"
 #import "platform_types"
 #import "native_memory"
 using UI :: #import "Widgets";

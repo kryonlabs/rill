@@ -1,5 +1,6 @@
 #import "run_dialog_ui"
 #import "desktop_host"
+#import "desktop_types"
 #import "platform_types"
 #import "native_memory"
 using UI :: #import "Widgets";

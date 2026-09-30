@@ -30,7 +30,7 @@ $(PLAN9_C): src/platform_plan9.zi src/platform_types.zi src/native_memory.zi $(P
 	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=c --root src --module-path $(ZIRAN_DIR)/std -o $(PLAN9_HOST_GEN) src/platform_plan9.zi
 
 .PHONY: ziran-c-plan9 shell-test persistence-test
-ziran-c-plan9: run-dialog-plan9 applications-plan9 calendar-plan9
+ziran-c-plan9: run-dialog-plan9 applications-plan9 calendar-plan9 desktop-plan9
 	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root src --module-path $(ZIRAN_DIR)/std -o build/ziran/plan9 src/shell.zi src/panel.zi src/settings.zi src/platform_plan9.zi src/run_dialog.zi src/applications.zi src/clock.zi
 	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root tests --module-path src --module-path $(ZIRAN_DIR)/std -o build/ziran/plan9-test tests/persistence_test.zi
 
@@ -116,6 +116,27 @@ calendar-window-test: $(CALENDAR_BIN)
 		PLAN9="$(abspath $(PLAN9PORT_DIR))" DEVDRAW="$(abspath $(PLAN9PORT_DIR))/bin/devdraw" \
 		xvfb-run -a -n 100 python3 tests/calendar_window_test.py
 
+DESKTOP_GEN := build/ziran/desktop-c
+DESKTOP_BIN := build/rill-desktop
+
+.PHONY: desktop-build desktop-plan9 desktop-ui-test desktop-window-test
+desktop-build: $(DESKTOP_BIN)
+
+desktop-plan9:
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --define PLAN9_BUILD --root app --module-path src --module-path $(KRYON_DIR)/src/ui --module-path $(KRYON_DIR)/src/backend --module-path $(ZIRAN_DIR)/std -o build/ziran/desktop-plan9 app/desktop_main.zi
+
+$(DESKTOP_GEN)/.generated: $(RUN_SOURCES) $(ZIRAN)
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=c --root app --module-path src --module-path $(KRYON_DIR)/src/ui --module-path $(KRYON_DIR)/src/backend --module-path $(ZIRAN_DIR)/std -o $(DESKTOP_GEN) app/desktop_main.zi
+	touch $@
+
+desktop-ui-test:
+	ZIRAN="$(abspath $(ZIRAN))" ZIRAN_STD="$(abspath $(ZIRAN_DIR)/std)" KRYON_DIR="$(abspath $(KRYON_DIR))" sh tests/desktop_ui_test.sh
+
+desktop-window-test: $(DESKTOP_BIN)
+	env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY RILL_PRIVATE_XVFB=1 \
+		PLAN9="$(abspath $(PLAN9PORT_DIR))" DEVDRAW="$(abspath $(PLAN9PORT_DIR))/bin/devdraw" \
+		xvfb-run -a -n 100 python3 tests/desktop_window_test.py
+
 CC ?= cc
 CFLAGS ?= -Wall -Wextra -O2
 CPPFLAGS := -Iinclude -I$(KRYON_DIR)/include
@@ -166,6 +187,13 @@ $(APPLICATIONS_BIN): $(APPLICATIONS_GEN)/.generated src/platform_linux.c src/fil
 $(CALENDAR_BIN): $(CALENDAR_GEN)/.generated src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(wildcard include/*.h)
 	$(CC) $(CPPFLAGS) -I$(CALENDAR_GEN) $(CFLAGS) \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $(CALENDAR_GEN)/*.c \
+		src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(GTK_PKG_LIBS) $(PLATFORM_LDLIBS) \
+		$(shell pkg-config --libs wayland-client 2>/dev/null) \
+		-Wl,-E -L$(PLAN9PORT_DIR)/lib -ldraw -lmemdraw -lmux -lthread -l9 -lpthread -lm -lcairo
+
+$(DESKTOP_BIN): $(DESKTOP_GEN)/.generated src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(wildcard include/*.h)
+	$(CC) $(CPPFLAGS) -I$(DESKTOP_GEN) $(CFLAGS) \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $(DESKTOP_GEN)/*.c \
 		src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(GTK_PKG_LIBS) $(PLATFORM_LDLIBS) \
 		$(shell pkg-config --libs wayland-client 2>/dev/null) \
 		-Wl,-E -L$(PLAN9PORT_DIR)/lib -ldraw -lmemdraw -lmux -lthread -l9 -lpthread -lm -lcairo

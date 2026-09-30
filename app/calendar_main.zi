@@ -1,6 +1,7 @@
 #import "calendar_ui"
 #import "clock"
 #import "desktop_host"
+#import "desktop_types"
 #import "platform_types"
 using UI :: #import "Widgets";
 

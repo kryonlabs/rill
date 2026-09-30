@@ -1,0 +1,748 @@
+using UI :: #import "Widgets";
+#import "panel_model"
+#import "panel"
+#import "panel_types"
+#import "shell"
+#import "shell_types"
+#import "platform_types"
+#import "settings"
+#import "native_memory"
+#import "desktop_types"
+#import "applications"
+#import "applications_ui"
+#import "calendar_ui"
+#import "clock"
+#import "date_time_types"
+using StyleField;
+
+PanelState :: struct {
+    model: PanelModel
+    started: bool
+    edge: s32
+    size: s32
+    autohide: bool
+    shown: bool
+    desktop_shown: bool
+    path: [1024]s8
+    scroll: [2]s32
+    input: [2]ScrollInput
+    task_scroll: [64]s32
+    task_input: [64]ScrollInput
+    cells: [64]Rectangle
+    bar: Rectangle
+    popup_bounds: Rectangle
+    popup: s32
+    popup_scroll: s32
+    popup_input: ScrollInput
+    applications: ApplicationsState
+    calendar: CalendarState
+    context_open: bool
+    context_x: float32
+    context_y: float32
+    context_group: s32
+    context_index: s32
+    task_context: bool
+    task_id: s32
+    drag_group: s32
+    drag_index: s32
+    refresh: bool
+}
+
+PanelStyle :: () -> bool {
+    rules: StyleRules
+    rule: StyleRule
+    rule.selector = StyleDefaultSelector()
+    rule.selector.kind = StyleKindButton()
+    rule.selector.class_name = 1401
+    rule.style.fields = cast(u32)StylePaddingX | cast(u32)StylePaddingY | cast(u32)StyleFontSize
+    rule.style.padding_x = 4.0
+    rule.style.padding_y = 2.0
+    rule.style.font_size = 12.0
+    rules.items[0] = rule
+    rule.selector.class_name = 1301
+    rules.items[1] = rule
+    rules.count = 2
+    return InstallStyleRules(rules)
+}
+
+PanelKey :: (group: s32, index: s32) -> u64 { return cast(u64)(140000 + group * 3200 + index * 100) }
+
+TaskKey :: (slot: s32, id: s32) -> u64 {
+    return cast(u64)2400000 + cast(u64)slot * cast(u64)4294967296 + cast(u64)cast(u32)id
+}
+
+PanelBounds :: (viewport: Rectangle, edge: s32, size: s32) -> Rectangle {
+    result := viewport
+    if edge < 2 {
+        result.height = cast(float32)size
+        if result.height > viewport.height { result.height = viewport.height }
+        if edge == RILL_PANEL_BOTTOM { result.y += viewport.height - result.height }
+    } else {
+        result.width = cast(float32)size
+        if result.width > viewport.width { result.width = viewport.width }
+        if edge == RILL_PANEL_RIGHT { result.x += viewport.width - result.width }
+    }
+    return result
+}
+
+#scope_file
+Label :: (session: Session, key: u64, bounds: Rectangle, text: string) {
+    props: TextProps
+    props.key = key
+    props.bounds = bounds
+    props.text = text
+    props.font = 12
+    Text(session, props)
+}
+
+Control :: (session: Session, key: u64, bounds: Rectangle, label: string,
+    disabled: bool, selected: bool) -> bool {
+    button: ButtonProps
+    button.key = key
+    button.bounds = bounds
+    button.label = label
+    button.class_name = 1401
+    button.disabled = disabled
+    button.selected = selected
+    return Button(session, button) > 0
+}
+
+Failure :: (app: *DesktopApplication, label: string) { RillShellSetStatus(*app.shell, TextBytes(label)) }
+
+CountTasks :: (shell: *RillShellState) -> s32 {
+    if shell == null || shell.tasks == null { return 0 }
+    count := shell.task_count
+    if count < 0 { return 0 }
+    if count > shell.task_capacity { count = shell.task_capacity }
+    return count
+}
+
+ScrollView :: (session: Session, key: u64, bounds: Rectangle, extent: s32,
+    offset: s32, vertical: bool, input: *ScrollInput, wheel_allowed: bool) -> ScrollResult {
+    pointer := PointerSample(session)
+    input.enabled = true
+    input.pointer_allowed = true
+    input.mouse = Vector2.{pointer.x, pointer.y}
+    input.pressed = pointer.pressed
+    input.down = pointer.down
+    input.released = pointer.released
+    input.wheel = 0.0
+    if wheel_allowed { input.wheel = PointerWheelTake(session, bounds) }
+    props: ScrollProps
+    props.key = key
+    props.bounds = bounds
+    props.horizontal = !vertical
+    props.content_height = extent
+    props.content_width = extent
+    props.scroll_offset = offset
+    props.input = input.*
+    result := Scroll(session, props)
+    if result.frame.start_drag { input.owns_drag = true }
+    if result.frame.clear_drag { input.owns_drag = false }
+    input.grab = result.frame.grab
+    return result
+}
+
+Extent :: (plugin: *RillPanelPlugin, vertical: bool, task_count: s32) -> s32 {
+    if plugin.kind == RILL_PANEL_TASK_LIST {
+        if vertical {
+            count := task_count
+            if count < 1 { count = 1 }
+            if count > 8 { count = 8 }
+            return count * 32 + 12
+        }
+        return 180
+    }
+    value := plugin.advance
+    if value < plugin.width { value = plugin.width }
+    if value <= 0 {
+        value = 32
+        if plugin.kind == RILL_PANEL_SEPARATOR { value = 8 }
+    }
+    if vertical && plugin.kind != RILL_PANEL_SEPARATOR { return 36 }
+    return value
+}
+
+GroupExtent :: (state: *PanelState, group: s32, vertical: bool, tasks: s32) -> s32 {
+    items := PanelItems(*state.model, group)
+    count := PanelCount(*state.model, group)
+    extent: s32 = 0
+    index: s32 = 0
+    while index < count { extent += Extent(*items[index], vertical, tasks); index += 1 }
+    return extent
+}
+
+LaunchNamed :: (app: *DesktopApplication, platform: *RillPlatformServices, id: *s8) -> bool {
+    if app.shell.launchers == null { return false }
+    index: s32 = 0
+    while index < app.shell.launcher_count && index < app.shell.launcher_capacity {
+        if TextEquals(*app.shell.launchers[index].id[0], id) {
+            return RillApplicationsLaunch(*app.shell, platform, *app.settings,
+                *app.previous, *app.settings_path[0], index) != 0
+        }
+        index += 1
+    }
+    Failure(app, "The application is not installed")
+    return false
+}
+
+TaskList :: (session: Session, bounds: Rectangle, state: *PanelState,
+    slot: s32, app: *DesktopApplication, platform: *RillPlatformServices, editing: bool) {
+    count := CountTasks(*app.shell)
+    if count == 0 { Label(session, cast(u64)(150000 + slot), bounds, "No windows"); return }
+    vertical := state.edge >= 2
+    step: s32 = 154
+    if vertical { step = 30 }
+    view := ScrollView(session, cast(u64)(151000 + slot), bounds, count * step,
+        state.task_scroll[slot], vertical, *state.task_input[slot], true)
+    state.task_scroll[slot] = view.scroll_offset
+    index: s32 = 0
+    while index < count {
+        cell := view.content
+        if vertical { cell.y += cast(float32)(index * step); cell.height = cast(float32)(step - 2) }
+        else { cell.x += cast(float32)(index * step); cell.width = cast(float32)(step - 2) }
+        if PointInBounds(cell.x + cell.width / 2.0, cell.y + cell.height / 2.0, bounds) ||
+            (vertical && cell.y < bounds.y + bounds.height && cell.y + cell.height > bounds.y) ||
+            (!vertical && cell.x < bounds.x + bounds.width && cell.x + cell.width > bounds.x) {
+            task := *app.shell.tasks[index]
+            label := CString(*task.title[0])
+            if vertical { label = "App" }
+            if Control(session, TaskKey(slot, task.id), cell, label,
+                editing || platform == null || platform.focus_task == null, task.focused != 0) {
+                RillShellSelectTask(*app.shell, index)
+                RillShellFocusSelectedTask(*app.shell, platform)
+            }
+            secondary := SecondaryPointerSample(session)
+            if !editing && secondary.released && PointInBounds(PointerSample(session).x, PointerSample(session).y, bounds) &&
+                PointInBounds(PointerSample(session).x, PointerSample(session).y, cell) {
+                state.context_open = true
+                state.task_context = true
+                state.task_id = task.id
+                state.context_x = PointerSample(session).x
+                state.context_y = PointerSample(session).y
+            }
+        }
+        index += 1
+    }
+    if view.opened { End(session) }
+}
+
+Plugin :: (session: Session, bounds: Rectangle, plugin: *RillPanelPlugin,
+    state: *PanelState, group: s32, index: s32, app: *DesktopApplication,
+    platform: *RillPlatformServices, reading: LocalDateTime, editing: bool) {
+    key := PanelKey(group, index)
+    slot := group * 32 + index
+    available := platform != null
+    if plugin.kind == RILL_PANEL_SEPARATOR {
+        box: BoxProps
+        box.key = key
+        box.bounds = bounds
+        if state.edge >= 2 { box.bounds.y += bounds.height * 0.5; box.bounds.height = 1.0 }
+        else { box.bounds.x += bounds.width * 0.5; box.bounds.width = 1.0 }
+        box.fill = Color.{195, 201, 210, 255}
+        Box(session, box)
+    } else if plugin.kind == RILL_PANEL_TASK_LIST {
+        TaskList(session, bounds, state, slot, app, platform, editing)
+    } else if plugin.kind == RILL_PANEL_MENU {
+        label := CString(*plugin.label[0])
+        if label.count == 0 { label = "Applications" }
+        if state.edge >= 2 { label = "Apps" }
+        if Control(session, key, bounds, label, editing, state.popup == 1) {
+            state.applications = .{}
+            app.shell.app_menu_search[0] = 0
+            app.shell.app_menu_category = 0
+            state.popup = 1
+            if plugin.menu_id == 2 { state.popup = 6 }
+            if plugin.menu_id == 3 { state.popup = 7 }
+        }
+    } else if plugin.kind == RILL_PANEL_LAUNCHER {
+        label := CString(*plugin.label[0])
+        if label.count == 0 { label = "App" }
+        if Control(session, key, bounds, label, editing || !available || platform.launch == null, false) {
+            if LaunchNamed(app, platform, *plugin.launcher_id[0]) { state.refresh = true }
+        }
+    } else if plugin.kind == RILL_PANEL_CLOCK {
+        text: [128]s8
+        pattern := CString(RillSettingsGet(*app.settings, TextBytes("clock-format"), TextBytes("%H:%M")))
+        ClockText(reading, pattern, *text[0], 128)
+        if Control(session, key, bounds, CString(*text[0]), editing, state.popup == 2) {
+            state.calendar = .{}
+            state.popup = 2
+        }
+    } else if plugin.kind == RILL_PANEL_WORKSPACES {
+        count: s32 = 0
+        current: s32 = 0
+        if available && platform.workspace_count != null && platform.current_workspace != null {
+            count = platform.workspace_count()
+            current = platform.current_workspace()
+        }
+        if count > 1024 { count = 1024 }
+        if count <= 0 || current < 0 || current >= count {
+            Control(session, key, bounds, "WS", true, false)
+        } else {
+            text: [16]s8
+            FormatInteger(*text[0], 16, current + 1)
+            direction: s32 = 0
+            if Control(session, key, bounds, CString(*text[0]), editing || platform.switch_workspace == null, true) { direction = 1 }
+            wheel := PointerWheelTake(session, bounds)
+            if !editing && wheel > 0.0 { direction = -1 }
+            if !editing && wheel < 0.0 { direction = 1 }
+            if direction != 0 && platform.switch_workspace != null &&
+                platform.switch_workspace((current + count + direction) % count) == 0 {
+                Failure(app, "Could not switch workspace")
+            }
+        }
+    } else if plugin.kind == RILL_PANEL_SHOW_DESKTOP {
+        if Control(session, key, bounds, "D", editing || !available || platform.show_desktop == null, state.desktop_shown) {
+            show: s32 = 1
+            if state.desktop_shown { show = 0 }
+            if platform.show_desktop(show) != 0 { state.desktop_shown = !state.desktop_shown }
+            else { Failure(app, "Could not show the desktop") }
+        }
+    } else if plugin.kind == RILL_PANEL_ACTIONS {
+        if Control(session, key, bounds, "S", editing, state.popup == 1 && state.applications.session_open) {
+            state.applications = .{started = true, session_open = true, session_action = -1}
+            state.popup = 1
+        }
+    } else if plugin.kind == RILL_PANEL_VOLUME {
+        percent: s32 = 0
+        muted: s32 = 0
+        ready := available && platform.volume_state != null && platform.volume_state(*percent, *muted) != 0
+        text: [32]s8
+        FormatInteger(*text[0], 32, percent)
+        label := CString(*text[0])
+        if !ready { label = "Vol" }
+        if ready && muted != 0 { label = "Mute" }
+        if Control(session, key, bounds, label, editing || !ready || platform.volume_set == null, muted != 0) {
+            next: s32 = 1
+            if muted != 0 { next = 0 }
+            if platform.volume_set(-1, next) == 0 { Failure(app, "Could not change volume") }
+        }
+        wheel := PointerWheelTake(session, bounds)
+        if !editing && ready && platform.volume_set != null && wheel != 0.0 {
+            next := percent
+            if wheel > 0.0 { next += 5 } else { next -= 5 }
+            if next < 0 { next = 0 }
+            if next > 100 { next = 100 }
+            if platform.volume_set(next, -1) == 0 { Failure(app, "Could not change volume") }
+        }
+        secondary := SecondaryPointerSample(session)
+        if !editing && secondary.released && PointInBounds(PointerSample(session).x, PointerSample(session).y, bounds) {
+            state.popup = 5
+        }
+    } else if plugin.kind == RILL_PANEL_CLIPBOARD {
+        if Control(session, key, bounds, "C", editing || !available || platform.clipboard_history == null, state.popup == 3) { state.popup = 3 }
+    } else if plugin.kind == RILL_PANEL_RESOURCE {
+        percent: s32 = 0
+        charging: s32 = 0
+        ready := available && platform.battery_state != null && platform.battery_state(*percent, *charging) != 0
+        text: [32]s8
+        FormatInteger(*text[0], 32, percent)
+        label := "Battery"
+        if ready { label = CString(*text[0]) }
+        if charging != 0 { label = "Charging" }
+        Control(session, key, bounds, label, true, false)
+    } else if plugin.kind == RILL_PANEL_TRAY {
+        icons: [8]RillTrayIcon
+        count: s32 = 0
+        if available && platform.tray_icons != null { count = platform.tray_icons(*icons[0], 8) }
+        if count < 0 { count = 0 }
+        if count > 8 { count = 8 }
+        if count == 0 { Control(session, key, bounds, "Tray", true, false) }
+        cursor: s32 = 0
+        while cursor < count {
+            cell := bounds
+            cell.width = bounds.width / cast(float32)count
+            cell.x += cast(float32)cursor * cell.width
+            if Control(session, key + cast(u64)(cursor + 1), cell, CString(*icons[cursor].title[0]),
+                editing || platform.tray_activate == null, false) &&
+                platform.tray_activate(*icons[cursor].id[0], 0) == 0 { Failure(app, "Could not activate tray item") }
+            cursor += 1
+        }
+    } else {
+        Label(session, key, bounds, CString(*plugin.label[0]))
+    }
+}
+
+Group :: (session: Session, viewport: Rectangle, state: *PanelState,
+    group: s32, app: *DesktopApplication, platform: *RillPlatformServices,
+    reading: LocalDateTime, editing: bool) {
+    vertical := state.edge >= 2
+    count := PanelCount(*state.model, group)
+    items := PanelItems(*state.model, group)
+    extent := GroupExtent(state, group, vertical, CountTasks(*app.shell))
+    // Inner task lists and workspace/volume controls own wheel input over
+    // their cells. The surrounding group scrolls over other items and gaps.
+    wheel_allowed: bool = true
+    pointer_position := PointerSample(session)
+    position_before: s32 = -state.scroll[group]
+    cursor: s32 = 0
+    while cursor < count {
+        advance := Extent(*items[cursor], vertical, CountTasks(*app.shell))
+        cell := viewport
+        if vertical { cell.y += cast(float32)position_before; cell.height = cast(float32)(advance - 2) }
+        else { cell.x += cast(float32)position_before; cell.width = cast(float32)(advance - 2) }
+        owns := items[cursor].kind == RILL_PANEL_TASK_LIST && CountTasks(*app.shell) > 0
+        if platform != null {
+            if items[cursor].kind == RILL_PANEL_VOLUME && platform.volume_set != null { owns = true }
+            if items[cursor].kind == RILL_PANEL_WORKSPACES && platform.switch_workspace != null { owns = true }
+        }
+        if !editing && owns && PointInBounds(pointer_position.x, pointer_position.y, viewport) &&
+            PointInBounds(pointer_position.x, pointer_position.y, cell) { wheel_allowed = false }
+        position_before += advance
+        cursor += 1
+    }
+    view := ScrollView(session, cast(u64)(149000 + group), viewport, extent,
+        state.scroll[group], vertical, *state.input[group], wheel_allowed)
+    state.scroll[group] = view.scroll_offset
+    position: s32 = 0
+    index: s32 = 0
+    while index < count {
+        advance := Extent(*items[index], vertical, CountTasks(*app.shell))
+        cell := view.content
+        if vertical { cell.y += cast(float32)position; cell.height = cast(float32)(advance - 2) }
+        else { cell.x += cast(float32)position; cell.width = cast(float32)(advance - 2) }
+        state.cells[group * 32 + index] = cell
+        if (vertical && cell.y < viewport.y + viewport.height && cell.y + cell.height > viewport.y) ||
+            (!vertical && cell.x < viewport.x + viewport.width && cell.x + cell.width > viewport.x) {
+            Plugin(session, cell, *items[index], state, group, index, app, platform, reading, editing)
+            secondary := SecondaryPointerSample(session)
+            if secondary.released && PointInBounds(PointerSample(session).x, PointerSample(session).y, viewport) &&
+                PointInBounds(PointerSample(session).x, PointerSample(session).y, cell) && !state.task_context && state.popup == 0 {
+                state.context_open = true
+                state.context_group = group
+                state.context_index = index
+                state.context_x = PointerSample(session).x
+                state.context_y = PointerSample(session).y
+            }
+            pointer := PointerSample(session)
+            if (KeyboardModifiers(session) & 1) != 0 && state.popup == 0 && !state.context_open &&
+                pointer.pressed && PointInBounds(pointer.x, pointer.y, viewport) &&
+                PointInBounds(pointer.x, pointer.y, cell) { state.drag_group = group; state.drag_index = index }
+            if pointer.released && state.drag_index >= 0 && PointInBounds(pointer.x, pointer.y, viewport) &&
+                PointInBounds(pointer.x, pointer.y, cell) {
+                if PanelMove(*state.model, state.drag_group, state.drag_index, group, index) { state.refresh = true }
+                state.drag_index = -1
+            }
+        }
+        position += advance
+        index += 1
+    }
+    if view.opened { End(session) }
+}
+
+Save :: (state: *PanelState, app: *DesktopApplication) {
+    if state.model.dirty && state.path[0] != 0 && !PanelSave(*state.model, *state.path[0]) {
+        Failure(app, "Could not save panel layout")
+    }
+    if app.settings_path[0] != 0 &&
+        RillSettingsMergeSave(*app.settings, *app.previous, *app.settings_path[0]) == 0 {
+        Failure(app, "Could not save panel settings")
+    }
+}
+
+Context :: (session: Session, state: *PanelState, app: *DesktopApplication,
+    platform: *RillPlatformServices) {
+    if !state.context_open { state.task_context = false; return }
+    items: [10]ContextMenuItem
+    count: s32 = 10
+    if state.task_context {
+        count = 2
+        items[0] = .{id = 1, label = "Focus window", disabled = platform == null || platform.focus_task == null}
+        items[1] = .{id = 2, label = "Close window", disabled = platform == null || platform.close_task == null}
+    } else {
+        index := state.context_index
+        total := PanelCount(*state.model, state.context_group)
+        items[0] = .{id = 1, label = "Move earlier", disabled = index <= 0}
+        items[1] = .{id = 2, label = "Move later", disabled = index < 0 || index + 1 >= total}
+        items[2] = .{id = 3, label = "Move to other group", disabled = index < 0 || PanelCount(*state.model, 1 - state.context_group) >= PanelCapacity}
+        items[3] = .{id = 4, label = "Remove item", disabled = index < 0}
+        items[4] = .{id = 5, label = "Add item"}
+        items[5] = .{id = 6, label = "Panel at top"}
+        items[6] = .{id = 7, label = "Panel at bottom"}
+        items[7] = .{id = 8, label = "Panel at left"}
+        items[8] = .{id = 9, label = "Panel at right"}
+        label := "Enable autohide"
+        if state.autohide { label = "Disable autohide" }
+        items[9] = .{id = 10, label = label}
+    }
+    props: ContextMenuProps
+    props.key = cast(u64)149100
+    props.open = true
+    props.x = state.context_x
+    props.y = state.context_y
+    props.escape = KeyboardTake(session) == KeyEscape
+    state.popup_bounds = ContextMenuBounds(items[:count], props.x, props.y, TreeRootBounds(session))
+    result := ContextMenu(session, props, items[:count])
+    command := result.activated_id
+    if command > 0 {
+        if state.task_context {
+            ok: s32 = 0
+            if command == 1 && platform != null && platform.focus_task != null { ok = platform.focus_task(state.task_id) }
+            if command == 2 && platform != null && platform.close_task != null { ok = platform.close_task(state.task_id) }
+            if ok == 0 { Failure(app, "The window action failed") }
+            state.refresh = true
+        } else {
+            group := state.context_group
+            index := state.context_index
+            if command == 1 { PanelMove(*state.model, group, index, group, index - 1) }
+            if command == 2 { PanelMove(*state.model, group, index, group, index + 2) }
+            if command == 3 { PanelMove(*state.model, group, index, 1 - group, PanelCount(*state.model, 1 - group)) }
+            if command == 4 { PanelRemove(*state.model, group, index) }
+            if command == 5 { state.popup = 4 }
+            if command >= 6 && command <= 9 {
+                names: [4]string = .["top", "bottom", "left", "right"]
+                state.edge = command - 6
+                RillSettingsSet(*app.settings, TextBytes("panel-side"), TextBytes(names[state.edge]))
+                state.scroll[0] = 0
+                state.scroll[1] = 0
+            }
+            if command == 10 {
+                state.autohide = !state.autohide
+                RillSettingsSetInteger(*app.settings, TextBytes("panel-autohide"), cast(s32)state.autohide)
+            }
+            Save(state, app)
+        }
+    }
+    state.context_open = result.open
+    if !state.context_open { state.task_context = false }
+}
+
+Popup :: (session: Session, viewport: Rectangle, state: *PanelState,
+    app: *DesktopApplication, platform: *RillPlatformServices, reading: LocalDateTime) {
+    if state.popup == 0 { return }
+    width: float32 = 480.0
+    height: float32 = 340.0
+    if state.popup == 2 { width = 440.0; height = 300.0 }
+    if width > viewport.width { width = viewport.width }
+    if height > viewport.height { height = viewport.height }
+    bounds := Rectangle.{viewport.x, viewport.y + 2.0, width, height}
+    if state.edge == RILL_PANEL_TOP { bounds.y += cast(float32)state.size }
+    if state.edge == RILL_PANEL_BOTTOM { bounds.y = state.bar.y - height - 2.0 }
+    if state.edge == RILL_PANEL_LEFT { bounds.x += cast(float32)state.size }
+    if state.edge == RILL_PANEL_RIGHT { bounds.x = state.bar.x - width - 2.0 }
+    if bounds.x + width > viewport.x + viewport.width { bounds.x = viewport.x + viewport.width - width }
+    if bounds.y + height > viewport.y + viewport.height { bounds.y = viewport.y + viewport.height - height }
+    if bounds.x < viewport.x { bounds.x = viewport.x }
+    if bounds.y < viewport.y { bounds.y = viewport.y }
+    state.popup_bounds = bounds
+    props: DismissibleOverlayProps
+    props.key = cast(u64)149200
+    props.bounds = bounds
+    overlay := DismissibleOverlay(session, props)
+    if overlay.closed { state.popup = 0; return }
+    box: BoxProps
+    box.key = cast(u64)149201
+    box.bounds = bounds
+    box.fill = Color.{248, 249, 252, 255}
+    Box(session, box)
+    if overlay.panel_node >= 0 && TreePushScope(session, overlay.panel_node) {
+        if state.popup == 1 {
+            ApplicationsMenu(session, bounds, *state.applications, *app.shell, platform,
+                *app.settings, *app.previous, *app.settings_path[0], CString(*app.user[0]))
+            if state.applications.closed { state.popup = 0; state.refresh = true }
+        } else if state.popup == 2 {
+            Calendar(session, bounds, *state.calendar, reading)
+            if state.calendar.closed { state.popup = 0 }
+        } else {
+            key := KeyboardTake(session)
+            if key == KeyEscape { state.popup = 0 }
+            if state.popup == 4 {
+                Label(session, cast(u64)149202, Rectangle.{bounds.x + 12.0, bounds.y + 8.0, width - 24.0, 24.0}, "Add panel item")
+                kind: s32 = 0
+                while kind <= RILL_PANEL_CLIPBOARD {
+                    label := CString(RillPanelPluginKindName(kind))
+                    cell := Rectangle.{bounds.x + 12.0 + cast(float32)(kind % 2) * (width - 24.0) / 2.0,
+                        bounds.y + 40.0 + cast(float32)(kind / 2) * 30.0, (width - 28.0) / 2.0, 28.0}
+                    if Control(session, cast(u64)(149210 + kind), cell, label,
+                        PanelCount(*state.model, state.context_group) >= PanelCapacity, false) {
+                        plugin: RillPanelPlugin
+                        plugin.kind = kind
+                        plugin.width = 64
+                        plugin.advance = 66
+                        plugin.menu_id = 1
+                        CopyText(*plugin.id[0], 64, RillPanelPluginKindName(kind))
+                        CopyText(*plugin.label[0], 96, RillPanelPluginKindName(kind))
+                        if kind == RILL_PANEL_MENU { CopyText(*plugin.label[0], 96, TextBytes("Applications")); plugin.width = 104; plugin.advance = 106 }
+                        if kind == RILL_PANEL_SEPARATOR { plugin.width = 0; plugin.advance = 8 }
+                        if kind == RILL_PANEL_LAUNCHER && app.shell.launcher_count > 0 && app.shell.launchers != null {
+                            CopyText(*plugin.launcher_id[0], 64, *app.shell.launchers[0].id[0])
+                            CopyText(*plugin.label[0], 96, *app.shell.launchers[0].name[0])
+                        }
+                        if PanelAppend(*state.model, state.context_group, plugin) { Save(state, app); state.popup = 0 }
+                    }
+                    kind += 1
+                }
+            } else if state.popup == 3 {
+                texts: [8]*s8
+                count: s32 = 0
+                if platform != null && platform.clipboard_history != null { count = platform.clipboard_history(*texts[0], 8) }
+                if count < 0 { count = 0 }
+                if count > 8 { count = 8 }
+                Label(session, cast(u64)149202, Rectangle.{bounds.x + 12.0, bounds.y + 8.0, width - 24.0, 24.0}, "Clipboard history")
+                list := ScrollView(session, cast(u64)149230, Rectangle.{bounds.x + 12.0, bounds.y + 40.0, width - 24.0, height - 84.0}, count * 30, state.popup_scroll, true, *state.popup_input, true)
+                state.popup_scroll = list.scroll_offset
+                index: s32 = 0
+                while index < count {
+                    text: [128]s8
+                    CopyText(*text[0], 128, texts[index])
+                    if Control(session, cast(u64)(149240 + index), Rectangle.{bounds.x + 12.0,
+                        list.content.y + cast(float32)index * 30.0, list.content.width, 28.0}, CString(*text[0]),
+                        platform.clipboard_select == null, false) {
+                        if platform.clipboard_select(index) != 0 { state.popup = 0 }
+                        else { Failure(app, "Could not select clipboard item") }
+                    }
+                    index += 1
+                }
+                if list.opened { End(session) }
+                if count == 0 { Label(session, cast(u64)149203, Rectangle.{bounds.x + 12.0, bounds.y + 44.0, width - 24.0, 24.0}, "Clipboard history is empty") }
+            } else if state.popup == 5 {
+                sinks: [8][96]s8
+                current: [96]s8
+                count: s32 = 0
+                if platform != null && platform.volume_sinks != null { count = platform.volume_sinks(*sinks[0], 8, *current[0], 96) }
+                if count < 0 { count = 0 }
+                if count > 8 { count = 8 }
+                Label(session, cast(u64)149202, Rectangle.{bounds.x + 12.0, bounds.y + 8.0, width - 24.0, 24.0}, "Audio output")
+                list := ScrollView(session, cast(u64)149231, Rectangle.{bounds.x + 12.0, bounds.y + 40.0, width - 24.0, height - 84.0}, count * 30, state.popup_scroll, true, *state.popup_input, true)
+                state.popup_scroll = list.scroll_offset
+                index: s32 = 0
+                while index < count {
+                    if Control(session, cast(u64)(149250 + index), Rectangle.{bounds.x + 12.0,
+                        list.content.y + cast(float32)index * 30.0, list.content.width, 28.0}, CString(*sinks[index][0]),
+                        platform.volume_set_default == null, TextEquals(*sinks[index][0], *current[0])) {
+                        if platform.volume_set_default(*sinks[index][0]) != 0 { state.popup = 0 }
+                        else { Failure(app, "Could not change audio output") }
+                    }
+                    index += 1
+                }
+                if list.opened { End(session) }
+                if count == 0 { Label(session, cast(u64)149203, Rectangle.{bounds.x + 12.0, bounds.y + 44.0, width - 24.0, 24.0}, "No audio outputs available") }
+            } else {
+                names: [3]string = .["Home", "Desktop", "Trash"]
+                if state.popup == 7 { names[0] = "Settings"; names[1] = "About"; names[2] = "Session" }
+                index: s32 = 0
+                while index < 3 {
+                    disabled := platform == null || platform.open_path == null
+                    if state.popup == 7 { disabled = false }
+                    if Control(session, cast(u64)(149260 + index), Rectangle.{bounds.x + 12.0,
+                        bounds.y + 12.0 + cast(float32)index * 34.0, width - 24.0, 30.0}, names[index], disabled, false) {
+                        if state.popup == 7 {
+                            if index == 2 { state.popup = 1; state.applications = .{started = true, session_open = true, session_action = -1} }
+                            else {
+                                id := "settings"
+                                if index == 1 { id = "about" }
+                                if LaunchNamed(app, platform, TextBytes(id)) { state.popup = 0; state.refresh = true }
+                            }
+                        } else {
+                            path := EnvironmentValue(TextBytes("home"))
+                            #if #defined(PLAN9_BUILD) {
+                            } else {
+                                if path == null { path = EnvironmentValue(TextBytes("HOME")) }
+                            }
+                            if index == 1 {
+                                #if #defined(PLAN9_BUILD) {
+                                    ReleaseAllocation(cast(*void)path)
+                                }
+                                path = null
+                                if platform.desktop_directory != null { path = platform.desktop_directory() }
+                            }
+                            if index == 2 {
+                                #if #defined(PLAN9_BUILD) {
+                                    ReleaseAllocation(cast(*void)path)
+                                }
+                                path = TextBytes("trash:///")
+                            }
+                            if path == null || platform.open_path(path) == 0 { Failure(app, "Could not open this location") }
+                            else { state.popup = 0 }
+                            #if #defined(PLAN9_BUILD) {
+                                if index == 0 { ReleaseAllocation(cast(*void)path) }
+                            }
+                        }
+                    }
+                    index += 1
+                }
+            }
+            if Control(session, cast(u64)149204, Rectangle.{bounds.x + 12.0, bounds.y + height - 36.0,
+                width - 24.0, 28.0}, "Close", false, false) { state.popup = 0 }
+        }
+        End(session)
+    }
+}
+
+Initialize :: (state: *PanelState, app: *DesktopApplication, platform: *RillPlatformServices) {
+    PanelDefaults(*state.model)
+    if platform != null && platform.settings_root != null {
+        root := platform.settings_root()
+        count := TextLength(root)
+        if count > 0 && count + 7 < 1024 {
+            CopyText(*state.path[0], 1024, root)
+            CopyText(*state.path[count], 1024 - count, TextBytes("/panel"))
+            PanelLoad(*state.model, *state.path[0])
+        }
+    }
+    side := RillSettingsGet(*app.settings, TextBytes("panel-side"), TextBytes("top"))
+    if TextEquals(side, TextBytes("bottom")) { state.edge = 1 }
+    if TextEquals(side, TextBytes("left")) { state.edge = 2 }
+    if TextEquals(side, TextBytes("right")) { state.edge = 3 }
+    state.size = RillSettingsGetInteger(*app.settings, TextBytes("panel-height"), 40)
+    if state.size < 32 { state.size = 32 }
+    if state.size > 64 { state.size = 64 }
+    state.autohide = RillSettingsGetInteger(*app.settings, TextBytes("panel-autohide"), 0) != 0
+    state.drag_index = -1
+    RillApplicationsLoadRecent(*app.shell, *app.settings)
+    state.started = true
+}
+
+#scope_export
+Panel :: (session: Session, viewport: Rectangle, state: *PanelState,
+    app: *DesktopApplication, platform: *RillPlatformServices, reading: LocalDateTime) {
+    if state == null || app == null { return }
+    if !state.started { Initialize(state, app, platform) }
+    state.popup_bounds = .{}
+    secondary := SecondaryPointerSample(session)
+    pointer := PointerSample(session)
+    size := state.size
+    full := PanelBounds(viewport, state.edge, size)
+    state.shown = !state.autohide || state.popup != 0 || state.context_open ||
+        state.drag_index >= 0 || PointInBounds(pointer.x, pointer.y, full)
+    if !state.shown { size = 2 }
+    state.bar = PanelBounds(viewport, state.edge, size)
+    box: BoxProps
+    box.key = cast(u64)148000
+    box.bounds = state.bar
+    box.fill = Color.{232, 236, 242, 255}
+    Box(session, box)
+    if state.shown {
+        vertical := state.edge >= 2
+        total := state.bar.width
+        if vertical { total = state.bar.height }
+        trailing := cast(float32)GroupExtent(state, 1, vertical, CountTasks(*app.shell))
+        if trailing > total * 0.6 { trailing = total * 0.6 }
+        leading := state.bar
+        after := state.bar
+        if vertical {
+            leading.height = total - trailing
+            after.y += leading.height
+            after.height = trailing
+        } else {
+            leading.width = total - trailing
+            after.x += leading.width
+            after.width = trailing
+        }
+        editing := (KeyboardModifiers(session) & 1) != 0 || state.drag_index >= 0 || state.popup != 0 || state.context_open
+        Group(session, leading, state, 0, app, platform, reading, editing)
+        Group(session, after, state, 1, app, platform, reading, editing)
+        if pointer.released && state.drag_index >= 0 { state.drag_index = -1 }
+        if state.model.dirty { Save(state, app) }
+        if secondary.released && PointInBounds(PointerSample(session).x, PointerSample(session).y, state.bar) && !state.context_open && state.popup == 0 {
+            state.context_open = true
+            state.context_group = 0
+            state.context_index = -1
+            state.context_x = PointerSample(session).x
+            state.context_y = PointerSample(session).y
+        }
+    }
+    Popup(session, viewport, state, app, platform, reading)
+    Context(session, state, app, platform)
+}

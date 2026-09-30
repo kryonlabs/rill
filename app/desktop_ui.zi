@@ -1,0 +1,51 @@
+using UI :: #import "Widgets";
+#import "desktop_types"
+#import "panel_ui"
+#import "platform_types"
+#import "native_memory"
+#import "settings"
+#import "shell"
+#import "date_time_types"
+
+DesktopState :: struct {
+    panel: PanelState
+}
+
+Desktop :: (session: Session, viewport: Rectangle, state: *DesktopState,
+    app: *DesktopApplication, platform: *RillPlatformServices, reading: LocalDateTime) {
+    background: BoxProps
+    background.key = cast(u64)147000
+    background.bounds = viewport
+    background.fill = Color.{52, 67, 88, 255}
+    Box(session, background)
+    wallpaper := RillSettingsGet(*app.settings, TextBytes("wallpaper"), null)
+    if wallpaper != null && wallpaper[0] != 0 {
+        image: ImageProps
+        image.key = cast(u64)147001
+        image.bounds = viewport
+        image.asset_path = CString(wallpaper)
+        image.alt_text = "Desktop wallpaper"
+        image.fit = cast(ImageFit)2
+        Image(session, image)
+    }
+    Panel(session, viewport, *state.panel, app, platform, reading)
+    if app.shell.status[0] != 0 && state.panel.popup == 0 && !state.panel.context_open {
+        text: TextProps
+        text.key = cast(u64)147002
+        text.bounds = Rectangle.{viewport.x + 12.0, viewport.y + viewport.height - 30.0,
+            viewport.width - 24.0, 24.0}
+        if state.panel.edge == 1 { text.bounds.y -= state.panel.bar.height }
+        status: BoxProps
+        status.key = cast(u64)147003
+        status.bounds = text.bounds
+        status.fill = Color.{248, 249, 252, 255}
+        Box(session, status)
+        text.text = CString(*app.shell.status[0])
+        text.font = 12
+        Text(session, text)
+    }
+    if state.panel.refresh {
+        RillShellRefresh(*app.shell, platform)
+        state.panel.refresh = false
+    }
+}

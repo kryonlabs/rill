@@ -35,6 +35,32 @@ renderer was removed. Calendar and clock formatting use English month and day
 names; custom clock preferences support the civil format tokens documented
 by Ziran's `calendar` module.
 
+The new desktop entrypoint is `app/desktop_main.zi`. Its Kryon panel loads the
+existing layout and preferences, keeps launcher/task snapshots live, hosts
+Applications and Calendar in place, and presents all thirteen panel item
+kinds. It supports all four edges, autohide, separate scrollable item groups,
+scrollable task buttons, guarded native window commands, Shift-drag and
+context-menu item moves, add/remove, volume and clipboard controls, and
+session confirmation. Available controls depend on the platform services;
+missing services remain disabled. Native overlays are published only through
+the desktop client's own `/dev/wctl`, after checking its own `/dev/winfo`.
+The hosted entrypoint disables legacy Linux window, workspace, and session
+commands until their Ziran replacements can verify supervision authority.
+
+`make desktop-build desktop-plan9` builds `build/rill-desktop` and generates
+its entirely Ziran native output. `mk -f app/desktop.mk install` builds and
+installs it with native `8c`/`8l`. `make desktop-ui-test desktop-window-test`
+checks source and saved-IR rendering, plugin moves and capacity limits,
+persistence, window action failure, popup input, autohide, wheel ownership,
+clipboard scrolling, session confirmation, and actual libdraw interaction
+on a private Xvfb display. The native Taiji gate includes the same desktop
+fixture and builds, privately installs, and captures `rill-desktop`.
+
+The new entrypoint is not yet the boot default. Desktop icons and file
+operations, full tray images and menus, plugin Properties, notifications,
+Settings/About, and remaining services still need conversion and parity
+checks before replacing the former full desktop.
+
 The conversion remains incomplete. Other graphical screens, file operations,
 Linux platform services, window management, and the session daemon still need
 conversion. The C desktop entrypoint and legacy Settings `.kry` screen depend on

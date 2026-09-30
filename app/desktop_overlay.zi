@@ -1,0 +1,94 @@
+#import "geometry"
+#import "native_memory"
+#if #defined(PLAN9_BUILD) {
+    Files :: #import "file_plan9";
+}
+
+DesktopOverlayState :: struct {
+    checked: bool
+    active: bool
+    command: [1024]u8
+    length: s32
+    count: s32
+}
+
+// winfo contains flags and geometry, never the window label. Match complete
+// tokens so an ordinary window cannot acquire the desktop overlay role.
+DesktopWindowSnapshot :: (text: string) -> bool {
+    start: s64 = 0
+    index: s64 = 0
+    while index <= text.count {
+        if index == text.count || text[index] == 32 || text[index] == 9 || text[index] == 10 {
+            if index - start == 7 {
+                word := "desktop"
+                equal: bool = true
+                byte: s64 = 0
+                while byte < 7 {
+                    if text[start + byte] != word[byte] { equal = false }
+                    byte += 1
+                }
+                if equal { return true }
+            }
+            start = index + 1
+        }
+        index += 1
+    }
+    return false
+}
+
+DesktopOverlayBegin :: (state: *DesktopOverlayState) {
+    word := "overlay"
+    index: s32 = 0
+    while index < 7 { state.command[index] = word[index]; index += 1 }
+    state.length = 7
+    state.count = 0
+}
+
+DesktopOverlayRect :: (state: *DesktopOverlayState, bounds: Rectangle) {
+    if state.count >= 16 || bounds.width <= 0.0 || bounds.height <= 0.0 { return }
+    values: [4]s32 = .[cast(s32)bounds.x, cast(s32)bounds.y,
+        cast(s32)(bounds.x + bounds.width), cast(s32)(bounds.y + bounds.height)]
+    index: s32 = 0
+    while index < 4 {
+        state.command[state.length] = 32
+        state.length += 1
+        number: [32]s8
+        count := FormatInteger(*number[0], 32, values[index])
+        byte: s32 = 0
+        while byte < count { state.command[state.length] = cast(u8)number[byte]; state.length += 1; byte += 1 }
+        index += 1
+    }
+    state.count += 1
+}
+
+DesktopOverlayPublish :: (state: *DesktopOverlayState) -> bool {
+    #if #defined(PLAN9_BUILD) {
+        if !state.checked {
+            state.checked = true
+            // Only this process's own namespace. Never enumerate /dev/wsys
+            // or publish overlay commands to another client's control file.
+            info := Files.OpenRead("/dev/winfo")
+            if info.valid {
+                text: [256]u8
+                count := Files.Read(info, text[:])
+                Files.CloseFile(info)
+                if count > 0 && DesktopWindowSnapshot(TextView(text[:count])) {
+                    state.active = true
+                }
+            }
+        }
+        if state.active {
+            // No control descriptor survives a frame or can be inherited by
+            // an application launched during the next composition pass.
+            control := Files.OpenWrite("/dev/wctl")
+            if !control.valid { state.active = false; return false }
+            written := Files.Write(control, state.command[:state.length])
+            closed := Files.CloseFile(control)
+            if written != cast(s64)state.length || !closed {
+                state.active = false
+                return false
+            }
+        }
+    }
+    return true
+}

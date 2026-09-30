@@ -1,0 +1,312 @@
+#import "desktop_ui"
+#import "panel_ui"
+#import "panel_model"
+#import "panel_types"
+#import "desktop_overlay"
+#import "desktop_types"
+#import "shell"
+#import "shell_types"
+#import "settings"
+#import "native_memory"
+#import "platform_types"
+#import "date_time_types"
+using UI :: #import "Widgets";
+#import "tree_draw"
+using FrameStatus;
+#if #defined(PLAN9_BUILD) {
+    #import "libdraw_native"
+} else {
+    #import "cairo_raster"
+    #program_export
+    SystemClipboardOpenHost :: () -> s32 { return -1 }
+    #program_export
+    SystemClipboardByteHost :: (index: s32) -> s32 { unused index; return -1 }
+    #program_export
+    SystemClipboardWriteHost :: (value: string) -> bool { unused value; return true }
+}
+
+session: Session;
+state: DesktopState;
+app: DesktopApplication;
+platform: RillPlatformServices;
+viewport: Rectangle;
+reading: LocalDateTime;
+focused: s32;
+closed: s32;
+launched: s32;
+selected_clipboard: s32;
+volume: s32;
+muted: s32;
+volume_sets: s32;
+workspace: s32;
+workspace_calls: s32;
+session_calls: s32;
+allow_session: bool;
+root: *s8;
+
+Tasks :: (out: *RillTask, cap: s32) -> s32 {
+    index: s32 = 0
+    while index < 12 && index < cap {
+        out[index] = .{}
+        out[index].id = index + 100
+        CopyText(*out[index].title[0], 128, TextBytes("Window"))
+        if index == 2 { out[index].focused = 1 }
+        index += 1
+    }
+    return index
+}
+
+Launchers :: (out: *RillLauncher, cap: s32) -> s32 {
+    if cap < 2 { return 0 }
+    out[0] = .{}
+    out[1] = .{}
+    CopyText(*out[0].id[0], 64, TextBytes("terminal"))
+    CopyText(*out[0].name[0], 96, TextBytes("Terminal"))
+    CopyText(*out[0].category[0], 64, TextBytes("Accessories"))
+    out[0].favorite = 1
+    CopyText(*out[1].id[0], 64, TextBytes("settings"))
+    CopyText(*out[1].name[0], 96, TextBytes("Settings"))
+    return 2
+}
+
+Launch :: (launcher: *RillLauncher) -> s32 { unused launcher; launched += 1; return 1 }
+Focus :: (id: s32) -> s32 { focused = id; return 1 }
+Close :: (id: s32) -> s32 { closed = id; return 0 }
+Root :: () -> *s8 { return root }
+Volume :: (percent: *s32, mute: *s32) -> s32 { percent.* = volume; mute.* = muted; return 1 }
+SetVolume :: (percent: s32, mute: s32) -> s32 {
+    if percent >= 0 { volume = percent }
+    if mute >= 0 { muted = mute }
+    volume_sets += 1
+    return 1
+}
+WorkspaceCount :: () -> s32 { return 3 }
+CurrentWorkspace :: () -> s32 { return workspace }
+SwitchWorkspace :: (index: s32) -> s32 { workspace = index; workspace_calls += 1; return 1 }
+Clipboard :: (texts: **s8, cap: s32) -> s32 {
+    index: s32 = 0
+    while index < 8 && index < cap { texts[index] = TextBytes("Clipboard item"); index += 1 }
+    return index
+}
+SelectClipboard :: (index: s32) -> s32 { selected_clipboard = index; return 1 }
+SessionAction :: (action: *s8) -> s32 { unused action; session_calls += 1; return cast(s32)allow_session }
+
+Draw :: (key: s32, pointer: PointerFrame, secondary: SecondaryPointerFrame,
+    modifiers: s32, wheel: float32) -> bool {
+    BeginRasterFrame()
+    TreePointerUpdate(session, pointer)
+    TreeSecondaryPointerUpdate(session, secondary)
+    KeyboardModifiersSend(session, modifiers)
+    PointerWheelSend(session, pointer.x, pointer.y, wheel)
+    KeyboardSend(session, key)
+    if BeginFrame(session, cast(u64)1, viewport) != cast(FrameStatus)FrameOk { return false }
+    Desktop(session, viewport, *state, *app, *platform, reading)
+    return EndFrame(session) == cast(FrameStatus)FrameOk && FinishRasterFrame()
+}
+
+Idle :: () -> bool { return Draw(0, PointerFrame.{}, SecondaryPointerFrame.{}, 0, 0.0) }
+
+Bounds :: (key: u64) -> Rectangle {
+    index: s32 = 0
+    while index < TreeCount(session) {
+        node := TreeNodeAt(session, index)
+        if node.key == key { return node.bounds }
+        index += 1
+    }
+    return Rectangle.{}
+}
+
+Click :: (key: u64) -> bool {
+    cell := Bounds(key)
+    if cell.width <= 0.0 { return false }
+    pointer := PointerFrame.{cell.x + cell.width / 2.0, cell.y + cell.height / 2.0, true, true, false}
+    if !Draw(0, pointer, SecondaryPointerFrame.{}, 0, 0.0) { return false }
+    pointer.down = false
+    pointer.pressed = false
+    pointer.released = true
+    return Draw(0, pointer, SecondaryPointerFrame.{}, 0, 0.0)
+}
+
+RightClick :: (key: u64) -> bool {
+    cell := Bounds(key)
+    if cell.width <= 0.0 { return false }
+    pointer := PointerFrame.{cell.x + cell.width / 2.0, cell.y + cell.height / 2.0, false, false, false}
+    if !Draw(0, pointer, SecondaryPointerFrame.{true, true, false}, 0, 0.0) { return false }
+    return Draw(0, pointer, SecondaryPointerFrame.{false, false, true}, 0, 0.0)
+}
+
+ModelCases :: () -> s32 {
+    model: PanelModel
+    PanelDefaults(*model)
+    if model.leading_count != 3 || model.trailing_count != 8 || model.dirty { return 1 }
+    if PanelMove(*model, 0, -1, 1, 0) || PanelMove(*model, 0, 0, 2, 0) ||
+        PanelMove(*model, 0, 0, 1, 9) || PanelRemove(*model, 2, 0) { return 2 }
+    if !PanelMove(*model, 0, 0, 0, 1) || model.dirty { return 3 }
+    if !PanelMove(*model, 0, 0, 0, 3) || model.leading[2].kind != RILL_PANEL_MENU ||
+        !PanelMove(*model, 0, 2, 0, 0) || model.leading[0].kind != RILL_PANEL_MENU { return 4 }
+    if !PanelMove(*model, 0, 0, 1, 8) || model.leading_count != 2 ||
+        model.trailing_count != 9 || model.trailing[8].kind != RILL_PANEL_MENU { return 5 }
+    if !PanelRemove(*model, 1, 8) || model.trailing_count != 8 { return 6 }
+    plugin: RillPanelPlugin = .{kind = RILL_PANEL_CLOCK, width = 60, advance = 64}
+    while model.trailing_count < 32 { if !PanelAppend(*model, 1, plugin) { return 7 } }
+    if PanelAppend(*model, 1, plugin) || PanelMove(*model, 0, 0, 1, 32) || model.leading_count != 2 { return 8 }
+    path: [1024]s8
+    count := CopyText(*path[0], 1024, root)
+    CopyText(*path[count], 1024 - count, TextBytes("/model-panel"))
+    if !PanelSave(*model, *path[0]) || model.dirty { return 9 }
+    loaded: PanelModel
+    if !PanelLoad(*loaded, *path[0]) || loaded.leading_count != 2 || loaded.trailing_count != 32 { return 10 }
+    plugin.kind = 99
+    if PanelAppend(*loaded, 0, plugin) || PanelLoad(*loaded, TextBytes("/rill-missing-panel-fixture")) ||
+        loaded.trailing_count != 32 { return 11 }
+    loaded.leading_count = 33
+    if PanelSave(*loaded, *path[0]) { return 13 }
+    overlay: DesktopOverlayState
+    DesktopOverlayBegin(*overlay)
+    index: s32 = 0
+    while index < 20 { DesktopOverlayRect(*overlay, Rectangle.{0.0, 0.0, 480.0, 40.0}); index += 1 }
+    if overlay.count != 16 || overlay.length > 1024 ||
+        !DesktopWindowSnapshot("0 0 480 300 current desktop pid 42\n"[:]) ||
+        DesktopWindowSnapshot("0 0 480 300 current desktop-other pid 42\n"[:]) ||
+        DesktopWindowSnapshot("0 0 480 300 current pid 42\n"[:]) { return 12 }
+    return 0
+}
+
+Cases :: () -> s32 {
+    root = EnvironmentValue(TextBytes("RILL_TEST_ROOT"))
+    result := ModelCases()
+    if result != 0 { return result }
+    reading = .{year = 2000, month = 2, day = 29, hour = 12, minute = 34, valid = true}
+    viewport = Rectangle.{0.0, 0.0, 480.0, 300.0}
+    platform.list_tasks = Tasks
+    platform.list_launchers = Launchers
+    platform.launch = Launch
+    platform.focus_task = Focus
+    platform.close_task = Close
+    platform.settings_root = Root
+    platform.volume_state = Volume
+    platform.volume_set = SetVolume
+    platform.workspace_count = WorkspaceCount
+    platform.current_workspace = CurrentWorkspace
+    platform.switch_workspace = SwitchWorkspace
+    platform.clipboard_history = Clipboard
+    platform.clipboard_select = SelectClipboard
+    platform.session_action = SessionAction
+    RillShellInit(*app.shell)
+    RillShellRefresh(*app.shell, *platform)
+    app.shell.status[0] = 0
+    volume = 50
+    if !OpenRaster(480, 300) || !PanelStyle() { return 20 }
+    session = SessionOpen()
+    if !Idle() || !state.panel.started || state.panel.bar.height != 40.0 ||
+        Bounds(PanelKey(0, 0)).width <= 0.0 { return 21 }
+    if !CaptureConfigured() { return 22 }
+    if !Click(PanelKey(0, 0)) || state.panel.popup != 1 || !Idle() { return 23 }
+    if !Click(cast(u64)13000) || launched != 1 || state.panel.popup != 0 ||
+        app.shell.recent_launcher_count != 1 || app.closed { return 24 }
+    if !Idle() || !Click(PanelKey(1, 4)) || state.panel.popup != 2 ||
+        state.panel.calendar.selected != 29 { return 25 }
+    if !Draw(KeyRight, PointerFrame.{}, SecondaryPointerFrame.{}, 0, 0.0) || state.panel.calendar.month != 3 { return 26 }
+    if !Draw(KeyEscape, PointerFrame.{}, SecondaryPointerFrame.{}, 0, 0.0) || state.panel.popup != 0 || app.closed { return 27 }
+    // Give tasks the complete leading group and exercise an offscreen task.
+    state.panel.model.leading_count = 1
+    state.panel.model.leading[0].kind = RILL_PANEL_TASK_LIST
+    state.panel.scroll[0] = 0
+    if !Idle() || !Click(TaskKey(0, 100)) || focused != 100 { return 28 }
+    state.panel.task_scroll[0] = 2000
+    if !Idle() || !Click(TaskKey(0, 111)) || focused != 111 { return 29 }
+    if !RightClick(TaskKey(0, 111)) || !state.panel.context_open || !state.panel.task_context ||
+        !Idle() || !Click(ContextMenuRowKey(cast(u64)149100, 1)) || closed != 111 ||
+        app.shell.status[0] == 0 { return 30 }
+    if !Idle() || !RightClick(PanelKey(1, 4)) || !Idle() ||
+        !Click(ContextMenuRowKey(cast(u64)149100, 6)) || state.panel.edge != 1 ||
+        !Idle() || state.panel.bar.y != 260.0 { return 31 }
+    // Edge changes apply to the existing geometry and persistent settings.
+    state.panel.edge = 2
+    state.panel.scroll[0] = 0
+    state.panel.scroll[1] = 0
+    if !Idle() || state.panel.bar.width != 40.0 || state.panel.bar.height != 300.0 { return 32 }
+    state.panel.edge = 3
+    if !Idle() || state.panel.bar.x != 440.0 { return 33 }
+    state.panel.edge = 0
+    state.panel.autohide = true
+    if !Draw(0, PointerFrame.{250.0, 200.0, false, false, false}, SecondaryPointerFrame.{}, 0, 0.0) ||
+        state.panel.shown || state.panel.bar.height != 2.0 { return 34 }
+    if !Idle() || !state.panel.shown { return 35 }
+    state.panel.autohide = false
+    if !Idle() || !Click(PanelKey(1, 5)) || muted != 1 || volume_sets != 1 { return 36 }
+    cell := Bounds(PanelKey(1, 5))
+    if !Draw(0, PointerFrame.{cell.x + 4.0, cell.y + 4.0, false, false, false}, SecondaryPointerFrame.{}, 0, 1.0) || volume != 55 { return 37 }
+    if !Idle() || !Click(PanelKey(1, 0)) || workspace != 1 || workspace_calls != 1 { return 38 }
+    // Last clipboard row remains reachable at 480x300, above Close.
+    state.panel.popup = 3
+    state.panel.popup_scroll = 999
+    if !Idle() || !Click(cast(u64)149247) || selected_clipboard != 7 || state.panel.popup != 0 { return 39 }
+    state.panel.popup = 1
+    state.panel.applications = .{started = true, session_open = true, session_action = -1}
+    if !Idle() || !Click(cast(u64)12210) || session_calls != 0 ||
+        !Idle() || !Click(cast(u64)12222) || session_calls != 1 || state.panel.popup != 1 { return 40 }
+    allow_session = true
+    if !Idle() || !Click(cast(u64)12222) || session_calls != 2 || state.panel.popup != 0 { return 41 }
+    state.panel.popup = 4
+    state.panel.context_group = 0
+    if !Idle() || !Click(cast(u64)149217) || state.panel.model.leading_count != 2 ||
+        state.panel.model.leading[1].kind != RILL_PANEL_CLOCK { return 42 }
+    // Missing services stay disabled, without fake workspace/volume values.
+    empty: RillPlatformServices
+    platform.volume_state = empty.volume_state
+    platform.volume_set = empty.volume_set
+    platform.workspace_count = empty.workspace_count
+    platform.session_action = empty.session_action
+    if !Idle() || !Click(PanelKey(1, 5)) || volume_sets != 2 { return 43 }
+    // Shift-drag moves a complete plugin between the two groups.
+    state.panel.scroll[0] = 64
+    state.panel.scroll[1] = 0
+    if !Idle() { return 44 }
+    source := Bounds(PanelKey(0, 1))
+    destination := Bounds(PanelKey(1, 0))
+    pointer := PointerFrame.{source.x + 8.0, source.y + 8.0, true, true, false}
+    if !Draw(0, pointer, SecondaryPointerFrame.{}, 1, 0.0) || state.panel.drag_index != 1 { return 45 }
+    pointer = .{destination.x + 8.0, destination.y + 8.0, false, false, true}
+    if !Draw(0, pointer, SecondaryPointerFrame.{}, 1, 0.0) ||
+        state.panel.model.leading_count != 1 || state.panel.model.trailing_count != 9 ||
+        state.panel.model.trailing[0].kind != RILL_PANEL_CLOCK || state.panel.popup != 0 { return 46 }
+    CloseSession(session)
+    CloseRaster()
+    RillShellDispose(*app.shell)
+    #if #defined(PLAN9_BUILD) {
+        ReleaseAllocation(cast(*void)root)
+    }
+    return 0
+}
+
+Report :: () -> s32 {
+    result := Cases()
+    if result != 0 { print("rill-desktop-ui-test-failed: %\n", result) }
+    else { print("rill-desktop-ui-test-ok\n") }
+    return result
+}
+
+#if #defined(PLAN9_BUILD) {
+    thread_library :: #system_library "thread";
+    ThreadStart :: #type (value: *void) #c_call;
+    ThreadCreate :: (start: ThreadStart, value: *void, stack: u32) -> s32 #foreign thread_library "threadcreate";
+    ThreadExits :: (status: *s8) #foreign thread_library "threadexits";
+    ThreadExitsAll :: (status: *s8) #foreign thread_library "threadexitsall";
+    #program_export
+    TestThread :: (value: *void) {
+        unused value
+        if Report() == 0 { ThreadExitsAll(null) }
+        else { ThreadExitsAll(TextBytes("Desktop UI failed")) }
+    }
+    #program_export
+    threadmain :: (argc: s32, argv: **s8) {
+        unused argc
+        unused argv
+        if ThreadCreate(TestThread, null, 1048576) < 0 { ThreadExitsAll(TextBytes("Desktop UI failed")) }
+        ThreadExits(null)
+    }
+} else {
+    #program_export
+    main :: () -> s32 { return Report() }
+}

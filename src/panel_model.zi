@@ -1,0 +1,125 @@
+#import "panel"
+#import "panel_types"
+#import "native_memory"
+
+PanelCapacity :: 32;
+
+PanelModel :: struct {
+    leading: [32]RillPanelPlugin
+    trailing: [32]RillPanelPlugin
+    leading_count: s32
+    trailing_count: s32
+    dirty: bool
+}
+
+PanelItems :: (model: *PanelModel, group: s32) -> *RillPanelPlugin {
+    if model == null { return null }
+    if group == 0 { return *model.leading[0] }
+    if group == 1 { return *model.trailing[0] }
+    return null
+}
+
+PanelCount :: (model: *PanelModel, group: s32) -> s32 {
+    if model == null || group < 0 || group > 1 { return 0 }
+    count := model.leading_count
+    if group == 1 { count = model.trailing_count }
+    if count < 0 { return 0 }
+    if count > PanelCapacity { return PanelCapacity }
+    return count
+}
+
+#scope_file
+SetCount :: (model: *PanelModel, group: s32, count: s32) {
+    if group == 0 { model.leading_count = count }
+    else { model.trailing_count = count }
+}
+
+#scope_export
+PanelDefaults :: (model: *PanelModel) {
+    if model == null { return }
+    model.* = .{}
+    items := RillPanelDefaultLeft(*model.leading_count)
+    index: s32 = 0
+    while index < model.leading_count { model.leading[index] = items[index]; index += 1 }
+    items = RillPanelDefaultRight(*model.trailing_count)
+    index = 0
+    while index < model.trailing_count { model.trailing[index] = items[index]; index += 1 }
+}
+
+// Destination is an insertion position before removal; moving onto oneself
+// or immediately after oneself is a no-op. Refuse full destination groups.
+PanelMove :: (model: *PanelModel, from_group: s32, from: s32,
+    to_group: s32, to: s32) -> bool {
+    source := PanelItems(model, from_group)
+    destination := PanelItems(model, to_group)
+    source_count := PanelCount(model, from_group)
+    destination_count := PanelCount(model, to_group)
+    if source == null || destination == null || from < 0 || from >= source_count ||
+        to < 0 || to > destination_count { return false }
+    if from_group == to_group {
+        if to == from || to == from + 1 { return true }
+        item := source[from]
+        target := to
+        if target > from { target -= 1 }
+        index := from
+        while index < target { source[index] = source[index + 1]; index += 1 }
+        while index > target { source[index] = source[index - 1]; index -= 1 }
+        source[target] = item
+    } else {
+        if destination_count >= PanelCapacity { return false }
+        item := source[from]
+        index := from
+        while index + 1 < source_count { source[index] = source[index + 1]; index += 1 }
+        index = destination_count
+        while index > to { destination[index] = destination[index - 1]; index -= 1 }
+        destination[to] = item
+        source[source_count - 1] = .{}
+        SetCount(model, from_group, source_count - 1)
+        SetCount(model, to_group, destination_count + 1)
+    }
+    model.dirty = true
+    return true
+}
+
+PanelRemove :: (model: *PanelModel, group: s32, index: s32) -> bool {
+    items := PanelItems(model, group)
+    count := PanelCount(model, group)
+    if items == null || index < 0 || index >= count { return false }
+    cursor := index
+    while cursor + 1 < count { items[cursor] = items[cursor + 1]; cursor += 1 }
+    items[count - 1] = .{}
+    SetCount(model, group, count - 1)
+    model.dirty = true
+    return true
+}
+
+PanelAppend :: (model: *PanelModel, group: s32, plugin: RillPanelPlugin) -> bool {
+    items := PanelItems(model, group)
+    count := PanelCount(model, group)
+    if items == null || count >= PanelCapacity || plugin.kind < 0 ||
+        plugin.kind > RILL_PANEL_CLIPBOARD || plugin.width < 0 || plugin.width > 4096 ||
+        plugin.advance < 0 || plugin.advance > 4096 || plugin.menu_id < 0 ||
+        plugin.menu_id > 3 || plugin.variant < 0 || plugin.variant > 32 { return false }
+    items[count] = plugin
+    SetCount(model, group, count + 1)
+    model.dirty = true
+    return true
+}
+
+PanelLoad :: (model: *PanelModel, path: *s8) -> bool {
+    if model == null { return false }
+    loaded: PanelModel
+    if RillPanelLoad(path, *loaded.leading[0], *loaded.leading_count,
+        *loaded.trailing[0], *loaded.trailing_count, PanelCapacity) == 0 { return false }
+    model.* = loaded
+    return true
+}
+
+PanelSave :: (model: *PanelModel, path: *s8) -> bool {
+    if model == null || model.leading_count < 0 || model.leading_count > PanelCapacity ||
+        model.trailing_count < 0 || model.trailing_count > PanelCapacity { return false }
+    if RillPanelSave(path, *model.leading[0], model.leading_count,
+        *model.trailing[0], model.trailing_count) == 0 { return false }
+    model.dirty = false
+    return true
+}

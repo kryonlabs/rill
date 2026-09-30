@@ -1,3 +1,4 @@
+#import "desktop_types"
 #import "shell"
 #import "shell_types"
 #import "platform_types"
@@ -10,20 +11,13 @@ using FrameStatus;
 #if #defined(PLAN9_BUILD) {
     using Runtime :: #import "libdraw_native";
     using Platform :: #import "platform_plan9";
+    Time :: #import "date_time_plan9";
 } else {
     using Runtime :: #import "libdraw_runtime";
     #import "cairo_raster"
+    Time :: #import "date_time_linux";
     libc :: #system_library "libc";
     RillPlatformCurrent :: () -> *RillPlatformServices #foreign libc;
-}
-
-DesktopApplication :: struct {
-    shell: RillShellState
-    settings: RillSettings
-    previous: RillSettings
-    settings_path: [1024]s8
-    user: [96]s8
-    closed: bool
 }
 
 DesktopFrame :: #type (session: Session, viewport: Rectangle,
@@ -32,6 +26,9 @@ DesktopFrame :: #type (session: Session, viewport: Rectangle,
 #scope_file
 application: DesktopApplication;
 compose: DesktopFrame;
+refresh_tasks: bool;
+refresh_at: s64;
+desktop_services: RillPlatformServices;
 
 Preferences :: (platform: *RillPlatformServices) {
     RillSettingsInit(*application.settings)
@@ -67,17 +64,45 @@ Draw :: (session: Session, platform: *RillPlatformServices) -> bool {
     PointerWheelSend(session, pointer.x, pointer.y, LibdrawWheelMove())
     KeyboardModifiersSend(session, LibdrawKeyboardModifiers())
     key := LibdrawPressedKey()
-    if key != 0 { KeyboardSend(session, key) }
+    KeyboardSend(session, key)
     scalar := LibdrawTypedCodepoint()
     if scalar != 0 { TypedCodepointSend(session, scalar) }
     if BeginFrame(session, cast(u64)1, viewport) != cast(FrameStatus)FrameOk { return false }
+    if refresh_tasks {
+        now := Time.UnixNow()
+        if now != refresh_at {
+            RillShellRefresh(*application.shell, platform)
+            refresh_at = now
+        }
+    }
     compose(session, viewport, *application, platform)
     if EndFrame(session) != cast(FrameStatus)FrameOk { return false }
+    // Unhandled input belongs to this frame; it must not reach a popup
+    // opened later. Text fields consume their input during composition.
+    KeyboardTake(session)
+    while TypedCodepointTake(session) != 0 {}
     return EndLibdrawFrame()
 }
 
 RunApplication :: () -> s32 {
     platform := RillPlatformCurrent()
+    #if #defined(PLAN9_BUILD) {
+        // The native adapter verifies supervised PIDs for window commands.
+    } else {
+        if refresh_tasks && platform != null {
+            // The legacy Linux adapter has no supervision authority for
+            // discovered windows. Keep those controls unavailable until
+            // its Ziran replacement can prove ownership at each request.
+            desktop_services = platform.*
+            unavailable: RillPlatformServices
+            desktop_services.focus_task = unavailable.focus_task
+            desktop_services.close_task = unavailable.close_task
+            desktop_services.show_desktop = unavailable.show_desktop
+            desktop_services.switch_workspace = unavailable.switch_workspace
+            desktop_services.session_action = unavailable.session_action
+            platform = *desktop_services
+        }
+    }
     RillShellInit(*application.shell)
     RillShellRefresh(*application.shell, platform)
     application.shell.status[0] = 0
@@ -131,4 +156,11 @@ ApplicationMain :: (frame: DesktopFrame) -> s32 {
     } else {
         return RunApplication()
     }
+}
+
+// A desktop keeps its launcher and window snapshots live. Dialogs retain
+// their existing one-time snapshot behavior.
+DesktopMain :: (frame: DesktopFrame) -> s32 {
+    refresh_tasks = true
+    return ApplicationMain(frame)
 }
