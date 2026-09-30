@@ -55,6 +55,8 @@ LIB=/$objtype/lib/libkryon.a /$objtype/lib/libstdio.a
 all:V: check-rill-ziran check-t9 $OUT
 
 install:V: check-rill-ziran check-t9 $BIN/$TARG
+	mk -f app/run.mk install
+	mk -f app/applications.mk install
 
 check-rill-ziran:V:
 	if(! test -f $RILLGEN/shell.c || ! test -f $RILLGEN/panel.c || ! test -f $RILLGEN/settings.c || ! test -f $RILLGEN/platform_plan9.c) {
