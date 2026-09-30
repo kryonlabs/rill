@@ -9,11 +9,17 @@ persistence, stub adapter, and Plan 9 platform services now live in `src/*.zi`. 
 handwritten C implementations were removed; both hosted and native Plan 9
 builds use generated output.
 
-The conversion remains incomplete. Graphical screens, file operations,
-Linux platform services, window management,
-and the session daemon still need conversion. The C desktop entrypoint and
-two legacy `.kry` screens still depend on the former Kryon interface, so the
-full desktop build is not yet restored against current Kryon.
+The Run dialog now has a current Ziran entrypoint and uses Kryon's `TextField`,
+`Button`, `Box`, and `Text` widgets. Application matching, bounded command
+execution, and recent-command history live in `src/run_dialog.zi`, shared with
+the remaining C desktop during conversion. The former Run `.kry` screen was
+removed. The desktop launcher and WM Run shortcut use `rill-run`.
+
+The conversion remains incomplete. Other graphical screens, file operations,
+Linux platform services, window management, and the session daemon still need
+conversion. The C desktop entrypoint and legacy Settings `.kry` screen depend on
+the former Kryon interface, so the full desktop build is not yet restored
+against current Kryon.
 
 `make shell-test persistence-test platform-test` checks the generated implementation against
 its existing C consumers and runs the Ziran behavior tests from source and
@@ -29,6 +35,20 @@ Window controls require a PID in a process group launched by this adapter;
 listing a window grants no authority to control it. Taiji's rio snapshot
 includes that PID and rejects guarded commands when the owner has changed.
 Graphical desktop readiness requires separate verification after its conversion.
+
+`make run-dialog-build` builds `build/rill-run` with current Kryon's libdraw
+backend. Its Linux platform service adapter remains C during conversion.
+`make run-dialog-plan9` generates the entirely Ziran native entrypoint, UI,
+platform services, and Kryon backend through `plan9-c`; in the guest,
+`mk -f app/run.mk` builds it with native `8c`/`8l`.
+
+`make run-test run-ui-test run-window-test` checks command history and settings
+merges from source and saved IR, renders the real Kryon screen offscreen, and
+exercises an actual libdraw window on a private Xvfb display. It covers recent
+row clicks, application matching, launch failures, Unicode editing, cursor
+movement, Enter, and Escape. The Taiji guest gate also compiles and runs the
+Run behavior and UI cases from source and saved IR, using native libdraw for
+offscreen rendering.
 
 The project keeps shell behavior outside Kryon. Kryon provides the UI runtime,
 renderer backends, widgets, and reusable platform primitives; Rill owns panels,

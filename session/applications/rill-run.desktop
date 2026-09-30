@@ -2,6 +2,6 @@
 Type=Application
 Name=Run Program
 Comment=Launch an application or command
-Exec=rill --run-dialog
+Exec=rill-run
 Icon=system-run
 Categories=Utility;

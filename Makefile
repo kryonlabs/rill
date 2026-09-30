@@ -1,13 +1,13 @@
 APP_NAME := rill
 .DEFAULT_GOAL := all
 KRYON_DIR ?= ../kryon
-PLAN9PORT_DIR ?= ../plan9port
+PLAN9PORT_DIR ?= $(if $(wildcard ../plan9port/lib/libdraw.a),../plan9port,../../taijiosnet/plan9port)
 KRYON_BACKEND ?= libdraw
 KRYON_WITH_SYNC ?= 0
-ZIRAN_DIR ?= ../ziran
+ZIRAN_DIR ?= ../../ziranlang/ziran
 ZIRAN ?= $(ZIRAN_DIR)/build/bin/ziran
 
-SHELL_MODULES := native_memory platform_types shell_types shell
+SHELL_MODULES := native_memory platform_types shell_types shell run_dialog
 SHELL_GEN := build/ziran/c
 SHELL_C := $(addprefix $(SHELL_GEN)/,$(addsuffix .c,$(SHELL_MODULES)))
 PERSISTENCE_MODULES := c_string file_linux native_files panel_types panel settings
@@ -21,7 +21,7 @@ PERSISTENCE_SOURCES := src/native_files.zi src/panel_types.zi src/panel.zi src/s
 	$(ZIRAN_DIR)/std/c_string.zi $(ZIRAN_DIR)/std/file_linux.zi $(ZIRAN_DIR)/std/file_plan9.zi
 
 $(SHELL_STAMP): $(SHELL_SOURCES) $(PERSISTENCE_SOURCES) $(ZIRAN)
-	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=c --root src --module-path $(ZIRAN_DIR)/std -o $(SHELL_GEN) src/shell.zi src/platform_stub.zi src/panel.zi src/settings.zi
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=c --root src --module-path $(ZIRAN_DIR)/std -o $(SHELL_GEN) src/shell.zi src/platform_stub.zi src/panel.zi src/settings.zi src/run_dialog.zi
 	touch $@
 
 $(SHELL_C) $(PERSISTENCE_C) $(STUB_C): $(SHELL_STAMP)
@@ -31,7 +31,7 @@ $(PLAN9_C): src/platform_plan9.zi src/platform_types.zi src/native_memory.zi $(P
 
 .PHONY: ziran-c-plan9 shell-test persistence-test
 ziran-c-plan9:
-	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root src --module-path $(ZIRAN_DIR)/std -o build/ziran/plan9 src/shell.zi src/panel.zi src/settings.zi src/platform_plan9.zi
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root src --module-path $(ZIRAN_DIR)/std -o build/ziran/plan9 src/shell.zi src/panel.zi src/settings.zi src/platform_plan9.zi src/run_dialog.zi
 	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root tests --module-path src --module-path $(ZIRAN_DIR)/std -o build/ziran/plan9-test tests/persistence_test.zi
 
 shell-test:
@@ -39,6 +39,34 @@ shell-test:
 
 persistence-test:
 	ZIRAN="$(abspath $(ZIRAN))" ZIRAN_STD="$(abspath $(ZIRAN_DIR)/std)" sh tests/persistence_test.sh
+
+.PHONY: run-test
+run-test:
+	ZIRAN="$(abspath $(ZIRAN))" ZIRAN_STD="$(abspath $(ZIRAN_DIR)/std)" sh tests/run_test.sh
+
+# Current Kryon UI entrypoint. Linux services remain C until their conversion;
+# the native Plan 9 entrypoint and services are entirely current Ziran.
+RUN_GEN := build/ziran/run-c
+RUN_BIN := build/rill-run
+RUN_SOURCES := $(wildcard app/*.zi src/*.zi $(KRYON_DIR)/src/ui/*.zi $(KRYON_DIR)/src/ui/*/*.zi $(KRYON_DIR)/src/backend/*.zi $(ZIRAN_DIR)/std/*.zi)
+
+.PHONY: run-dialog-build run-dialog-plan9 run-ui-test run-window-test
+run-ui-test:
+	ZIRAN="$(abspath $(ZIRAN))" ZIRAN_STD="$(abspath $(ZIRAN_DIR)/std)" KRYON_DIR="$(abspath $(KRYON_DIR))" sh tests/run_ui_test.sh
+
+run-dialog-plan9:
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --define PLAN9_BUILD --root app --module-path src --module-path $(KRYON_DIR)/src/ui --module-path $(KRYON_DIR)/src/backend --module-path $(ZIRAN_DIR)/std -o build/ziran/run-plan9 app/run_main.zi
+
+$(RUN_GEN)/.generated: $(RUN_SOURCES) $(ZIRAN)
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=c --root app --module-path src --module-path $(KRYON_DIR)/src/ui --module-path $(KRYON_DIR)/src/backend --module-path $(ZIRAN_DIR)/std -o $(RUN_GEN) app/run_main.zi
+	touch $@
+
+run-dialog-build: $(RUN_BIN)
+
+run-window-test: $(RUN_BIN)
+	env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY RILL_PRIVATE_XVFB=1 \
+		PLAN9="$(abspath $(PLAN9PORT_DIR))" DEVDRAW="$(abspath $(PLAN9PORT_DIR))/bin/devdraw" \
+		xvfb-run -a -n 100 python3 tests/run_window_test.py
 
 CC ?= cc
 CFLAGS ?= -Wall -Wextra -O2
@@ -72,6 +100,13 @@ else
   PLATFORM_SRC := $(STUB_C)
   PLATFORM_LDLIBS :=
 endif
+
+$(RUN_BIN): $(RUN_GEN)/.generated src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(wildcard include/*.h)
+	$(CC) $(CPPFLAGS) -I$(RUN_GEN) $(CFLAGS) \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $(RUN_GEN)/*.c \
+		src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(GTK_PKG_LIBS) $(PLATFORM_LDLIBS) \
+		$(shell pkg-config --libs wayland-client 2>/dev/null) \
+		-Wl,-E -L$(PLAN9PORT_DIR)/lib -ldraw -lmemdraw -lmux -lthread -l9 -lpthread -lm -lcairo
 
 KRYON_BUILD_ROOT := $(abspath build/kryon-$(KRYON_BACKEND))
 KRYON_BUILD_DIR := $(KRYON_BUILD_ROOT)/$(PLATFORM)-$(ARCH)
@@ -241,16 +276,21 @@ xfce-smoke: $(BIN)
 	PLAN9PORT_DIR="$(abspath $(PLAN9PORT_DIR))" RILL_BIN="$(abspath $(BIN))" sh tests/rill_xfce_smoke.sh
 
 PREFIX ?= /usr/local
-.PHONY: install session-test
-install: $(BIN)
+.PHONY: install run-dialog-install session-test
+install: $(BIN) $(RUN_BIN)
 	install -Dm755 $(WM_BIN) $(DESTDIR)$(PREFIX)/bin/rill-wm
 	install -Dm755 $(SESSIOND_BIN) $(DESTDIR)$(PREFIX)/bin/rill-sessiond
 	install -Dm755 $(BIN) $(DESTDIR)$(PREFIX)/bin/rill
+	install -Dm755 $(RUN_BIN) $(DESTDIR)$(PREFIX)/bin/rill-run
 	install -Dm755 scripts/rill-session $(DESTDIR)$(PREFIX)/bin/rill-session
 	install -Dm755 scripts/rill-window $(DESTDIR)$(PREFIX)/bin/rill-window
 	install -Dm644 session/rill.desktop $(DESTDIR)$(PREFIX)/share/xsessions/rill.desktop
 	install -Dm644 session/rill-xfce.desktop $(DESTDIR)$(PREFIX)/share/xsessions/rill-xfce.desktop
 	install -Dm644 session/applications/rill-settings.desktop $(DESTDIR)$(PREFIX)/share/applications/rill-settings.desktop
+	install -Dm644 session/applications/rill-run.desktop $(DESTDIR)$(PREFIX)/share/applications/rill-run.desktop
+
+run-dialog-install: $(RUN_BIN)
+	install -Dm755 $(RUN_BIN) $(DESTDIR)$(PREFIX)/bin/rill-run
 	install -Dm644 session/applications/rill-run.desktop $(DESTDIR)$(PREFIX)/share/applications/rill-run.desktop
 
 session-test:

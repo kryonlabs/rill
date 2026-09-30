@@ -1,4 +1,5 @@
 #include "rill_shell.h"
+#include "rill_run.h"
 
 #include "kryon.h"
 #include "rill_panel.h"
@@ -8239,93 +8240,14 @@ draw_about_app(Rectangle content)
     }
 }
 
-static int
-rill_case_prefix(const char *text, const char *prefix)
-{
-    while(*prefix != '\0') {
-        if(*text == '\0' ||
-           tolower((unsigned char)*text) != tolower((unsigned char)*prefix))
-            return 0;
-        text++;
-        prefix++;
-    }
-    return 1;
-}
-
-static const RillLauncher *
-run_match_launcher(const RillShellState *shell, const char *text, int index)
-{
-    int found = 0;
-    size_t length;
-
-    if(shell == NULL || text == NULL)
-        return NULL;
-    length = strlen(text);
-    if(length == 0)
-        return NULL;
-    for(int i = 0; i < shell->launcher_count; i++) {
-        const RillLauncher *launcher = &shell->launchers[i];
-        if(rill_case_prefix(launcher->name, text) ||
-           rill_case_prefix(launcher->id, text)) {
-            if(found == index)
-                return launcher;
-            found++;
-        }
-    }
-    return NULL;
-}
-
-static void
-run_record_history(const char *text)
-{
-    const char *previous = RillSettingsGet(&rill_settings, "run-history", "");
-    char history[512];
-    int length;
-    int count = 1;
-
-    length = snprintf(history, sizeof(history), "%s", text);
-    for(const char *cursor = previous; *cursor != '\0' && count < 8; ) {
-        const char *end = strchr(cursor, '|');
-        size_t size = end != NULL ? (size_t)(end - cursor) : strlen(cursor);
-        if(size != strlen(text) || strncmp(cursor, text, size) != 0) {
-            int written = snprintf(history + length,
-                                   sizeof(history) - (size_t)length,
-                                   "|%.*s", (int)size, cursor);
-            if(written < 0 || (size_t)written >= sizeof(history) - (size_t)length)
-                break;
-            length += written;
-            count++;
-        }
-        if(end == NULL)
-            break;
-        cursor = end + 1;
-    }
-    RillSettingsSet(&rill_settings, "run-history", history);
-    rill_settings_persist(NULL);
-}
+#define run_match_launcher RillRunMatchLauncher
 
 static int
 run_execute(RillShellState *shell, const RillPlatformServices *platform,
             const RillLauncher *match, const char *text)
 {
-    RillLauncher command;
-    const RillLauncher *target = match;
-    int ok;
-
-    if(text == NULL || text[0] == '\0')
-        return 0;
-    if(target == NULL) {
-        memset(&command, 0, sizeof(command));
-        snprintf(command.name, sizeof(command.name), "%s", text);
-        snprintf(command.command, sizeof(command.command), "%s", text);
-        target = &command;
-    }
-    ok = platform != NULL && platform->launch != NULL && platform->launch(target);
-    if(ok)
-        run_record_history(match != NULL ? match->name : text);
-    else
-        RillShellSetStatus(shell, "Could not run the command");
-    return ok;
+    return RillRunExecute(shell, platform, &rill_settings, &settings_previous,
+                          rill_settings_path, match, text);
 }
 
 static void

@@ -1,0 +1,108 @@
+#import "run_dialog"
+#import "shell"
+#import "shell_types"
+#import "platform_types"
+#import "settings"
+#import "native_memory"
+
+shell: RillShellState;
+settings: RillSettings;
+previous: RillSettings;
+loaded: RillSettings;
+services: RillPlatformServices;
+last_command: [256]s8;
+launch_count: s32;
+launch_ok: bool = true;
+
+Launch :: (launcher: *RillLauncher) -> s32 {
+    launch_count += 1
+    CopyText(*last_command[0], 256, *launcher.command[0])
+    return cast(s32)launch_ok
+}
+
+Run :: () -> s32 {
+    RillShellInit(*shell)
+    shell.launcher_count = 3
+    CopyText(*shell.launchers[0].id[0], 64, TextBytes("terminal"))
+    CopyText(*shell.launchers[0].name[0], 96, TextBytes("Terminal Emulator"))
+    CopyText(*shell.launchers[0].command[0], 256, TextBytes("term -new"))
+    CopyText(*shell.launchers[1].id[0], 64, TextBytes("termdoc"))
+    CopyText(*shell.launchers[1].name[0], 96, TextBytes("Terminal Help"))
+    CopyText(*shell.launchers[2].name[0], 96, TextBytes("Éditeur"))
+    if RillRunMatchLauncher(*shell, TextBytes("tErM"), 0) != *shell.launchers[0] ||
+       RillRunMatchLauncher(*shell, TextBytes("TERM"), 1) != *shell.launchers[1] ||
+       RillRunMatchLauncher(*shell, TextBytes("Éd"), 0) != *shell.launchers[2] ||
+       RillRunMatchLauncher(*shell, TextBytes("term"), 2) != null ||
+       RillRunMatchLauncher(*shell, TextBytes(""), 0) != null ||
+       RillRunMatchLauncher(*shell, null, 0) != null ||
+       RillRunMatchLauncher(null, TextBytes("term"), 0) != null ||
+       RillRunMatchLauncher(*shell, TextBytes("term"), -1) != null { return 1 }
+    RillSettingsInit(*settings)
+    RillSettingsSet(*settings, TextBytes("run-history"), TextBytes("a|b|c|d|e|f|g|h"))
+    RillRunRecordHistory(*settings, TextBytes("c"))
+    if !TextEquals(RillSettingsGet(*settings, TextBytes("run-history"), null),
+       TextBytes("c|a|b|d|e|f|g|h")) { return 2 }
+    RillRunRecordHistory(*settings, TextBytes("new"))
+    item: [256]s8
+    if RillRunHistoryItem(*settings, 7, *item[0], 256) != 1 ||
+       !TextEquals(*item[0], TextBytes("g")) ||
+       RillRunHistoryItem(*settings, 8, *item[0], 256) != 0 || item[0] != 0 { return 3 }
+    RillSettingsSet(*settings, TextBytes("run-history"), TextBytes("|first||second|"))
+    if RillRunHistoryItem(*settings, 1, *item[0], 256) != 1 ||
+       !TextEquals(*item[0], TextBytes("second")) ||
+       RillRunHistoryItem(*settings, 0, *item[0], 3) != 0 || item[0] != 0 { return 4 }
+    RillRunRecordHistory(*settings, TextBytes("echo a | sed b"))
+    RillRunRecordHistory(*settings, TextBytes("bad\nvalue"))
+    if !TextEquals(RillSettingsGet(*settings, TextBytes("run-history"), null),
+       TextBytes("|first||second|")) { return 5 }
+    services.launch = Launch
+    if RillRunExecute(*shell, *services, *settings, *previous, null,
+       *shell.launchers[0], TextBytes("term")) != 1 ||
+       !TextEquals(*last_command[0], TextBytes("term -new")) ||
+       RillRunHistoryItem(*settings, 0, *item[0], 256) != 1 ||
+       !TextEquals(*item[0], TextBytes("Terminal Emulator")) { return 6 }
+    launch_ok = false
+    if RillRunExecute(*shell, *services, *settings, *previous, null,
+       null, TextBytes("fails")) != 0 ||
+       !TextEquals(*shell.status[0], TextBytes("Could not run the command")) ||
+       RillRunHistoryItem(*settings, 0, *item[0], 256) != 1 ||
+       !TextEquals(*item[0], TextBytes("Terminal Emulator")) { return 7 }
+    before := launch_count
+    long_command: [300]s8
+    index: s32 = 0
+    while index < 299 { long_command[index] = 97; index += 1 }
+    long_command[299] = 0
+    if RillRunExecute(*shell, *services, *settings, *previous, null,
+       null, *long_command[0]) != 0 || launch_count != before ||
+       RillRunExecute(*shell, null, *settings, *previous, null,
+       null, TextBytes("fails")) != 0 { return 8 }
+    launch_ok = true
+    root := EnvironmentValue(TextBytes("RILL_TEST_ROOT"))
+    if root == null { return 9 }
+    path: [1024]s8
+    used := CopyText(*path[0], 1024, root)
+    CopyText(*path[used], 1024 - used, TextBytes("/run-settings"))
+    previous = settings
+    if RillRunExecute(*shell, *services, *settings, *previous, *path[0],
+       null, TextBytes("echo hello")) != 1 ||
+       RillSettingsLoad(*loaded, *path[0]) != 1 ||
+       RillRunHistoryItem(*loaded, 0, *item[0], 256) != 1 ||
+       !TextEquals(*item[0], TextBytes("echo hello")) { return 10 }
+    RillSettingsSet(*loaded, TextBytes("wallpaper"), TextBytes("other.png"))
+    if RillSettingsSave(*loaded, *path[0]) != 1 { return 11 }
+    if RillRunExecute(*shell, *services, *settings, *previous, *path[0],
+       null, TextBytes("next")) != 1 ||
+       RillSettingsLoad(*loaded, *path[0]) != 1 ||
+       !TextEquals(RillSettingsGet(*loaded, TextBytes("wallpaper"), null),
+       TextBytes("other.png")) { return 12 }
+    RillShellDispose(*shell)
+    return 0
+}
+
+#program_export
+main :: () -> s32 {
+    result := Run()
+    if result != 0 { print("rill-run-test-failed: %\n", result) }
+    else { print("rill-run-test-ok\n") }
+    return result
+}

@@ -1,0 +1,133 @@
+#import "run_dialog_ui"
+#import "shell"
+#import "shell_types"
+#import "platform_types"
+#import "settings"
+#import "native_memory"
+using UI :: #import "Widgets";
+#import "tree_draw"
+using FrameStatus;
+#if #defined(PLAN9_BUILD) {
+    #import "libdraw_native"
+} else {
+    #import "cairo_raster"
+    #program_export
+    SystemClipboardOpenHost :: () -> s32 { return -1 }
+    #program_export
+    SystemClipboardByteHost :: (index: s32) -> s32 { unused index; return -1 }
+    #program_export
+    SystemClipboardWriteHost :: (value: string) -> bool { unused value; return true }
+}
+
+state: RunDialogState;
+shell: RillShellState;
+settings: RillSettings;
+previous: RillSettings;
+platform: RillPlatformServices;
+session: Session;
+last_command: [256]s8;
+launch_ok: bool;
+launch_count: s32;
+
+Launch :: (launcher: *RillLauncher) -> s32 {
+    CopyText(*last_command[0], 256, *launcher.command[0])
+    launch_count += 1
+    return cast(s32)launch_ok
+}
+
+Draw :: (key: s32, scalar: s32, down: bool, pressed: bool, released: bool) -> bool {
+    BeginRasterFrame()
+    pointer: PointerFrame
+    pointer.x = 80.0
+    pointer.y = 95.0
+    pointer.down = down
+    pointer.pressed = pressed
+    pointer.released = released
+    TreePointerUpdate(session, pointer)
+    KeyboardSend(session, key)
+    if scalar != 0 { TypedCodepointSend(session, scalar) }
+    viewport := Rectangle.{0.0, 0.0, 480.0, 300.0}
+    if BeginFrame(session, cast(u64)1, viewport) != cast(FrameStatus)FrameOk { return false }
+    RunDialog(session, viewport, *state, *shell, *platform, *settings, *previous, null)
+    return EndFrame(session) == cast(FrameStatus)FrameOk && FinishRasterFrame()
+}
+
+Cases :: () -> s32 {
+    RillShellInit(*shell)
+    shell.status[0] = 0
+    shell.launcher_count = 1
+    CopyText(*shell.launchers[0].id[0], 64, TextBytes("terminal"))
+    CopyText(*shell.launchers[0].name[0], 96, TextBytes("Terminal Emulator"))
+    CopyText(*shell.launchers[0].description[0], 128, TextBytes("Command line"))
+    CopyText(*shell.launchers[0].command[0], 256, TextBytes("term -new"))
+    platform.launch = Launch
+    RillSettingsSet(*settings, TextBytes("run-history"), TextBytes("echo selected"))
+    if !OpenRaster(480, 300) { return 1 }
+    session = SessionOpen()
+    if !Draw(0, 0, false, false, false) || !CaptureConfigured() { return 2 }
+    // A history-row click executes the selected row, with an empty edit field.
+    launch_ok = true
+    if !Draw(0, 0, true, true, false) || !Draw(0, 0, false, false, true) ||
+       launch_count != 1 || !state.closed ||
+       !TextEquals(*last_command[0], TextBytes("echo selected")) { return 3 }
+    CloseSession(session)
+    session = SessionOpen()
+    state = .{}
+    launch_ok = false
+    if !Draw(84, 116, false, false, false) || !Draw(69, 101, false, false, false) ||
+       !TextEquals(*state.text[0], TextBytes("te")) { return 4 }
+    if !Draw(257, 0, false, false, false) || state.closed || launch_count != 2 ||
+       !TextEquals(*last_command[0], TextBytes("term -new")) ||
+       !TextEquals(*shell.status[0], TextBytes("Could not run the command")) { return 5 }
+    // Backspace removes one complete UTF-8 scalar; cursor motion inserts within
+    // the command rather than always appending at its end.
+    if !Draw(0, 233, false, false, false) ||
+       !TextEquals(*state.text[0], TextBytes("teé")) ||
+       !Draw(259, 0, false, false, false) ||
+       !TextEquals(*state.text[0], TextBytes("te")) ||
+       !Draw(263, 0, false, false, false) || !Draw(88, 120, false, false, false) ||
+       !TextEquals(*state.text[0], TextBytes("txe")) { return 6 }
+    launch_ok = true
+    if !Draw(257, 0, false, false, false) || !state.closed || launch_count != 3 ||
+       !TextEquals(*last_command[0], TextBytes("txe")) { return 7 }
+    state = .{}
+    if !Draw(256, 0, false, false, false) || !state.closed || launch_count != 3 { return 8 }
+    CloseSession(session)
+    CloseRaster()
+    RillShellDispose(*shell)
+    return 0
+}
+
+Report :: () -> s32 {
+    result := Cases()
+    if result != 0 { print("rill-run-ui-test-failed: %\n", result) }
+    else { print("rill-run-ui-test-ok\n") }
+    return result
+}
+
+#if #defined(PLAN9_BUILD) {
+    thread_library :: #system_library "thread";
+    ThreadStart :: #type (value: *void) #c_call;
+    ThreadCreate :: (start: ThreadStart, value: *void, stack: u32) -> s32 #foreign thread_library "threadcreate";
+    ThreadExits :: (status: *s8) #foreign thread_library "threadexits";
+    ThreadExitsAll :: (status: *s8) #foreign thread_library "threadexitsall";
+    #program_export
+    TestThread :: (value: *void) {
+        unused value
+        result := Report()
+        if result == 0 { ThreadExitsAll(null) }
+        else { ThreadExitsAll(TextBytes("Run UI failed")) }
+    }
+    #program_export
+    threadmain :: (argc: s32, argv: **s8) {
+        unused argc
+        unused argv
+        if ThreadCreate(TestThread, null, 1048576) < 0 {
+            ThreadExitsAll(TextBytes("Could not start Run UI test"))
+        }
+        ThreadExits(null)
+    }
+} else {
+    #program_export
+    main :: () -> s32 { return Report() }
+}

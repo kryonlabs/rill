@@ -1,0 +1,139 @@
+#import "shell"
+#import "shell_types"
+#import "platform_types"
+#import "settings"
+#import "native_memory"
+
+// Run-dialog behavior is shared by the current Kryon screen and the remaining
+// C desktop while its screens are converted. These exports preserve that ABI.
+#scope_file
+CasePrefix :: (text: *s8, prefix: *s8) -> bool {
+    index: s32 = 0
+    while prefix[index] != 0 {
+        left := text[index]
+        right := prefix[index]
+        if left >= 65 && left <= 90 { left += 32 }
+        if right >= 65 && right <= 90 { right += 32 }
+        if left == 0 || left != right { return false }
+        index += 1
+    }
+    return true
+}
+
+#scope_export
+#program_export
+RillRunMatchLauncher :: (shell: *RillShellState, text: *s8,
+    index: s32) -> *RillLauncher {
+    if shell == null || shell.launchers == null || text == null || text[0] == 0 || index < 0 {
+        return null
+    }
+    cursor: s32 = 0
+    found: s32 = 0
+    while cursor < shell.launcher_count && cursor < shell.launcher_capacity {
+        launcher := *shell.launchers[cursor]
+        if CasePrefix(*launcher.name[0], text) || CasePrefix(*launcher.id[0], text) {
+            if found == index { return launcher }
+            found += 1
+        }
+        cursor += 1
+    }
+    return null
+}
+
+// Copy a complete history entry into caller-owned storage. Commands are never
+// silently truncated into a different command when a row is selected.
+#program_export
+RillRunHistoryItem :: (settings: *RillSettings, index: s32,
+    output: *s8, capacity: s32) -> s32 {
+    if output == null || capacity <= 0 { return 0 }
+    output[0] = 0
+    if index < 0 || index >= 8 { return 0 }
+    history := RillSettingsGet(settings, TextBytes("run-history"), TextBytes(""))
+    cursor: s32 = 0
+    entry: s32 = 0
+    while history[cursor] != 0 {
+        start := cursor
+        while history[cursor] != 0 && history[cursor] != 124 { cursor += 1 }
+        length := cursor - start
+        if length > 0 {
+            if entry == index {
+                if length >= capacity { return 0 }
+                offset: s32 = 0
+                while offset < length {
+                    output[offset] = history[start + offset]
+                    offset += 1
+                }
+                output[length] = 0
+                return 1
+            }
+            entry += 1
+        }
+        if history[cursor] == 0 { break }
+        cursor += 1
+    }
+    return 0
+}
+
+#program_export
+RillRunRecordHistory :: (settings: *RillSettings, text: *s8) {
+    if settings == null || text == null || text[0] == 0 { return }
+    length := TextLength(text)
+    if length >= RILL_SETTINGS_VALUE { return }
+    // The existing settings format uses | as its entry separator. Keep shell
+    // pipelines runnable, but do not turn them into misleading recent rows.
+    index: s32 = 0
+    while index < length {
+        if text[index] == 124 || text[index] == 10 || text[index] == 13 { return }
+        index += 1
+    }
+    history: [256]s8
+    used := CopyText(*history[0], RILL_SETTINGS_VALUE, text)
+    item: [256]s8
+    index = 0
+    count: s32 = 1
+    while index < 8 && count < 8 {
+        if RillRunHistoryItem(settings, index, *item[0], RILL_SETTINGS_VALUE) == 0 { break }
+        if !TextEquals(*item[0], text) {
+            size := TextLength(*item[0])
+            if used + 1 + size >= RILL_SETTINGS_VALUE { break }
+            history[used] = 124
+            used += 1
+            used += CopyText(*history[used], RILL_SETTINGS_VALUE - used, *item[0])
+            count += 1
+        }
+        index += 1
+    }
+    RillSettingsSet(settings, TextBytes("run-history"), *history[0])
+}
+
+#program_export
+RillRunExecute :: (shell: *RillShellState, platform: *RillPlatformServices,
+    settings: *RillSettings, previous: *RillSettings, path: *s8,
+    match: *RillLauncher, text: *s8) -> s32 {
+    if text == null || text[0] == 0 { return 0 }
+    command: RillLauncher
+    target := match
+    if target == null {
+        // A launch callback consumes a bounded command buffer. Reject overflow
+        // before it can execute a different, truncated command.
+        if TextLength(text) >= 256 {
+            RillShellSetStatus(shell, TextBytes("The command is too long"))
+            return 0
+        }
+        CopyText(*command.name[0], 96, text)
+        CopyText(*command.command[0], 256, text)
+        target = *command
+    }
+    if platform == null || platform.launch == null || platform.launch(target) == 0 {
+        RillShellSetStatus(shell, TextBytes("Could not run the command"))
+        return 0
+    }
+    recorded := text
+    if match != null { recorded = *match.name[0] }
+    RillRunRecordHistory(settings, recorded)
+    if path != null && path[0] != 0 &&
+       RillSettingsMergeSave(settings, previous, path) == 0 {
+        RillShellSetStatus(shell, TextBytes("Command started, but its history could not be saved"))
+    }
+    return 1
+}

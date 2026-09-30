@@ -1,0 +1,115 @@
+#import "run_dialog_ui"
+#import "shell"
+#import "shell_types"
+#import "platform_types"
+#import "settings"
+#import "native_memory"
+using UI :: #import "Widgets";
+#import "tree_draw"
+using StyleField;
+using FrameStatus;
+
+#if #defined(PLAN9_BUILD) {
+    using Runtime :: #import "libdraw_native";
+    using Platform :: #import "platform_plan9";
+} else {
+    using Runtime :: #import "libdraw_runtime";
+    #import "cairo_raster"
+    // The Linux service adapter remains a C consumer during its conversion.
+    libc :: #system_library "libc";
+    RillPlatformCurrent :: () -> *RillPlatformServices #foreign libc;
+}
+
+run_state: RunDialogState;
+shell: RillShellState;
+settings: RillSettings;
+previous: RillSettings;
+settings_path: [1024]s8;
+
+Preferences :: (platform: *RillPlatformServices) {
+    RillSettingsInit(*settings)
+    if platform == null || platform.settings_root == null { return }
+    root := platform.settings_root()
+    if root == null || root[0] == 0 { return }
+    count := TextLength(root)
+    if count + 10 >= 1024 || RillSettingsEnsureDirectory(root) == 0 { return }
+    CopyText(*settings_path[0], 1024, root)
+    CopyText(*settings_path[count], 1024 - count, TextBytes("/settings"))
+    RillSettingsLoad(*settings, *settings_path[0])
+    previous = settings
+}
+
+Draw :: (session: Session, platform: *RillPlatformServices) -> bool {
+    BeginLibdrawFrame()
+    viewport := LibdrawViewport()
+    pointer := PollPointer()
+    TreePointerUpdate(session, pointer)
+    TreeSecondaryPointerUpdate(session, PollSecondaryPointer())
+    PointerWheelSend(session, pointer.x, pointer.y, LibdrawWheelMove())
+    KeyboardModifiersSend(session, LibdrawKeyboardModifiers())
+    key := LibdrawPressedKey()
+    if key != 0 { KeyboardSend(session, key) }
+    scalar := LibdrawTypedCodepoint()
+    if scalar != 0 { TypedCodepointSend(session, scalar) }
+    if BeginFrame(session, cast(u64)1, viewport) != cast(FrameStatus)FrameOk { return false }
+    RunDialog(session, viewport, *run_state, *shell, platform,
+        *settings, *previous, *settings_path[0])
+    if EndFrame(session) != cast(FrameStatus)FrameOk { return false }
+    return EndLibdrawFrame()
+}
+
+RunApplication :: () -> s32 {
+    platform := RillPlatformCurrent()
+    RillShellInit(*shell)
+    RillShellRefresh(*shell, platform)
+    shell.status[0] = 0
+    Preferences(platform)
+    if !OpenLibdraw() {
+        CloseLibdraw()
+        RillShellDispose(*shell)
+        return 1
+    }
+    session := SessionOpen()
+    ok := SessionValid(session)
+    if CaptureRequested() {
+        ok = ok && Draw(session, platform) && CaptureConfigured()
+    } else {
+        while ok && !run_state.closed && PollLibdraw() {
+            ok = Draw(session, platform)
+            if ok && !run_state.closed { PauseLibdraw() }
+        }
+    }
+    CloseSession(session)
+    CloseLibdraw()
+    RillShellDispose(*shell)
+    if ok { return 0 }
+    return 1
+}
+
+#if #defined(PLAN9_BUILD) {
+    thread_library :: #system_library "thread";
+    ThreadStart :: #type (value: *void) #c_call;
+    ThreadCreate :: (start: ThreadStart, value: *void, stack: u32) -> s32 #foreign thread_library "threadcreate";
+    ThreadExits :: (status: *s8) #foreign thread_library "threadexits";
+    ThreadExitsAll :: (status: *s8) #foreign thread_library "threadexitsall";
+    #program_export
+    RunThread :: (value: *void) {
+        unused value
+        result := RunApplication()
+        if result == 0 { ThreadExitsAll(null) }
+        else { ThreadExitsAll(TextBytes("Rill Run failed")) }
+    }
+    #program_export
+    threadmain :: (argc: s32, argv: **s8) {
+        unused argc
+        unused argv
+        // libthread's initial 8 KiB stack is too small for widget composition.
+        if ThreadCreate(RunThread, null, 1048576) < 0 {
+            ThreadExitsAll(TextBytes("Could not start Rill Run"))
+        }
+        ThreadExits(null)
+    }
+} else {
+    #program_export
+    main :: () -> s32 { return RunApplication() }
+}

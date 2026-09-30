@@ -1705,7 +1705,7 @@ static void spawn_run_dialog(void)
 {
     if (fork() == 0) {
         /* The child must not touch the inherited X connection. */
-        execlp("rill", "rill", "--run-dialog", (char *)NULL);
+        execlp("rill-run", "rill-run", (char *)NULL);
         _exit(127);
     }
 }
