@@ -110,7 +110,7 @@ test:V: $RILLTESTOBJS
 	RILL_TEST_ROOT=$testroot ./rill-test.$O.out
 	teststatus=$status
 	rm -rf $testroot
-	if(! ~ $teststatus '') exit $teststatus
+	exit $teststatus
 
 tests/%.$O: tests/%.c
 	cd tests && cpp -+ $CPPFLAGS $stem.c > $stem.i && $CC $CFLAGS -c $stem.i && mv $stem.i.$O $stem.$O && rm -f $stem.i
