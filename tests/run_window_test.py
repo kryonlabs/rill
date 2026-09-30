@@ -52,7 +52,7 @@ def main():
                 assert "WIDTH=480\n" in geometry and "HEIGHT=300\n" in geometry, geometry
                 if mode == "enter":
                     input_command("type", "--window", window, "--clearmodifiers", "--delay", "70", "run")
-                    input_command("key", "--window", window, "Return")
+                    input_command("keydown", "--window", window, "Return")
                 elif mode == "history":
                     marker.unlink()
                     input_command("mousemove", "--window", window, "80", "95")
@@ -60,7 +60,7 @@ def main():
                     time.sleep(0.1)
                     input_command("mouseup", "1")
                 else:
-                    input_command("key", "--window", window, "Escape")
+                    input_command("keydown", "--window", window, "Escape")
                 stdout, stderr = process.communicate(timeout=10)
                 assert process.returncode == 0, (mode, stdout, stderr)
                 if mode != "escape":

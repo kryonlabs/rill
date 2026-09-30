@@ -47,7 +47,7 @@ def main():
                 if mode == "search":
                     input_command("type", "--window", window, "--clearmodifiers",
                                   "--delay", "70", "probe")
-                    input_command("key", "--window", window, "Return")
+                    input_command("keydown", "--window", window, "Return")
                 elif mode == "recent":
                     marker.unlink()
                     # The newest successful launcher is available on the next
@@ -62,7 +62,7 @@ def main():
                     time.sleep(0.1)
                     input_command("mouseup", "1")
                 else:
-                    input_command("key", "--window", window, "Escape")
+                    input_command("keydown", "--window", window, "Escape")
                 stdout, stderr = process.communicate(timeout=10)
                 assert process.returncode == 0, (mode, stdout, stderr)
                 if mode != "escape":

@@ -30,7 +30,7 @@ def main():
                 time.sleep(0.3)
                 input_command("key", "--window", window, "Page_Down", "Page_Up", "Home")
                 if action == "escape":
-                    input_command("key", "--window", window, "Escape")
+                    input_command("keydown", "--window", window, "Escape")
                 else:
                     input_command("mousemove", "--window", window, "350", "274")
                     input_command("mousedown", "1")

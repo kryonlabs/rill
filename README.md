@@ -39,9 +39,8 @@ The new desktop entrypoint is `app/desktop_main.zi`. Its Kryon panel loads the
 existing layout and preferences, keeps launcher/task snapshots live, hosts
 Applications and Calendar in place, and presents all thirteen panel item
 kinds. It supports all four edges, autohide, separate scrollable item groups,
-scrollable task buttons, guarded native window commands, Shift-drag and
-context-menu item moves, add/remove, volume and clipboard controls, and
-session confirmation. Available controls depend on the platform services;
+scrollable task buttons, guarded native window commands, context-menu item
+moves, add/remove, volume and clipboard controls, and session confirmation. Available controls depend on the platform services;
 missing services remain disabled. Native overlays are published only through
 the desktop client's own `/dev/wctl`, after checking its own `/dev/winfo`.
 The hosted entrypoint disables legacy Linux window, workspace, and session
@@ -59,7 +58,9 @@ fixture and builds, privately installs, and captures `rill-desktop`.
 The new entrypoint is not yet the boot default. Desktop icons and file
 operations, full tray images and menus, plugin Properties, notifications,
 Settings/About, and remaining services still need conversion and parity
-checks before replacing the former full desktop.
+checks before replacing the former full desktop. The panel's Shift-drag
+behavior is checked with supplied modifier state; libdraw still needs a
+held-modifier input path before that gesture works on native devices.
 
 The conversion remains incomplete. Other graphical screens, file operations,
 Linux platform services, window management, and the session daemon still need
