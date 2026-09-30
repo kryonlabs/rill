@@ -24,6 +24,16 @@ loaded_right: [4]RillPanelPlugin;
 path: [1200]s8;
 backup: [1200]s8;
 root: *s8;
+#if #defined(NATIVE_PLAN9) {
+    libc :: #system_library "libc";
+    PipeRaw :: (descriptors: *s32) -> s32 #foreign libc "pipe";
+    ForkRaw :: (flags: s32) -> s32 #foreign libc "rfork";
+    CloseRaw :: (descriptor: s32) -> s32 #foreign libc "close";
+    ReadRaw :: (descriptor: s32, output: *void, count: isize) -> isize #foreign libc "read";
+    WriteRaw :: (descriptor: s32, input: *void, count: isize) -> isize #foreign libc "write";
+    SleepRaw :: (milliseconds: s32) -> s32 #foreign libc "sleep";
+    ExitRaw :: (status: *s8) #foreign libc "exits";
+}
 
 TestPath :: (name: string) -> *s8 {
     used := CopyText(*path[0], 1200, root)
@@ -176,6 +186,69 @@ SettingsCases :: () -> s32 {
     return 0
 }
 
+#if #defined(NATIVE_PLAN9) {
+    NativeLockCases :: () -> s32 {
+        if AcquireSettingsLock(null) >= 0 || AcquireSettingsLock(TextBytes("")) >= 0 { return 40 }
+        destination := TestPath("concurrent-settings")
+        RillSettingsInit(*settings)
+        RillSettingsSetInteger(*settings, TextBytes("panel-height"), 32)
+        if RillSettingsSave(*settings, destination) == 0 { return 41 }
+        MoveBytes(cast(*void)(*first), cast(*void)(*settings), size_of(RillSettings))
+        MoveBytes(cast(*void)(*second), cast(*void)(*settings), size_of(RillSettings))
+        MoveBytes(cast(*void)(*second_previous), cast(*void)(*settings), size_of(RillSettings))
+        RillSettingsSetInteger(*first, TextBytes("panel-height"), 40)
+        RillSettingsSet(*second, TextBytes("wallpaper"), TextBytes("/tmp/shared image"))
+        lease := AcquireSettingsLock(destination)
+        if lease < 0 { return 42 }
+        // Contention must fail closed without stealing or removing the lease.
+        competing := AcquireSettingsLock(destination)
+        if competing >= 0 {
+            ReleaseSettingsLock(competing)
+            ReleaseSettingsLock(lease)
+            return 43
+        }
+        channels: [2]s32
+        if PipeRaw(*channels[0]) < 0 { ReleaseSettingsLock(lease); return 44 }
+        // RFPROC | RFFDG | RFNOTEG | RFNOWAIT: private child descriptor/note groups.
+        child := ForkRaw(16 | 4 | 8 | 64)
+        if child < 0 {
+            CloseRaw(channels[0]); CloseRaw(channels[1]); ReleaseSettingsLock(lease)
+            return 45
+        }
+        byte: u8 = 1
+        if child == 0 {
+            CloseRaw(channels[0])
+            ReleaseSettingsLock(lease) // drop only the inherited descriptor copy
+            WriteRaw(channels[1], cast(*void)(*byte), 1)
+            byte = cast(u8)RillSettingsMergeSave(*second, *second_previous, destination)
+            WriteRaw(channels[1], cast(*void)(*byte), 1)
+            CloseRaw(channels[1])
+            ExitRaw(null)
+            return 99
+        }
+        CloseRaw(channels[1])
+        ready := ReadRaw(channels[0], cast(*void)(*byte), 1) == 1 && byte == 1
+        SleepRaw(50)
+        // While the parent holds the lease, the child must not publish a save.
+        unchanged := RillSettingsLoad(*loaded, destination) != 0 &&
+            RillSettingsGetInteger(*loaded, TextBytes("panel-height"), 0) == 32 &&
+            RillSettingsGet(*loaded, TextBytes("wallpaper"), null) == null
+        saved := RillSettingsSave(*first, destination) != 0
+        ReleaseSettingsLock(lease)
+        finished := ReadRaw(channels[0], cast(*void)(*byte), 1) == 1 && byte != 0
+        CloseRaw(channels[0])
+        if !ready || !unchanged || !saved || !finished { return 46 }
+        if RillSettingsLoad(*loaded, destination) == 0 ||
+            RillSettingsGetInteger(*loaded, TextBytes("panel-height"), 0) != 40 ||
+            !TextEquals(RillSettingsGet(*loaded, TextBytes("wallpaper"), null),
+                TextBytes("/tmp/shared image")) { return 47 }
+        used := CopyText(*backup[0], 1200, destination)
+        CopyText(*backup[used], 1200 - used, TextBytes(".lock"))
+        if File.PathExists(CString(*backup[0])) || !File.RemoveFile(CString(destination)) { return 48 }
+        return 0
+    }
+}
+
 Run :: () -> s32 {
     print("rill-persistence-test: directories\n")
     directory := TestPath("config/rill")
@@ -190,7 +263,12 @@ Run :: () -> s32 {
     result := PanelCases()
     if result != 0 { return result }
     print("rill-persistence-test: settings\n")
-    return SettingsCases()
+    result = SettingsCases()
+    if result != 0 { return result }
+    #if #defined(NATIVE_PLAN9) {
+        print("rill-persistence-test: concurrent native saves\n")
+        return NativeLockCases()
+    } else { return 0 }
 }
 
 #scope_export

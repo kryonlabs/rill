@@ -10,11 +10,13 @@ PLAN9 :: #defined(NATIVE_PLAN9);
 }
 #scope_file
 libc :: #system_library "libc";
-#if !PLAN9 {
+CloseRaw :: (descriptor: s32) -> s32 #foreign libc "close";
+#if PLAN9 {
+    SleepRaw :: (milliseconds: s32) -> s32 #foreign libc "sleep";
+} else {
     MakeTemporary :: (path: *s8) -> s32 #foreign libc "mkstemp";
     OpenLock :: (path: *s8, flags: s32, mode: ..any) -> s32 #foreign libc "open";
     LockRaw :: (descriptor: s32, operation: s32) -> s32 #foreign libc "flock";
-    CloseRaw :: (descriptor: s32) -> s32 #foreign libc "close";
 }
 
 #scope_export
@@ -243,15 +245,25 @@ EnsureDirectory :: (path: *s8) -> bool {
 }
 
 AcquireSettingsLock :: (path: *s8) -> s32 {
+    if path == null || path[0] == 0 { return -1 }
+    lock_path: [1200]s8
+    length := TextLength(path)
+    if length + 6 >= 1200 { return -1 }
+    CopyText(*lock_path[0], 1200, path)
+    CopyText(*lock_path[length], 1200 - length, TextBytes(".lock"))
     #if PLAN9 {
-        unused path
-        return 0
+        // OEXCL makes acquisition atomic across clients. ORCLOSE releases
+        // the lease even if the holder exits before explicitly unlocking.
+        // Refuse a save after bounded contention rather than writing unlocked.
+        attempt: s32 = 0
+        while attempt < 200 {
+            lease := File.CreatePrivateExclusive(CString(*lock_path[0]), true)
+            if lease.valid { return lease.fd }
+            attempt += 1
+            if attempt < 200 { SleepRaw(10) }
+        }
+        return -1
     } else {
-        lock_path: [1200]s8
-        length := TextLength(path)
-        if length + 6 >= 1200 { return -1 }
-        CopyText(*lock_path[0], 1200, path)
-        CopyText(*lock_path[length], 1200 - length, TextBytes(".lock"))
         // O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, owner read/write.
         descriptor := OpenLock(*lock_path[0], 64 | 2 | 524288 | 131072, 384)
         if descriptor < 0 { return -1 }
@@ -261,10 +273,9 @@ AcquireSettingsLock :: (path: *s8) -> s32 {
 }
 
 ReleaseSettingsLock :: (descriptor: s32) {
+    if descriptor < 0 { return }
     #if !PLAN9 {
-        if descriptor >= 0 { LockRaw(descriptor, 8); CloseRaw(descriptor) }
+        LockRaw(descriptor, 8)
     }
-    #if PLAN9 {
-        unused descriptor
-    }
+    CloseRaw(descriptor)
 }
