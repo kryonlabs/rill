@@ -1,6 +1,7 @@
 #include "rill_shell.h"
 #include "rill_run.h"
 #include "rill_applications.h"
+#include "rill_clock.h"
 
 #include "kryon.h"
 #include "rill_panel.h"
@@ -23,7 +24,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#include <time.h>
 #include "plan9_overlay.h"
 
 #ifdef KRYON_NATIVE_PLAN9
@@ -3477,8 +3477,6 @@ draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
                RillVisualState *visuals)
 {
     char clock_text[32];
-    time_t now;
-    struct tm *local;
     int x;
     int right;
     int screen_w;
@@ -3540,12 +3538,7 @@ draw_top_panel(RillShellState *shell, const RillPlatformServices *platform,
         return;
     }
 
-    now = time(NULL);
-    local = localtime(&now);
-    if(local != NULL)
-        strftime(clock_text, sizeof(clock_text), visuals->clock_format, local);
-    else
-        snprintf(clock_text, sizeof(clock_text), "--:--");
+    RillClockText(visuals->clock_format, clock_text, sizeof(clock_text));
 
     int right_width = 0;
     for(int item = 0; item < visuals->right_panel_count; item++) {
@@ -3964,12 +3957,7 @@ draw_side_panel(RillShellState *shell, const RillPlatformServices *platform,
                 RillVisualState *visuals)
 {
     char clock_text[32];
-    time_t now = time(NULL);
-    struct tm *local = localtime(&now);
-    if(local != NULL)
-        strftime(clock_text, sizeof(clock_text), visuals->clock_format, local);
-    else
-        snprintf(clock_text, sizeof(clock_text), "--:--");
+    RillClockText(visuals->clock_format, clock_text, sizeof(clock_text));
 
     int screen_h = GetScreenHeight();
     int size = visuals->panel_height;
@@ -4053,12 +4041,7 @@ draw_deskbar_panel(RillShellState *shell, const RillPlatformServices *platform,
                    RillVisualState *visuals)
 {
     char clock_text[32];
-    time_t now = time(NULL);
-    struct tm *local = localtime(&now);
-    if(local != NULL)
-        strftime(clock_text, sizeof(clock_text), visuals->clock_format, local);
-    else
-        snprintf(clock_text, sizeof(clock_text), "--:--");
+    RillClockText(visuals->clock_format, clock_text, sizeof(clock_text));
 
     int screen_w = GetScreenWidth();
     int size = visuals->panel_height;
@@ -5511,105 +5494,13 @@ draw_panel_properties(RillShellState *shell, RillVisualState *visuals)
 }
 
 static void
-draw_calendar_popup(RillVisualState *visuals)
+draw_calendar_popup(RillShellState *shell, RillVisualState *visuals,
+                    const RillPlatformServices *platform)
 {
-    const char *weekdays[7] = {"S", "M", "T", "W", "T", "F", "S"};
-    struct tm day;
-    time_t now;
-    struct tm *local;
-    Rectangle menu;
-    int width = 216;
-    int height = 190;
-    int x;
-    int y;
-    int first;
-    int days;
-    int today;
-
     if(visuals == NULL || !visuals->calendar_open)
         return;
-    now = time(NULL);
-    local = localtime(&now);
-    if(local == NULL)
-        return;
-    x = GetScreenWidth() - width - 8;
-    y = rill_menu_anchor_y(visuals, height);
-    menu.x = (float)x;
-    menu.y = (float)y;
-    menu.width = (float)width;
-    menu.height = (float)height;
-    draw_menu_panel(menu);
-
-    char month[48];
-    strftime(month, sizeof(month), "%B %Y", local);
-    {
-        TextProps props;
-        memset(&props, 0, sizeof(props));
-        props.bounds.x = (int)menu.x + 14;
-        props.bounds.y = (int)menu.y + 10;
-        props.bounds.width = 0;
-        props.bounds.height = 0;
-        props.text = month;
-        props.font = Text14;
-        props.class_name = LabelPrimary;
-        props.wrap = TextWrapNone;
-        Text(props);
-    }
-    for(int i = 0; i < 7; i++) {
-        TextProps props;
-        memset(&props, 0, sizeof(props));
-        props.bounds.x = (int)menu.x + 16 + i * 28;
-        props.bounds.y = (int)menu.y + 34;
-        props.bounds.width = 0;
-        props.bounds.height = 0;
-        props.text = weekdays[i];
-        props.font = Text12;
-        props.class_name = LabelMuted;
-        props.wrap = TextWrapNone;
-        Text(props);
-    }
-
-    memset(&day, 0, sizeof(day));
-    day.tm_year = local->tm_year;
-    day.tm_mon = local->tm_mon;
-    day.tm_mday = 1;
-    mktime(&day);
-    first = day.tm_wday;
-    days = 31;
-    if(local->tm_mon == 1)
-        days = day.tm_year % 4 == 0 && (day.tm_year % 100 != 0 ||
-                                        day.tm_year % 400 == 0) ? 29 : 28;
-    else if(local->tm_mon == 3 || local->tm_mon == 5 || local->tm_mon == 8 ||
-            local->tm_mon == 10)
-        days = 30;
-    today = local->tm_mday;
-    for(int d = 1; d <= days; d++) {
-        char label[8];
-        int cell = first + d - 1;
-        Rectangle cell_rect = {menu.x + 12 + (cell % 7) * 28,
-                               menu.y + 50 + (cell / 7) * 22, 26, 20};
-        snprintf(label, sizeof(label), "%d", d);
-        if(d == today)
-            DrawRectangleRec(cell_rect, panel_active_color());
-        else if(CheckCollisionPointRec(GetMousePosition(), cell_rect))
-            DrawRectangleRec(cell_rect, panel_item_hover_color());
-        {
-            TextProps props;
-            memset(&props, 0, sizeof(props));
-            props.bounds.x = (int)cell_rect.x + 8;
-            props.bounds.y = (int)cell_rect.y + 4;
-            props.bounds.width = 0;
-            props.bounds.height = 0;
-            props.text = label;
-            props.font = Text12;
-            props.class_name = d == today ? LabelWhite : LabelPrimary;
-            props.wrap = TextWrapNone;
-            Text(props);
-        }
-    }
-    if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
-       !CheckCollisionPointRec(GetMousePosition(), menu))
-        visuals->calendar_open = 0;
+    visuals->calendar_open = 0;
+    RillCalendarOpen(shell, platform);
 }
 
 static void
@@ -7311,7 +7202,6 @@ draw_settings_app(RillShellState *shell, Rectangle content,
 {
     const char *clock_choices[3] = {"%H:%M", "%H:%M:%S", "%a %d %b %H:%M"};
     char sample[64];
-    time_t now;
     int y;
     int i;
 
@@ -7599,9 +7489,8 @@ draw_settings_app(RillShellState *shell, Rectangle content,
         props.wrap = TextWrapNone;
         Text(props);
     }
-    now = time(NULL);
     for(i = 0; i < 3; i++) {
-        strftime(sample, sizeof(sample), clock_choices[i], localtime(&now));
+        RillClockText(clock_choices[i], sample, sizeof(sample));
         Rectangle rect;
         rect.x = content.x + 12 + i * 148;
         rect.y = y + 20;
@@ -8578,7 +8467,7 @@ main(int argc, char **argv)
             draw_tray_menu(&shell, &visuals, platform);
             draw_volume_menu(&visuals, platform);
             draw_panel_context_menu(&shell, &visuals, platform);
-            draw_calendar_popup(&visuals);
+            draw_calendar_popup(&shell, &visuals, platform);
             draw_clipboard_popup(&shell, &visuals, platform);
             draw_panel_properties(&shell, &visuals);
             draw_notifications(&shell, &visuals, platform);

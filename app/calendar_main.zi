@@ -1,0 +1,28 @@
+#import "calendar_ui"
+#import "clock"
+#import "desktop_host"
+#import "platform_types"
+using UI :: #import "Widgets";
+
+state: CalendarState;
+style_ready: bool;
+
+DrawCalendar :: (session: Session, viewport: Rectangle,
+    app: *DesktopApplication, platform: *RillPlatformServices) {
+    unused platform
+    if !style_ready { style_ready = CalendarStyle() }
+    Calendar(session, viewport, *state, ClockNow())
+    app.closed = state.closed
+}
+
+#if #defined(PLAN9_BUILD) {
+    #program_export
+    threadmain :: (argc: s32, argv: **s8) {
+        unused argc
+        unused argv
+        ApplicationMain(DrawCalendar)
+    }
+} else {
+    #program_export
+    main :: () -> s32 { return ApplicationMain(DrawCalendar) }
+}

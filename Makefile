@@ -7,7 +7,7 @@ KRYON_WITH_SYNC ?= 0
 ZIRAN_DIR ?= ../../ziranlang/ziran
 ZIRAN ?= $(ZIRAN_DIR)/build/bin/ziran
 
-SHELL_MODULES := native_memory platform_types shell_types shell run_dialog applications
+SHELL_MODULES := native_memory platform_types shell_types shell run_dialog applications clock date_time_types date_time_linux calendar
 SHELL_GEN := build/ziran/c
 SHELL_C := $(addprefix $(SHELL_GEN)/,$(addsuffix .c,$(SHELL_MODULES)))
 PERSISTENCE_MODULES := c_string file_linux native_files panel_types panel settings
@@ -16,12 +16,12 @@ STUB_C := $(SHELL_GEN)/platform_stub.c
 PLAN9_HOST_GEN := build/ziran/platform-c
 PLAN9_C := $(PLAN9_HOST_GEN)/platform_plan9.c
 SHELL_STAMP := $(SHELL_GEN)/.generated
-SHELL_SOURCES := $(addprefix src/,$(addsuffix .zi,$(SHELL_MODULES))) src/platform_stub.zi
+SHELL_SOURCES := $(wildcard src/*.zi $(ZIRAN_DIR)/std/*.zi)
 PERSISTENCE_SOURCES := src/native_files.zi src/panel_types.zi src/panel.zi src/settings.zi \
 	$(ZIRAN_DIR)/std/c_string.zi $(ZIRAN_DIR)/std/file_linux.zi $(ZIRAN_DIR)/std/file_plan9.zi
 
 $(SHELL_STAMP): $(SHELL_SOURCES) $(PERSISTENCE_SOURCES) $(ZIRAN)
-	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=c --root src --module-path $(ZIRAN_DIR)/std -o $(SHELL_GEN) src/shell.zi src/platform_stub.zi src/panel.zi src/settings.zi src/run_dialog.zi src/applications.zi
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=c --root src --module-path $(ZIRAN_DIR)/std -o $(SHELL_GEN) src/shell.zi src/platform_stub.zi src/panel.zi src/settings.zi src/run_dialog.zi src/applications.zi src/clock.zi
 	touch $@
 
 $(SHELL_C) $(PERSISTENCE_C) $(STUB_C): $(SHELL_STAMP)
@@ -30,8 +30,8 @@ $(PLAN9_C): src/platform_plan9.zi src/platform_types.zi src/native_memory.zi $(P
 	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=c --root src --module-path $(ZIRAN_DIR)/std -o $(PLAN9_HOST_GEN) src/platform_plan9.zi
 
 .PHONY: ziran-c-plan9 shell-test persistence-test
-ziran-c-plan9: run-dialog-plan9 applications-plan9
-	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root src --module-path $(ZIRAN_DIR)/std -o build/ziran/plan9 src/shell.zi src/panel.zi src/settings.zi src/platform_plan9.zi src/run_dialog.zi src/applications.zi
+ziran-c-plan9: run-dialog-plan9 applications-plan9 calendar-plan9
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root src --module-path $(ZIRAN_DIR)/std -o build/ziran/plan9 src/shell.zi src/panel.zi src/settings.zi src/platform_plan9.zi src/run_dialog.zi src/applications.zi src/clock.zi
 	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root tests --module-path src --module-path $(ZIRAN_DIR)/std -o build/ziran/plan9-test tests/persistence_test.zi
 
 shell-test:
@@ -92,6 +92,30 @@ applications-window-test: $(APPLICATIONS_BIN)
 		PLAN9="$(abspath $(PLAN9PORT_DIR))" DEVDRAW="$(abspath $(PLAN9PORT_DIR))/bin/devdraw" \
 		xvfb-run -a -n 100 python3 tests/applications_window_test.py
 
+CALENDAR_GEN := build/ziran/calendar-c
+CALENDAR_BIN := build/rill-calendar
+
+.PHONY: calendar-build calendar-plan9 clock-test calendar-ui-test calendar-window-test
+calendar-build: $(CALENDAR_BIN)
+
+calendar-plan9:
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --define PLAN9_BUILD --root app --module-path src --module-path $(KRYON_DIR)/src/ui --module-path $(KRYON_DIR)/src/backend --module-path $(ZIRAN_DIR)/std -o build/ziran/calendar-plan9 app/calendar_main.zi
+
+$(CALENDAR_GEN)/.generated: $(RUN_SOURCES) $(ZIRAN)
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=c --root app --module-path src --module-path $(KRYON_DIR)/src/ui --module-path $(KRYON_DIR)/src/backend --module-path $(ZIRAN_DIR)/std -o $(CALENDAR_GEN) app/calendar_main.zi
+	touch $@
+
+clock-test:
+	ZIRAN="$(abspath $(ZIRAN))" ZIRAN_STD="$(abspath $(ZIRAN_DIR)/std)" sh tests/clock_test.sh
+
+calendar-ui-test:
+	ZIRAN="$(abspath $(ZIRAN))" ZIRAN_STD="$(abspath $(ZIRAN_DIR)/std)" KRYON_DIR="$(abspath $(KRYON_DIR))" sh tests/calendar_ui_test.sh
+
+calendar-window-test: $(CALENDAR_BIN)
+	env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY RILL_PRIVATE_XVFB=1 \
+		PLAN9="$(abspath $(PLAN9PORT_DIR))" DEVDRAW="$(abspath $(PLAN9PORT_DIR))/bin/devdraw" \
+		xvfb-run -a -n 100 python3 tests/calendar_window_test.py
+
 CC ?= cc
 CFLAGS ?= -Wall -Wextra -O2
 CPPFLAGS := -Iinclude -I$(KRYON_DIR)/include
@@ -135,6 +159,13 @@ $(RUN_BIN): $(RUN_GEN)/.generated src/platform_linux.c src/files.c src/rill_wayl
 $(APPLICATIONS_BIN): $(APPLICATIONS_GEN)/.generated src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(wildcard include/*.h)
 	$(CC) $(CPPFLAGS) -I$(APPLICATIONS_GEN) $(CFLAGS) \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $(APPLICATIONS_GEN)/*.c \
+		src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(GTK_PKG_LIBS) $(PLATFORM_LDLIBS) \
+		$(shell pkg-config --libs wayland-client 2>/dev/null) \
+		-Wl,-E -L$(PLAN9PORT_DIR)/lib -ldraw -lmemdraw -lmux -lthread -l9 -lpthread -lm -lcairo
+
+$(CALENDAR_BIN): $(CALENDAR_GEN)/.generated src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(wildcard include/*.h)
+	$(CC) $(CPPFLAGS) -I$(CALENDAR_GEN) $(CFLAGS) \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $(CALENDAR_GEN)/*.c \
 		src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(GTK_PKG_LIBS) $(PLATFORM_LDLIBS) \
 		$(shell pkg-config --libs wayland-client 2>/dev/null) \
 		-Wl,-E -L$(PLAN9PORT_DIR)/lib -ldraw -lmemdraw -lmux -lthread -l9 -lpthread -lm -lcairo
@@ -307,13 +338,14 @@ xfce-smoke: $(BIN)
 	PLAN9PORT_DIR="$(abspath $(PLAN9PORT_DIR))" RILL_BIN="$(abspath $(BIN))" sh tests/rill_xfce_smoke.sh
 
 PREFIX ?= /usr/local
-.PHONY: install run-dialog-install applications-install session-test
-install: $(BIN) $(RUN_BIN) $(APPLICATIONS_BIN)
+.PHONY: install run-dialog-install applications-install calendar-install session-test
+install: $(BIN) $(RUN_BIN) $(APPLICATIONS_BIN) $(CALENDAR_BIN)
 	install -Dm755 $(WM_BIN) $(DESTDIR)$(PREFIX)/bin/rill-wm
 	install -Dm755 $(SESSIOND_BIN) $(DESTDIR)$(PREFIX)/bin/rill-sessiond
 	install -Dm755 $(BIN) $(DESTDIR)$(PREFIX)/bin/rill
 	install -Dm755 $(RUN_BIN) $(DESTDIR)$(PREFIX)/bin/rill-run
 	install -Dm755 $(APPLICATIONS_BIN) $(DESTDIR)$(PREFIX)/bin/rill-applications
+	install -Dm755 $(CALENDAR_BIN) $(DESTDIR)$(PREFIX)/bin/rill-calendar
 	install -Dm755 scripts/rill-session $(DESTDIR)$(PREFIX)/bin/rill-session
 	install -Dm755 scripts/rill-window $(DESTDIR)$(PREFIX)/bin/rill-window
 	install -Dm644 session/rill.desktop $(DESTDIR)$(PREFIX)/share/xsessions/rill.desktop
@@ -321,6 +353,11 @@ install: $(BIN) $(RUN_BIN) $(APPLICATIONS_BIN)
 	install -Dm644 session/applications/rill-settings.desktop $(DESTDIR)$(PREFIX)/share/applications/rill-settings.desktop
 	install -Dm644 session/applications/rill-run.desktop $(DESTDIR)$(PREFIX)/share/applications/rill-run.desktop
 	install -Dm644 session/applications/rill-applications.desktop $(DESTDIR)$(PREFIX)/share/applications/rill-applications.desktop
+	install -Dm644 session/applications/rill-calendar.desktop $(DESTDIR)$(PREFIX)/share/applications/rill-calendar.desktop
+
+calendar-install: $(CALENDAR_BIN)
+	install -Dm755 $(CALENDAR_BIN) $(DESTDIR)$(PREFIX)/bin/rill-calendar
+	install -Dm644 session/applications/rill-calendar.desktop $(DESTDIR)$(PREFIX)/share/applications/rill-calendar.desktop
 
 applications-install: $(APPLICATIONS_BIN)
 	install -Dm755 $(APPLICATIONS_BIN) $(DESTDIR)$(PREFIX)/bin/rill-applications

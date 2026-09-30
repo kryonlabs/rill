@@ -12,7 +12,9 @@ RILLOBJS=$RILLGEN/native_memory.$O $RILLGEN/platform_types.$O \
 	$RILLGEN/c_string.$O $RILLGEN/file_plan9.$O $RILLGEN/native_files.$O \
 	$RILLGEN/panel_types.$O $RILLGEN/panel.$O $RILLGEN/settings.$O \
 	$RILLGEN/platform_plan9.$O $RILLGEN/process_plan9.$O \
-	$RILLGEN/number_text.$O $RILLGEN/text_buffer.$O
+	$RILLGEN/number_text.$O $RILLGEN/text_buffer.$O \
+	$RILLGEN/clock.$O $RILLGEN/date_time_types.$O \
+	$RILLGEN/date_time_plan9.$O $RILLGEN/calendar.$O
 RILLTEST=build/ziran/plan9-test
 RILLTESTOBJS=$RILLTEST/native_memory.$O $RILLTEST/platform_types.$O \
 	$RILLTEST/c_string.$O $RILLTEST/file_plan9.$O $RILLTEST/native_files.$O \
@@ -57,6 +59,7 @@ all:V: check-rill-ziran check-t9 $OUT
 install:V: check-rill-ziran check-t9 $BIN/$TARG
 	mk -f app/run.mk install
 	mk -f app/applications.mk install
+	mk -f app/calendar.mk install
 
 check-rill-ziran:V:
 	if(! test -f $RILLGEN/shell.c || ! test -f $RILLGEN/panel.c || ! test -f $RILLGEN/settings.c || ! test -f $RILLGEN/platform_plan9.c) {

@@ -1,0 +1,46 @@
+#import "date_time_types"
+#import "calendar"
+#import "native_memory"
+#import "shell"
+#import "shell_types"
+#import "platform_types"
+
+#if #defined(NATIVE_PLAN9) {
+    Time :: #import "date_time_plan9";
+} else {
+    Time :: #import "date_time_linux";
+}
+
+ClockNow :: () -> LocalDateTime { return Time.LocalNow() }
+
+ClockText :: (reading: LocalDateTime, pattern: string, output: *s8, capacity: s32) -> s32 {
+    if output == null || capacity <= 0 { return 0 }
+    bytes: [256]u8
+    format := pattern
+    if format.count == 0 { format = "%H:%M" }
+    text := FormatDateTime(reading, format, bytes[:])
+    if text.count == 0 || text.count >= cast(s64)capacity {
+        return CopyText(output, capacity, TextBytes("--:--"))
+    }
+    return CopyText(output, capacity, cast(*s8)(*bytes[0]))
+}
+
+#program_export
+RillClockText :: (format: *s8, output: *s8, capacity: s32) -> s32 {
+    return ClockText(ClockNow(), CString(format), output, capacity)
+}
+
+#program_export
+RillCalendarOpen :: (shell: *RillShellState, platform: *RillPlatformServices) -> s32 {
+    if shell == null || platform == null || platform.launch == null { return 0 }
+    launcher: RillLauncher
+    CopyText(*launcher.id[0], 64, TextBytes("calendar"))
+    CopyText(*launcher.name[0], 96, TextBytes("Calendar"))
+    CopyText(*launcher.command[0], 256, TextBytes("rill-calendar"))
+    if platform.launch(*launcher) == 0 {
+        RillShellSetStatus(shell, TextBytes("Could not open the calendar"))
+        return 0
+    }
+    shell.status[0] = 0
+    return 1
+}

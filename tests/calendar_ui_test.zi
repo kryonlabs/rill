@@ -1,0 +1,119 @@
+#import "calendar_ui"
+#import "date_time_types"
+#import "native_memory"
+using UI :: #import "Widgets";
+#import "tree_draw"
+using FrameStatus;
+#if #defined(PLAN9_BUILD) {
+    #import "libdraw_native"
+} else {
+    #import "cairo_raster"
+}
+
+session: Session;
+state: CalendarState;
+today: LocalDateTime;
+viewport: Rectangle;
+
+Draw :: (key: s32, pointer: PointerFrame) -> bool {
+    BeginRasterFrame()
+    TreePointerUpdate(session, pointer)
+    KeyboardSend(session, key)
+    if BeginFrame(session, cast(u64)1, viewport) != cast(FrameStatus)FrameOk { return false }
+    Calendar(session, viewport, *state, today)
+    return EndFrame(session) == cast(FrameStatus)FrameOk && FinishRasterFrame()
+}
+
+Key :: (key: s32) -> bool { return Draw(key, PointerFrame.{}) }
+
+DayBounds :: (day: s32) -> Rectangle {
+    index: s32 = 0
+    while index < TreeCount(session) {
+        node := TreeNodeAt(session, index)
+        if node.key == cast(u64)(13100 + day) { return node.bounds }
+        index += 1
+    }
+    return Rectangle.{}
+}
+
+Cases :: () -> s32 {
+    today = .{year = 2000, month = 2, day = 29, hour = 12, valid = true}
+    viewport = Rectangle.{0.0, 0.0, 480.0, 300.0}
+    if !OpenRaster(480, 300) || !CalendarStyle() { return 1 }
+    session = SessionOpen()
+    if !Key(0) || state.year != 2000 || state.month != 2 || state.selected != 29 ||
+        DayBounds(29).width <= 0.0 || DayBounds(30).width != 0.0 { return 2 }
+    if !CaptureConfigured() { return 3 }
+    if !Key(KeyPageDown) || state.month != 3 || state.selected != 0 ||
+        DayBounds(31).width <= 0.0 { return 4 }
+    if !Key(KeyPageUp) || state.month != 2 || !Key(KeyHome) || state.selected != 29 { return 5 }
+    cell := DayBounds(15)
+    pointer := PointerFrame.{cell.x + cell.width / 2.0, cell.y + cell.height / 2.0, true, true, false}
+    if !Draw(0, pointer) { return 6 }
+    pointer.down = false
+    pointer.pressed = false
+    pointer.released = true
+    if !Draw(0, pointer) || state.selected != 15 { return 7 }
+    state.year = 1900
+    state.month = 2
+    if !Key(0) || DayBounds(29).width != 0.0 { return 8 }
+    state.year = 2100
+    if !Key(0) || DayBounds(29).width != 0.0 { return 9 }
+    state.year = 2026
+    state.month = 12
+    if !Key(KeyRight) || state.year != 2027 || state.month != 1 ||
+        !Key(KeyLeft) || state.year != 2026 || state.month != 12 { return 10 }
+    state.year = 1
+    state.month = 1
+    if !Key(KeyLeft) || state.year != 1 || state.month != 1 { return 11 }
+    state.year = 9999
+    state.month = 12
+    if !Key(KeyRight) || state.year != 9999 || state.month != 12 { return 12 }
+    // A six-week month must fit above the actions at the minimum supported size.
+    viewport = Rectangle.{0.0, 0.0, 280.0, 260.0}
+    state.year = 2026
+    state.month = 8
+    if !Key(0) { return 13 }
+    cell = DayBounds(31)
+    if cell.width < 30.0 || cell.y + cell.height > viewport.height - 40.0 { return 14 }
+    state = .{}
+    today.valid = false
+    if !Key(0) || state.started || state.closed { return 15 }
+    today.valid = true
+    if !Key(0) || !state.started || state.selected != 29 { return 16 }
+    if !Key(KeyEscape) || !state.closed { return 17 }
+    CloseSession(session)
+    CloseRaster()
+    return 0
+}
+
+Report :: () -> s32 {
+    result := Cases()
+    if result != 0 { print("rill-calendar-ui-test-failed: %\n", result) }
+    else { print("rill-calendar-ui-test-ok\n") }
+    return result
+}
+
+#if #defined(PLAN9_BUILD) {
+    thread_library :: #system_library "thread";
+    ThreadStart :: #type (value: *void) #c_call;
+    ThreadCreate :: (start: ThreadStart, value: *void, stack: u32) -> s32 #foreign thread_library "threadcreate";
+    ThreadExits :: (status: *s8) #foreign thread_library "threadexits";
+    ThreadExitsAll :: (status: *s8) #foreign thread_library "threadexitsall";
+    #program_export
+    TestThread :: (value: *void) {
+        unused value
+        if Report() == 0 { ThreadExitsAll(null) }
+        else { ThreadExitsAll(TextBytes("Calendar UI failed")) }
+    }
+    #program_export
+    threadmain :: (argc: s32, argv: **s8) {
+        unused argc
+        unused argv
+        if ThreadCreate(TestThread, null, 1048576) < 0 { ThreadExitsAll(TextBytes("Calendar UI failed")) }
+        ThreadExits(null)
+    }
+} else {
+    #program_export
+    main :: () -> s32 { return Report() }
+}

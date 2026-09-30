@@ -1,0 +1,141 @@
+using UI :: #import "Widgets";
+#import "date_time_types"
+#import "calendar"
+Numbers :: #import "number_text";
+using StyleField;
+
+// Day cells need smaller padding than full-width application actions.
+CalendarStyle :: () -> bool {
+    rules: StyleRules
+    rule: StyleRule
+    rule.selector = StyleDefaultSelector()
+    rule.selector.kind = StyleKindButton()
+    rule.selector.class_name = 1301
+    rule.style.fields = cast(u32)StylePaddingX | cast(u32)StylePaddingY | cast(u32)StyleFontSize
+    rule.style.padding_x = 4.0
+    rule.style.padding_y = 2.0
+    rule.style.font_size = 12.0
+    rules.count = 1
+    rules.items[0] = rule
+    return InstallStyleRules(rules)
+}
+
+CalendarState :: struct {
+    year: s32
+    month: s32
+    selected: s32
+    started: bool
+    closed: bool
+}
+
+#scope_file
+Label :: (session: Session, key: u64, bounds: Rectangle, text: string, font: s32) {
+    props: TextProps
+    props.key = key
+    props.bounds = bounds
+    props.text = text
+    props.font = font
+    props.align = cast(TextAlign)1
+    Text(session, props)
+}
+
+Today :: (state: *CalendarState, today: LocalDateTime) {
+    if !DateTimeValid(today) { return }
+    state.year = today.year
+    state.month = today.month
+    state.selected = today.day
+    state.started = true
+}
+
+MoveMonth :: (state: *CalendarState, direction: s32) {
+    if direction < 0 {
+        if state.month > 1 { state.month -= 1 }
+        else if state.year > 1 { state.year -= 1; state.month = 12 }
+    } else {
+        if state.month < 12 { state.month += 1 }
+        else if state.year < 9999 { state.year += 1; state.month = 1 }
+    }
+    state.selected = 0
+}
+
+#scope_export
+#program_export
+Calendar :: (session: Session, viewport: Rectangle, state: *CalendarState, today: LocalDateTime) {
+    if state == null || state.closed { return }
+    if !state.started { Today(state, today) }
+    key := KeyboardTake(session)
+    if key == KeyEscape { state.closed = true; return }
+    if state.started {
+        if key == KeyPageUp || key == KeyLeft { MoveMonth(state, -1) }
+        if key == KeyPageDown || key == KeyRight { MoveMonth(state, 1) }
+        if key == KeyHome { Today(state, today) }
+    }
+    width := viewport.width - 24.0
+    if width > 440.0 { width = 440.0 }
+    if width < 140.0 { width = 140.0 }
+    x := viewport.x + (viewport.width - width) / 2.0
+    y := viewport.y + 12.0
+    if !state.started {
+        Label(session, cast(u64)13001, Rectangle.{x, y, width, 30.0}, "Date unavailable", 18)
+    } else {
+        previous: ButtonProps
+        previous.key = cast(u64)13002
+        previous.bounds = Rectangle.{x, y, 32.0, 30.0}
+        previous.label = "<"
+        previous.disabled = state.year == 1 && state.month == 1
+        if Button(session, previous) > 0 { MoveMonth(state, -1) }
+        next: ButtonProps
+        next.key = cast(u64)13003
+        next.bounds = Rectangle.{x + width - 32.0, y, 32.0, 30.0}
+        next.label = ">"
+        next.disabled = state.year == 9999 && state.month == 12
+        if Button(session, next) > 0 { MoveMonth(state, 1) }
+        heading: [64]u8
+        month: LocalDateTime = .{year = state.year, month = state.month, day = 1, valid = true}
+        Label(session, cast(u64)13004, Rectangle.{x + 36.0, y + 4.0, width - 72.0, 26.0},
+            FormatDateTime(month, "%B %Y", heading[:]), 18)
+        weekdays: [7]string = .["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        cell_width := width / 7.0
+        cell_height := (viewport.height - 124.0) / 6.0
+        if cell_height > 34.0 { cell_height = 34.0 }
+        if cell_height < 18.0 { cell_height = 18.0 }
+        index: s32 = 0
+        while index < 7 {
+            Label(session, cast(u64)(13010 + index), Rectangle.{x + cast(float32)index * cell_width,
+                y + 40.0, cell_width, 20.0}, weekdays[index], 12)
+            index += 1
+        }
+        first := DayOfWeek(state.year, state.month, 1)
+        days := DaysInMonth(state.year, state.month)
+        day: s32 = 1
+        while day <= days {
+            cell := first + day - 1
+            bounds := Rectangle.{x + cast(float32)(cell % 7) * cell_width,
+                y + 64.0 + cast(float32)(cell / 7) * cell_height, cell_width - 2.0, cell_height - 2.0}
+            is_today := DateTimeValid(today) && state.year == today.year &&
+                state.month == today.month && day == today.day
+            digits: [8]u8
+            button: ButtonProps
+            button.key = cast(u64)(13100 + day)
+            button.bounds = bounds
+            button.label = Numbers.FormatInteger(cast(s64)day, digits[:])
+            button.size = cast(ControlSize)1
+            button.selected = state.selected == day
+            button.class_name = 1301
+            if is_today { button.tone = cast(ButtonTone)1 }
+            if Button(session, button) > 0 { state.selected = day }
+            day += 1
+        }
+    }
+    reset: ButtonProps
+    reset.key = cast(u64)13005
+    reset.bounds = Rectangle.{x, viewport.y + viewport.height - 40.0, width / 2.0 - 4.0, 28.0}
+    reset.label = "Today"
+    reset.disabled = !DateTimeValid(today)
+    if Button(session, reset) > 0 { Today(state, today) }
+    close: ButtonProps
+    close.key = cast(u64)13006
+    close.bounds = Rectangle.{x + width / 2.0 + 4.0, reset.bounds.y, width / 2.0 - 4.0, 28.0}
+    close.label = "Close"
+    if Button(session, close) > 0 { state.closed = true }
+}

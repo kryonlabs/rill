@@ -1,0 +1,57 @@
+#import "clock"
+#import "calendar"
+#import "date_time_types"
+#import "native_memory"
+#import "shell"
+#import "shell_types"
+#import "platform_types"
+
+shell: RillShellState;
+platform: RillPlatformServices;
+launch_count: s32;
+launch_ok: bool;
+command: [256]s8;
+
+Launch :: (launcher: *RillLauncher) -> s32 {
+    CopyText(*command[0], 256, *launcher.command[0])
+    launch_count += 1
+    return cast(s32)launch_ok
+}
+
+Cases :: () -> s32 {
+    reading: LocalDateTime = .{year = 2026, month = 9, day = 30,
+        hour = 16, minute = 5, second = 9, valid = true}
+    output: [64]s8
+    if ClockText(reading, "%H:%M", *output[0], 64) != 5 ||
+        !TextEquals(*output[0], TextBytes("16:05")) ||
+        ClockText(reading, "%H:%M:%S", *output[0], 64) != 8 ||
+        !TextEquals(*output[0], TextBytes("16:05:09")) { return 1 }
+    if ClockText(reading, "%a %d %b %H:%M", *output[0], 64) != 16 ||
+        !TextEquals(*output[0], TextBytes("Wed 30 Sep 16:05")) { return 2 }
+    if ClockText(reading, "", *output[0], 64) != 5 ||
+        !TextEquals(*output[0], TextBytes("16:05")) { return 3 }
+    reading.valid = false
+    if ClockText(reading, "%H:%M", *output[0], 64) != 5 ||
+        !TextEquals(*output[0], TextBytes("--:--")) ||
+        ClockText(reading, "%H:%M", null, 64) != 0 { return 4 }
+    if !DateTimeValid(ClockNow()) || RillClockText(null, *output[0], 64) != 5 { return 5 }
+    RillShellInit(*shell)
+    platform.launch = Launch
+    if RillCalendarOpen(null, *platform) != 0 || RillCalendarOpen(*shell, null) != 0 ||
+        RillCalendarOpen(*shell, *platform) != 0 || launch_count != 1 ||
+        !TextEquals(*command[0], TextBytes("rill-calendar")) || shell.status[0] == 0 { return 6 }
+    launch_ok = true
+    if RillCalendarOpen(*shell, *platform) != 1 || launch_count != 2 || shell.status[0] != 0 { return 7 }
+    platform = .{}
+    if RillCalendarOpen(*shell, *platform) != 0 || launch_count != 2 { return 8 }
+    RillShellDispose(*shell)
+    return 0
+}
+
+#program_export
+main :: () -> s32 {
+    result := Cases()
+    if result != 0 { print("rill-clock-test-failed: %\n", result) }
+    else { print("rill-clock-test-ok\n") }
+    return result
+}

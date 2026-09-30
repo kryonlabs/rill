@@ -26,6 +26,15 @@ open. Settings and About use installed application entrypoints, and session
 actions require confirmation. The separate menu opens an ordinary libdraw
 window while the rest of the panel is being converted.
 
+The panel clock now uses `src/clock.zi` and Ziran's native date/time and
+Gregorian calendar modules. The three clock preferences keep their existing
+formats. The calendar opens `rill-calendar`, a current Ziran/Kryon application,
+with month navigation, day selection, Today, Close, and Escape. Left/Right or
+Page Up/Down change months; Home returns to today. The former C calendar
+renderer was removed. Calendar and clock formatting use English month and day
+names; custom clock preferences support the civil format tokens documented
+by Ziran's `calendar` module.
+
 The conversion remains incomplete. Other graphical screens, file operations,
 Linux platform services, window management, and the session daemon still need
 conversion. The C desktop entrypoint and legacy Settings `.kry` screen depend on
@@ -64,7 +73,7 @@ offscreen rendering.
 `make applications-build` builds `build/rill-applications`; its Linux service
 adapter remains C. `make applications-plan9` emits the entire native menu and
 host through `plan9-c`, and `mk -f app/applications.mk` builds it in the guest.
-Run and Applications share `app/desktop_host.zi` for libdraw input, preferences,
+Run, Applications, and Calendar share `app/desktop_host.zi` for libdraw input, preferences,
 frame composition, and window lifetime. Their text fields use Kryon's shared
 keyboard and Unicode input APIs.
 
@@ -76,6 +85,15 @@ real menu window on a private Xvfb display. Both graphical window tests verify
 PID ownership before input and assert the actual window dimensions. Taiji's
 native gate also runs menu policy and UI cases from source and saved IR and
 builds and captures the actual native Applications executable.
+
+`make calendar-build calendar-plan9` builds the hosted calendar and generates
+its native Plan 9 output. `mk -f app/calendar.mk install` installs it in the
+guest. `make clock-test calendar-ui-test calendar-window-test` checks clock
+formats and launch failure, leap years including 1900/2000/2100, month and
+year navigation, six-week layouts, missing clock readings, day clicks, and
+closing the real libdraw window on a private Xvfb display. The native guest
+gate executes source and saved-IR calendar cases and captures the installed
+calendar alongside Run and Applications.
 
 The project keeps shell behavior outside Kryon. Kryon provides the UI runtime,
 renderer backends, widgets, and reusable platform primitives; Rill owns panels,
