@@ -65,7 +65,8 @@ Read :: (suffix: string, output: *s8, capacity: s32) -> bool {
 DesktopCases :: (platform: *RillPlatformServices) -> s32 {
     if platform.desktop_directory == null || platform.list_desktop_files == null ||
         platform.file_operation == null || platform.open_path == null { return 30 }
-    if !TextEquals(platform.desktop_directory(), TextBytes(Path("/Desktop"))) ||
+    if !SetEnvironment("RILL_DESKTOP_DIR", TextBytes(Path("/Desktop"))) ||
+        !TextEquals(platform.desktop_directory(), TextBytes(Path("/Desktop"))) ||
         platform.list_desktop_files(*desktop_files[0], 8) != 0 ||
         !File.CreateDirectory(Path("/Desktop")) || !File.CreateDirectory(Path("/Desktop/Folder")) ||
         !Put("/Desktop/Note.txt", "original") || !Put("/Desktop/é.txt", "unicode") ||
