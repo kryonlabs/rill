@@ -7,6 +7,8 @@ PLAN9 :: #defined(NATIVE_PLAN9);
 #if PLAN9 {
     Process :: #import "process_plan9"
     File :: #import "file_plan9"
+    #import "document_open"
+    #import "document_native"
 } else {
     File :: #import "file_linux"
 }
@@ -363,8 +365,16 @@ OpenPath :: (path: *s8) -> s32 {
             arguments: [8]string = .["/bin/window", "-m", "-dx", "760", "-dy", "500", "/bin/shelf", CString(path)]
             return Start(arguments[:])
         }
-        arguments: [2]string = .["/bin/rill-open", CString(path)]
-        return Start(arguments[:])
+        plan := cast(*DocumentPlan)AllocateZeroed(1, size_of(DocumentPlan))
+        if plan == null { return 0 }
+        home: [1024]s8
+        Home(*home[0], 1024)
+        arguments: [16]string
+        executable: [4096]u8
+        ok := DocumentResolve(CString(path), CString(*home[0]), "/lib/rill", plan) &&
+            DocumentArguments(plan, arguments[:], executable[:]) && Start(arguments[0:plan.count]) != 0
+        ReleaseAllocation(cast(*void)plan)
+        return cast(s32)ok
     } else { return 0 }
 }
 

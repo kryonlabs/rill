@@ -1,0 +1,139 @@
+#import "document_open"
+#import "native_memory"
+#import "c_string"
+#if #defined(NATIVE_PLAN9) {
+    File :: #import "file_plan9";
+    Process :: #import "process_plan9";
+    #import "document_native"
+    libc :: #system_library "libc";
+    SetEnvironment :: (name: *s8, value: *s8) -> s32 #foreign libc "putenv";
+    ChangeDirectory :: (path: *s8) -> s32 #foreign libc "chdir";
+    Sleep :: (milliseconds: s32) -> s32 #foreign libc "sleep";
+} else {
+    File :: #import "file_linux";
+}
+
+#scope_file
+root: [512]s8;
+path: [4096]s8;
+registry_root: [1024]s8;
+plan: *DocumentPlan;
+
+Path :: (suffix: string) -> string {
+    used := CopyText(*path[0], 4096, *root[0])
+    CopyText(*path[used], 4096 - used, TextBytes(suffix))
+    return CString(*path[0])
+}
+Put :: (suffix: string, text: string) -> bool {
+    file := File.OpenReplace(Path(suffix))
+    if !file.valid { return false }
+    bytes: [16384]u8
+    if text.count > bytes.count { File.CloseFile(file); return false }
+    index: s64 = 0
+    while index < text.count { bytes[index] = text[index]; index += 1 }
+    return File.Write(file, bytes[0:text.count]) == text.count && File.CloseFile(file)
+}
+Resolve :: (suffix: string) -> bool { return DocumentResolve(Path(suffix), CString(*root[0]), CString(*registry_root[0]), plan) }
+
+#if #defined(NATIVE_PLAN9) {
+    Await :: (suffix: string, expected: string) -> bool {
+        tries: s32 = 0
+        while tries < 400 {
+            file := File.OpenRead(Path(suffix))
+            if file.valid {
+                bytes: [2048]u8
+                count := File.Read(file, bytes[:])
+                File.CloseFile(file)
+                if count > 0 && TextView(bytes[0:count]) == expected { return true }
+            }
+            Sleep(10)
+            tries += 1
+        }
+        return false
+    }
+    Expected :: (document: string, output: *s8) -> string {
+        used := CopyText(output, 2048, TextBytes("2\nQuoted 'title'\n"))
+        used += CopyText(*output[used], 2048 - used, TextBytes(document))
+        CopyText(*output[used], 2048 - used, TextBytes("\n"))
+        return CString(output)
+    }
+    Native :: () -> s32 {
+        if !Put("/probe.rc", "#!/bin/rc\necho $#* > $2^.opened\necho $1 >> $2^.opened\necho $2 >> $2^.opened\n") ||
+            !Put("/Space's $x; 文档.TXT", "one") || !Put("/Other file.txt", "two") { return 40 }
+        registry: [8192]s8
+        used := CopyText(*registry[0], 8192, TextBytes("[Desktop Entry]\nId=probe\nExec=/bin/rc '"))
+        used += CopyText(*registry[used], 8192 - used, TextBytes(Path("/probe.rc")))
+        CopyText(*registry[used], 8192 - used, TextBytes("' 'Quoted ''title'''\n"))
+        if !Put("/lib/rill/associations", "txt probe\n") || !Put("/lib/rill/applications", CString(*registry[0])) ||
+            !Resolve("/Space's $x; 文档.TXT") { return 41 }
+        arguments: [16]string
+        executable: [4096]u8
+        expected: [2048]s8
+        wanted := Expected(Path("/Space's $x; 文档.TXT"), *expected[0])
+        if !DocumentArguments(plan, arguments[:], executable[:]) ||
+            !Process.StartDetached(arguments[0:plan.count]).valid ||
+            !Await("/Space's $x; 文档.TXT.opened", wanted) { return 42 }
+        if !File.RemoveFile(Path("/Space's $x; 文档.TXT.opened")) { return 43 }
+        cli := EnvironmentValue(TextBytes("RILL_OPEN_BIN"))
+        if cli == null || SetEnvironment(TextBytes("home"), *root[0]) != 0 || ChangeDirectory(*root[0]) != 0 { return 44 }
+        first: [1024]s8
+        CopyText(*first[0], 1024, TextBytes(Path("/Space's $x; 文档.TXT")))
+        args: [3]string = .[CString(cli), CString(*first[0]), "Other file.txt"]
+        launched := Process.StartDetached(args[:])
+        ReleaseAllocation(cast(*void)cli)
+        if !launched.valid || !Await("/Space's $x; 文档.TXT.opened", wanted) { return 45 }
+        wanted = Expected(Path("/Other file.txt"), *expected[0])
+        if !Await("/Other file.txt.opened", wanted) { return 46 }
+        return 0
+    }
+}
+
+Run :: () -> s32 {
+    value := EnvironmentValue(TextBytes("RILL_TEST_ROOT"))
+    if value == null { return 99 }
+    CopyText(*root[0], 512, value)
+    #if #defined(NATIVE_PLAN9) {
+        ReleaseAllocation(cast(*void)value)
+    }
+    CopyText(*registry_root[0], 1024, TextBytes(Path("/system")))
+    plan = cast(*DocumentPlan)AllocateZeroed(1, size_of(DocumentPlan))
+    if plan == null || !File.CreateDirectory(Path("/system")) || !File.CreateDirectory(Path("/lib")) ||
+        !File.CreateDirectory(Path("/lib/rill")) { return 1 }
+    if !Put("/system/associations", "# ignored\n txt system-editor\nmd system-editor\nconf missing\nbin broken\n") ||
+        !Put("/system/applications", "[Other Group]\nId=system-editor\nExec=wrong\n[Desktop Entry]\nExec=window -m -dx 648 -dy 516 linux-app -t 'Text Editor' xterm -geometry 640x480+0+0 -e nano\nId=system-editor\n[Desktop Entry]\nId=broken\nExec='unclosed\n") ||
+        !Put("/lib/rill/associations", "txt native-editor # override\n") ||
+        !Put("/lib/rill/applications", "[Desktop Entry]\nId=native-editor\nExec=old\n[Desktop Entry]\nExec=window -t 'User''s Editor' native-editor\nId=native-editor\n") { return 2 }
+    if !Resolve("/Documents/space's $x;name.TXT") || plan.count != 5 ||
+        !TextEquals(*plan.application[0], TextBytes("native-editor")) ||
+        !TextEquals(*plan.arguments[2].bytes[0], TextBytes("User's Editor")) ||
+        !TextEquals(*plan.arguments[4].bytes[0], TextBytes(Path("/Documents/space's $x;name.TXT"))) { return 3 }
+    if !Resolve("/Docs/../Documents/a.md") || plan.count != 15 ||
+        !TextEquals(*plan.application[0], TextBytes("system-editor")) ||
+        !TextEquals(*plan.arguments[8].bytes[0], TextBytes("Text Editor")) ||
+        !TextEquals(*plan.arguments[14].bytes[0], TextBytes("/home/user/Documents/a.md")) { return 4 }
+    if Resolve("/../outside.md") || plan.count != 0 || Resolve("2/Document.md") ||
+        Resolve("/.hidden") || Resolve("/dir.with.dot/name") || Resolve("/trailing.") ||
+        Resolve("/missing.conf") || Resolve("/broken.bin") || Resolve("/unknown.xyz") { return 5 }
+    if !DocumentCommand("tool \"double title\" '' escaped\\ word '$HOME;*'", plan) || plan.count != 5 ||
+        !TextEquals(*plan.arguments[1].bytes[0], TextBytes("double title")) || plan.arguments[2].bytes[0] != 0 ||
+        !TextEquals(*plan.arguments[3].bytes[0], TextBytes("escaped word")) ||
+        !TextEquals(*plan.arguments[4].bytes[0], TextBytes("$HOME;*")) ||
+        DocumentCommand("tool 'bad", plan) || DocumentCommand("tool trailing\\", plan) ||
+        DocumentCommand("a b c d e f g h i j k l m n o p", plan) ||
+        DocumentCommand("tool\u0000hidden", plan) { return 6 }
+    #if #defined(NATIVE_PLAN9) {
+        native := Native()
+        if native != 0 { return native }
+    }
+    ReleaseAllocation(cast(*void)plan)
+    return 0
+}
+
+#scope_export
+#program_export
+main :: () -> s32 {
+    result := Run()
+    if result != 0 { print("rill-document-open-test-failed: %\n", result) }
+    else { print("rill-document-open-test-ok\n") }
+    return result
+}

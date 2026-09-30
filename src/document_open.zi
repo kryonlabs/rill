@@ -1,0 +1,232 @@
+#import "native_memory"
+#import "native_files"
+Path :: #import "path";
+
+DocumentArgument :: struct { bytes: [4096]s8; }
+DocumentPlan :: struct {
+    arguments: [16]DocumentArgument
+    count: s32
+    file: [1024]u8
+    application: [64]s8
+    error: [160]s8
+}
+
+#scope_file
+Fail :: (plan: *DocumentPlan, message: string) -> bool {
+    plan.count = 0
+    CopyText(*plan.error[0], 160, TextBytes(message))
+    return false
+}
+
+Join :: (root: string, suffix: string, output: *s8, capacity: s32) -> bool {
+    if root.count + suffix.count >= cast(s64)capacity { return false }
+    used := CopyText(output, capacity, TextBytes(root))
+    CopyText(*output[used], capacity - used, TextBytes(suffix))
+    return true
+}
+
+// Read complete bounded lines; do not reinterpret a long line's tail as a
+// second registry entry. Files are closed before starting any application.
+Line :: (reader: *Reader, output: *s8, capacity: s32) -> s32 {
+    count: s32 = 0
+    overflow: bool = false
+    seen: bool = false
+    while true {
+        byte := ReadByte(reader)
+        if byte < 0 || byte == 10 { break }
+        seen = true
+        if byte == 0 || count + 1 >= capacity { overflow = true }
+        if !overflow { output[count] = cast(s8)byte; count += 1 }
+    }
+    output[count] = 0
+    if reader.failed || overflow { return -1 }
+    if !seen && count == 0 && PeekByte(reader) < 0 { return 0 }
+    return 1
+}
+
+Trim :: (line: *s8) -> *s8 {
+    while line[0] == 32 || line[0] == 9 || line[0] == 13 { line = *line[1] }
+    length := TextLength(line)
+    while length > 0 && (line[length - 1] == 32 || line[length - 1] == 9 || line[length - 1] == 13) {
+        length -= 1
+        line[length] = 0
+    }
+    return line
+}
+
+Association :: (file: *s8, suffix: *s8, output: *s8) -> bool {
+    reader := OpenReader(file)
+    if reader == null { return false }
+    line: [512]s8
+    matched: bool = false
+    while Line(reader, *line[0], 512) > 0 {
+        text := Trim(*line[0])
+        if text[0] == 35 || text[0] == 0 { continue }
+        at: s32 = 0
+        while text[at] != 0 && text[at] != 32 && text[at] != 9 { at += 1 }
+        if text[at] == 0 { continue }
+        text[at] = 0
+        if !TextEquals(text, suffix) { continue }
+        id := Trim(*text[at + 1])
+        at = 0
+        while id[at] != 0 && id[at] != 32 && id[at] != 9 && id[at] != 35 { at += 1 }
+        end := id[at]
+        id[at] = 0
+        if at == 0 || at >= 64 { break }
+        // A trailing comment is allowed; extra rule fields are malformed.
+        if end != 0 {
+            tail := Trim(*id[at + 1])
+            if end != 35 && tail[0] != 0 && tail[0] != 35 { break }
+        }
+        CopyText(output, 64, id)
+        matched = true
+        break
+    }
+    CloseReader(reader)
+    return matched
+}
+
+Command :: (file: *s8, id: *s8, output: *s8) -> bool {
+    reader := OpenReader(file)
+    if reader == null { return false }
+    line: [4096]s8
+    entry_id: [64]s8
+    entry_exec: [4096]s8
+    entry: bool = false
+    matched: bool = false
+    while true {
+        result := Line(reader, *line[0], 4096)
+        if result < 0 { matched = false; break }
+        text := Trim(*line[0])
+        if result == 0 || text[0] == 91 {
+            if entry && TextEquals(*entry_id[0], id) && entry_exec[0] != 0 {
+                CopyText(output, 4096, *entry_exec[0])
+                matched = true
+            }
+            entry_id[0] = 0
+            entry_exec[0] = 0
+            entry = result != 0 && TextEquals(text, TextBytes("[Desktop Entry]"))
+            if result == 0 { break }
+        } else if entry && TextStartsWith(text, "Id=") {
+            value := Trim(*text[3])
+            if TextLength(value) < 64 { CopyText(*entry_id[0], 64, value) }
+            else { entry_id[0] = 0 }
+        } else if entry && TextStartsWith(text, "Exec=") {
+            CopyText(*entry_exec[0], 4096, Trim(*text[5]))
+        }
+    }
+    CloseReader(reader)
+    return matched
+}
+
+#scope_export
+// Parse registry argument grouping without interpreting shell expressions.
+// Quotes and escaped characters become literal argv bytes. Reserve one slot
+// for the document. Plan 9 child launch supports at most sixteen arguments.
+DocumentCommand :: (command: string, plan: *DocumentPlan) -> bool {
+    plan.count = 0
+    at: s64 = 0
+    while at < command.count {
+        while at < command.count && (command[at] == cast(u8)32 || command[at] == cast(u8)9) { at += 1 }
+        if at == command.count { break }
+        if plan.count >= 15 { return Fail(plan, "The application has too many arguments") }
+        used: s32 = 0
+        quote: u8 = cast(u8)0
+        while at < command.count {
+            byte := command[at]
+            if byte == cast(u8)0 || byte == cast(u8)10 || byte == cast(u8)13 { return Fail(plan, "Invalid application command") }
+            if quote == cast(u8)0 && (byte == cast(u8)32 || byte == cast(u8)9) { break }
+            if byte == quote && quote != cast(u8)0 {
+                if quote == cast(u8)39 && at + 1 < command.count && command[at + 1] == quote { at += 1 }
+                else { quote = cast(u8)0; at += 1; continue }
+            } else if quote == cast(u8)0 && (byte == cast(u8)39 || byte == cast(u8)34) {
+                quote = byte
+                at += 1
+                continue
+            } else if byte == cast(u8)92 && quote != cast(u8)39 {
+                at += 1
+                if at == command.count { return Fail(plan, "Invalid application command") }
+                byte = command[at]
+                if byte == cast(u8)0 || byte == cast(u8)10 || byte == cast(u8)13 { return Fail(plan, "Invalid application command") }
+            }
+            if used >= 4095 { return Fail(plan, "Application argument is too long") }
+            plan.arguments[plan.count].bytes[used] = cast(s8)byte
+            used += 1
+            at += 1
+        }
+        if quote != cast(u8)0 { return Fail(plan, "Unclosed quote in application command") }
+        plan.arguments[plan.count].bytes[used] = 0
+        plan.count += 1
+    }
+    if plan.count == 0 || plan.arguments[0].bytes[0] == 0 { return Fail(plan, "The application command is empty") }
+    return true
+}
+
+DocumentResolve :: (file: string, home: string, system: string, plan: *DocumentPlan) -> bool {
+    plan.count = 0
+    plan.error[0] = 0
+    plan.application[0] = 0
+    canonical := Path.CleanAbsolute(file, plan.file[:])
+    if canonical == "" { return Fail(plan, "Choose an absolute document path") }
+    suffix: [64]s8
+    start: s64 = 0
+    dot: s64 = -1
+    at: s64 = 0
+    while at < canonical.count {
+        if canonical[at] == cast(u8)47 { start = at + 1; dot = -1 }
+        if canonical[at] == cast(u8)46 { dot = at }
+        at += 1
+    }
+    if dot <= start || dot + 1 >= canonical.count || canonical.count - dot - 1 >= 64 {
+        return Fail(plan, "The document has no recognized extension")
+    }
+    used: s32 = 0
+    at = dot + 1
+    while at < canonical.count {
+        byte := canonical[at]
+        if byte >= cast(u8)65 && byte <= cast(u8)90 { byte += cast(u8)32 }
+        suffix[used] = cast(s8)byte
+        used += 1
+        at += 1
+    }
+    suffix[used] = 0
+    user_bytes: [1024]u8
+    user := Path.CleanAbsolute(home, user_bytes[:])
+    path: [4096]s8
+    found: bool = false
+    if user != "" && Join(user, "/lib/rill/associations", *path[0], 4096) {
+        found = Association(*path[0], *suffix[0], *plan.application[0])
+    }
+    if !found && Join(system, "/associations", *path[0], 4096) {
+        found = Association(*path[0], *suffix[0], *plan.application[0])
+    }
+    if !found { return Fail(plan, "No application is registered for this extension") }
+    command: [4096]s8
+    found = false
+    if user != "" && Join(user, "/lib/rill/applications", *path[0], 4096) {
+        found = Command(*path[0], *plan.application[0], *command[0])
+    }
+    if !found && Join(system, "/applications", *path[0], 4096) {
+        found = Command(*path[0], *plan.application[0], *command[0])
+    }
+    if !found { return Fail(plan, "The associated application is not registered") }
+    if !DocumentCommand(CString(*command[0]), plan) { return false }
+    linux: bool = false
+    at = 0
+    while at < cast(s64)plan.count {
+        argument := CString(*plan.arguments[at].bytes[0])
+        if argument == "linux-app" || argument == "/bin/linux-app" || argument == "/rc/bin/linux-app" { linux = true }
+        at += 1
+    }
+    document := *plan.arguments[plan.count].bytes[0]
+    if linux {
+        if user == "" || !Path.WithinDirectory(canonical, user) { return Fail(plan, "Linux applications open documents under your home directory") }
+        used = CopyText(document, 4096, TextBytes("/home/user"))
+        at = user.count
+        if user == "/" && canonical.count > 1 { at = 0 }
+        while at < canonical.count { document[used] = cast(s8)canonical[at]; used += 1; at += 1 }
+        document[used] = 0
+    } else { CopyText(document, 4096, cast(*s8)(*plan.file[0])) }
+    plan.count += 1
+    return true
+}

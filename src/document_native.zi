@@ -1,0 +1,17 @@
+#import "document_open"
+#import "native_memory"
+Process :: #import "process_plan9";
+
+// Borrow the plan and executable buffer until StartDetached finishes its
+// exec handshake. Both desktop and command-line opening use this argv.
+DocumentArguments :: (plan: *DocumentPlan, output: []string, executable: []u8) -> bool {
+    if plan.count < 2 || plan.count > 16 || cast(s64)plan.count > output.count { return false }
+    output[0] = Process.ExecutablePath(CString(*plan.arguments[0].bytes[0]), executable)
+    if output[0] == "" {
+        CopyText(*plan.error[0], 160, TextBytes("The application executable could not be found"))
+        return false
+    }
+    at: s32 = 1
+    while at < plan.count { output[at] = CString(*plan.arguments[at].bytes[0]); at += 1 }
+    return true
+}

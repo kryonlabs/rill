@@ -29,8 +29,8 @@ $(SHELL_C) $(PERSISTENCE_C) $(STUB_C): $(SHELL_STAMP)
 $(PLAN9_C): src/platform_plan9.zi src/platform_types.zi src/native_memory.zi $(PERSISTENCE_SOURCES) $(ZIRAN)
 	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=c --root src --module-path $(ZIRAN_DIR)/std -o $(PLAN9_HOST_GEN) src/platform_plan9.zi
 
-.PHONY: ziran-c-plan9 shell-test persistence-test
-ziran-c-plan9: run-dialog-plan9 applications-plan9 calendar-plan9 desktop-plan9 settings-plan9 about-plan9
+.PHONY: ziran-c-plan9 shell-test persistence-test open-plan9 document-open-test
+ziran-c-plan9: run-dialog-plan9 applications-plan9 calendar-plan9 desktop-plan9 settings-plan9 about-plan9 open-plan9
 	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root src --module-path $(ZIRAN_DIR)/std -o build/ziran/plan9 src/shell.zi src/panel.zi src/settings.zi src/platform_plan9.zi src/run_dialog.zi src/applications.zi src/clock.zi
 	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root tests --module-path src --module-path $(ZIRAN_DIR)/std -o build/ziran/plan9-test tests/persistence_test.zi
 
@@ -39,6 +39,12 @@ shell-test:
 
 persistence-test:
 	ZIRAN="$(abspath $(ZIRAN))" ZIRAN_STD="$(abspath $(ZIRAN_DIR)/std)" sh tests/persistence_test.sh
+
+open-plan9:
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root app --module-path src --module-path $(ZIRAN_DIR)/std -o build/ziran/open-plan9 app/open_main.zi
+
+document-open-test:
+	ZIRAN="$(abspath $(ZIRAN))" ZIRAN_STD="$(abspath $(ZIRAN_DIR)/std)" sh tests/document_open_test.sh
 
 .PHONY: run-test
 run-test:
