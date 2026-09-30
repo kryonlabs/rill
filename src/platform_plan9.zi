@@ -16,6 +16,7 @@ icon_map: [64]IconMapEntry;
 icon_map_count: s32;
 services: RillPlatformServices;
 settings_path: [512]s8;
+desktop_path: [1024]s8;
 #if PLAN9 {
     groups: *Process.ProcessGroup;
     group_count: s32;
@@ -320,11 +321,8 @@ WriteControl :: (id: s32, action: string) -> s32 {
     return cast(s32)(written == text.count && closed)
 }
 
-Launch :: (launcher: *RillLauncher) -> s32 {
+Start :: (arguments: []string) -> s32 {
     #if PLAN9 {
-        if launcher == null || launcher.command[0] == 0 ||
-            TextStartsWith(*launcher.command[0], "internal:") ||
-            TextStartsWith(*launcher.command[0], "host:") { return 0 }
         if group_count == group_capacity {
             capacity: s32 = 16
             if group_capacity > 0 {
@@ -338,16 +336,145 @@ Launch :: (launcher: *RillLauncher) -> s32 {
             groups = allocation
             group_capacity = capacity
         }
-        arguments: [3]string = .["/bin/rc", "-c", CString(*launcher.command[0])]
-        group := Process.StartDetached(arguments[:])
+        group := Process.StartDetached(arguments)
         if !group.valid { return 0 }
         groups[group_count] = group
         group_count += 1
         return 1
     } else {
-        unused launcher
+        unused arguments
         return 0
     }
+}
+
+Launch :: (launcher: *RillLauncher) -> s32 {
+    if launcher == null || launcher.command[0] == 0 ||
+        TextStartsWith(*launcher.command[0], "internal:") ||
+        TextStartsWith(*launcher.command[0], "host:") { return 0 }
+    arguments: [3]string = .["/bin/rc", "-c", CString(*launcher.command[0])]
+    return Start(arguments[:])
+}
+
+OpenPath :: (path: *s8) -> s32 {
+    if path == null || path[0] != 47 || TextLength(path) >= 1024 { return 0 }
+    #if PLAN9 {
+        if !File.PathExists(CString(path)) { return 0 }
+        if File.DirectoryExists(CString(path)) {
+            arguments: [8]string = .["/bin/window", "-m", "-dx", "760", "-dy", "500", "/bin/shelf", CString(path)]
+            return Start(arguments[:])
+        }
+        arguments: [2]string = .["/bin/rill-open", CString(path)]
+        return Start(arguments[:])
+    } else { return 0 }
+}
+
+DesktopDirectory :: () -> *s8 {
+    if Environment("RILL_DESKTOP_DIR", *desktop_path[0], 1024) && desktop_path[0] == 47 { return *desktop_path[0] }
+    if !Home(*desktop_path[0], 1024) || desktop_path[0] != 47 ||
+        !Append(*desktop_path[0], 1024, TextBytes("/Desktop")) { return null }
+    return *desktop_path[0]
+}
+
+// Stable path identifiers keep icon selection and layout through rescans.
+FileId :: (path: *s8, output: *s8) {
+    hash: u64 = 14695981039346656037
+    index: s32 = 0
+    while path[index] != 0 {
+        hash = (hash ^ cast(u64)cast(u8)path[index]) * cast(u64)1099511628211
+        index += 1
+    }
+    digits := "0123456789abcdef"
+    CopyText(output, 64, TextBytes("file-"))
+    index = 0
+    while index < 16 {
+        shift := cast(u32)((15 - index) * 4)
+        output[5 + index] = cast(s8)digits[cast(s32)((hash >> shift) & cast(u64)15)]
+        index += 1
+    }
+    output[21] = 0
+}
+
+ListDesktopFiles :: (out: *RillLauncher, cap: s32) -> s32 {
+    if out == null || cap <= 0 { return 0 }
+    directory := DesktopDirectory()
+    if directory == null || !File.DirectoryExists(CString(directory)) { return 0 }
+    cursor := File.OpenDirectory(CString(directory))
+    if !cursor.valid { return -1 }
+    count: s32 = 0
+    while count < cap {
+        entry := File.NextDirectoryEntry(*cursor)
+        if !entry.valid { break }
+        if entry.name_count == 0 || entry.name[0] == cast(u8)46 { continue }
+        path: [1024]s8
+        CopyText(*path[0], 1024, directory)
+        if !Append(*path[0], 1024, TextBytes("/")) ||
+            !Append(*path[0], 1024, cast(*s8)(*entry.name[0])) { continue }
+        out[count] = .{}
+        FileId(*path[0], *out[count].id[0])
+        CopyText(*out[count].name[0], 96, cast(*s8)(*entry.name[0]))
+        CopyText(*out[count].file_path[0], 1024, *path[0])
+        CopyText(*out[count].category[0], 64, TextBytes("files"))
+        out[count].is_directory = cast(s32)File.DirectoryExists(CString(*path[0]))
+        kind := TextBytes("doc")
+        if out[count].is_directory != 0 { kind = TextBytes("folder") }
+        icon := LookupIcon(kind)
+        if icon != null { CopyText(*out[count].icon_path[0], 512, icon) }
+        count += 1
+    }
+    File.CloseDirectory(*cursor)
+    // Insertion sort is bounded by the desktop snapshot capacity.
+    index: s32 = 1
+    while index < count {
+        at := index
+        while at > 0 {
+            left := *out[at - 1].name[0]
+            right := *out[at].name[0]
+            byte: s32 = 0
+            while left[byte] != 0 && left[byte] == right[byte] { byte += 1 }
+            if cast(u8)left[byte] <= cast(u8)right[byte] { break }
+            swap := out[at - 1]
+            out[at - 1] = out[at]
+            out[at] = swap
+            at -= 1
+        }
+        index += 1
+    }
+    return count
+}
+
+FileOperation :: (operation: *s8, source: *s8, destination: *s8,
+    error: *s8, error_size: s32) -> s32 {
+    if error != null && error_size > 0 { error[0] = 0 }
+    if source == null || source[0] != 47 || destination == null || destination[0] == 0 ||
+        TextLength(source) >= 1024 || TextLength(destination) > 255 { return 0 }
+    index: s32 = 0
+    while destination[index] != 0 {
+        if cast(u8)destination[index] < cast(u8)32 || destination[index] == 127 || destination[index] == 47 { return 0 }
+        index += 1
+    }
+    if TextEquals(destination, TextBytes(".")) || TextEquals(destination, TextBytes("..")) { return 0 }
+    path: [1024]s8
+    CopyText(*path[0], 1024, source)
+    mkdir := TextEquals(operation, TextBytes("mkdir"))
+    rename := TextEquals(operation, TextBytes("rename"))
+    if !mkdir && !rename { return 0 }
+    if rename {
+        used := TextLength(*path[0])
+        while used > 0 && path[used - 1] != 47 { used -= 1 }
+        if used <= 0 || path[used] == 0 { return 0 }
+        path[used] = 0
+    } else if !Append(*path[0], 1024, TextBytes("/")) { return 0 }
+    if !Append(*path[0], 1024, destination) { return 0 }
+    ok: bool = false
+    #if PLAN9 {
+        if mkdir { ok = File.CreatePrivateDirectoryExclusive(CString(*path[0])) }
+        if rename { ok = File.RenameNoReplace(CString(source), CString(*path[0])) }
+    } else {
+        if mkdir && !File.PathExists(CString(*path[0])) { ok = File.CreatePrivateDirectory(CString(*path[0])) }
+        if rename { ok = File.RenameNoReplace(CString(source), CString(*path[0])) }
+    }
+    if !ok && error != null && error_size > 0 { CopyText(error, error_size, TextBytes("The name exists or the file operation failed")) }
+    return cast(s32)ok
 }
 
 FocusTask :: (id: s32) -> s32 { return WriteControl(id, "activate") }
@@ -369,5 +496,9 @@ RillPlatformCurrent :: () -> *RillPlatformServices {
     services.focus_task = FocusTask
     services.close_task = CloseTask
     services.settings_root = SettingsRoot
+    services.desktop_directory = DesktopDirectory
+    services.list_desktop_files = ListDesktopFiles
+    services.open_path = OpenPath
+    services.file_operation = FileOperation
     return *services
 }

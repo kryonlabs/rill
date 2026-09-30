@@ -17,6 +17,10 @@ def main():
         fixture = Path(directory)
         applications = fixture / "applications"
         applications.mkdir()
+        desktop = fixture / "Desktop"
+        desktop.mkdir()
+        (desktop / "Folder").mkdir()
+        (desktop / "Note.txt").write_text("keep this content")
         marker = fixture / "launched"
         (applications / "desktop-probe.desktop").write_text(
             "[Desktop Entry]\nType=Application\nName=Desktop Probe\n"
@@ -25,6 +29,7 @@ def main():
         )
         env = os.environ.copy()
         env.update(RILL_APPLICATION_DIRS=str(applications),
+                   RILL_DESKTOP_DIR=str(desktop),
                    XDG_CONFIG_HOME=str(fixture / "config"), HOME=str(fixture))
         process = subprocess.Popen([str(ROOT / "build/rill-desktop")], cwd=ROOT,
                                    env=env, stdout=subprocess.PIPE,
@@ -44,6 +49,21 @@ def main():
             time.sleep(0.4)
             geometry = input_command("getwindowgeometry", "--shell", window)
             assert "WIDTH=960\n" in geometry and "HEIGHT=600\n" in geometry
+            # Exercise actual desktop context menus and foreground text input.
+            click(430, 240, "3")
+            click(470, 240 + 4 + 26 + 13)
+            input_command("type", "--window", window, "--clearmodifiers",
+                          "--delay", "40", "Recovered Folder")
+            input_command("key", "--window", window, "Return")
+            wait_for(lambda: (desktop / "Recovered Folder").is_dir(), process)
+            click(65, 455, "3")
+            click(100, 384 + 4 + 3 * 26 + 13)
+            input_command("type", "--window", window, "--clearmodifiers",
+                          "--delay", "40", "Renamed.txt")
+            input_command("key", "--window", window, "Return")
+            wait_for(lambda: (desktop / "Renamed.txt").exists(), process)
+            assert not (desktop / "Note.txt").exists()
+            assert (desktop / "Renamed.txt").read_text() == "keep this content"
             click(50, 15)
             input_command("type", "--window", window, "--clearmodifiers",
                           "--delay", "60", "desktop probe")
@@ -125,8 +145,9 @@ def main():
             if process.poll() is None:
                 process.terminate()
             stdout, stderr = process.communicate(timeout=5)
+            assert process.returncode in (0, -15), (stdout, stderr)
             assert "segmentation" not in stderr.lower(), (stdout, stderr)
-    print("rill-desktop-window-test-ok: launch, calendar, panel relocation, shared Settings reload")
+    print("rill-desktop-window-test-ok: desktop folder/rename, launch, calendar, panel relocation, shared Settings reload")
 
 
 if __name__ == "__main__":

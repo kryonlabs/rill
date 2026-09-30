@@ -119,7 +119,7 @@ calendar-window-test: $(CALENDAR_BIN)
 DESKTOP_GEN := build/ziran/desktop-c
 DESKTOP_BIN := build/rill-desktop
 
-.PHONY: desktop-build desktop-plan9 desktop-ui-test desktop-window-test
+.PHONY: desktop-build desktop-plan9 desktop-ui-test desktop-files-ui-test desktop-window-test
 desktop-build: $(DESKTOP_BIN)
 
 desktop-plan9:
@@ -131,6 +131,9 @@ $(DESKTOP_GEN)/.generated: $(RUN_SOURCES) $(ZIRAN)
 
 desktop-ui-test:
 	ZIRAN="$(abspath $(ZIRAN))" ZIRAN_STD="$(abspath $(ZIRAN_DIR)/std)" KRYON_DIR="$(abspath $(KRYON_DIR))" sh tests/desktop_ui_test.sh
+
+desktop-files-ui-test:
+	ZIRAN="$(abspath $(ZIRAN))" ZIRAN_STD="$(abspath $(ZIRAN_DIR)/std)" KRYON_DIR="$(abspath $(KRYON_DIR))" sh tests/desktop_files_ui_test.sh
 
 desktop-window-test: $(DESKTOP_BIN) build/rill-settings
 	env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY RILL_PRIVATE_XVFB=1 \

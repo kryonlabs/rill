@@ -21,6 +21,7 @@ root: [512]s8;
 path: [1024]s8;
 launchers: [32]RillLauncher;
 tasks: [8]RillTask;
+desktop_files: [8]RillLauncher;
 
 SetEnvironment :: (name: string, value: *s8) -> bool {
     #if PLAN9 {
@@ -61,6 +62,47 @@ Read :: (suffix: string, output: *s8, capacity: s32) -> bool {
     return true
 }
 
+DesktopCases :: (platform: *RillPlatformServices) -> s32 {
+    if platform.desktop_directory == null || platform.list_desktop_files == null ||
+        platform.file_operation == null || platform.open_path == null { return 30 }
+    if !TextEquals(platform.desktop_directory(), TextBytes(Path("/Desktop"))) ||
+        platform.list_desktop_files(*desktop_files[0], 8) != 0 ||
+        !File.CreateDirectory(Path("/Desktop")) || !File.CreateDirectory(Path("/Desktop/Folder")) ||
+        !Put("/Desktop/Note.txt", "original") || !Put("/Desktop/é.txt", "unicode") ||
+        !Put("/Desktop/.hidden", "hidden") { return 31 }
+    if platform.list_desktop_files(null, 8) != 0 || platform.list_desktop_files(*desktop_files[0], 0) != 0 ||
+        platform.list_desktop_files(*desktop_files[0], 8) != 3 ||
+        !TextEquals(*desktop_files[0].name[0], TextBytes("Folder")) || desktop_files[0].is_directory != 1 ||
+        !TextEquals(*desktop_files[1].name[0], TextBytes("Note.txt")) || desktop_files[1].is_directory != 0 ||
+        !TextEquals(*desktop_files[2].name[0], TextBytes("é.txt")) { return 32 }
+    identity: [64]s8
+    CopyText(*identity[0], 64, *desktop_files[1].id[0])
+    if platform.list_desktop_files(*desktop_files[0], 8) != 3 ||
+        !TextEquals(*identity[0], *desktop_files[1].id[0]) ||
+        !TextEquals(*desktop_files[1].file_path[0], TextBytes(Path("/Desktop/Note.txt"))) ||
+        platform.list_desktop_files(*desktop_files[0], 1) != 1 { return 33 }
+    error: [256]s8
+    if platform.file_operation(TextBytes("mkdir"), TextBytes(Path("/Desktop")), TextBytes("é Folder"), *error[0], 256) == 0 ||
+        !File.DirectoryExists(Path("/Desktop/é Folder")) ||
+        platform.file_operation(TextBytes("mkdir"), TextBytes(Path("/Desktop")), TextBytes("é Folder"), *error[0], 256) != 0 ||
+        platform.file_operation(TextBytes("mkdir"), TextBytes(Path("/Desktop")), TextBytes("../outside"), *error[0], 256) != 0 ||
+        platform.file_operation(TextBytes("mkdir"), TextBytes(Path("/Desktop")), TextBytes(".."), *error[0], 256) != 0 { return 34 }
+    if platform.file_operation(TextBytes("rename"), TextBytes(Path("/Desktop/Note.txt")), TextBytes("Renamed.txt"), *error[0], 256) == 0 ||
+        File.PathExists(Path("/Desktop/Note.txt")) || !File.PathExists(Path("/Desktop/Renamed.txt")) ||
+        platform.file_operation(TextBytes("rename"), TextBytes(Path("/Desktop/é.txt")), TextBytes("Renamed.txt"), *error[0], 256) != 0 { return 35 }
+    buffer: [512]s8
+    if !Read("/Desktop/Renamed.txt", *buffer[0], 512) || !TextEquals(*buffer[0], TextBytes("original")) ||
+        !Read("/Desktop/é.txt", *buffer[0], 512) || !TextEquals(*buffer[0], TextBytes("unicode")) ||
+        platform.file_operation(TextBytes("rename"), TextBytes(Path("/Desktop/é.txt")), TextBytes("/absolute"), *error[0], 256) != 0 ||
+        platform.open_path(null) != 0 || platform.open_path(TextBytes("relative")) != 0 ||
+        platform.open_path(TextBytes(Path("/missing"))) != 0 { return 36 }
+    if !File.CreateDirectory(Path("/Other desktop")) ||
+        !SetEnvironment("RILL_DESKTOP_DIR", TextBytes(Path("/Other desktop"))) ||
+        !TextEquals(platform.desktop_directory(), TextBytes(Path("/Other desktop"))) ||
+        platform.list_desktop_files(*desktop_files[0], 8) != 0 { return 37 }
+    return 0
+}
+
 Run :: () -> s32 {
     platform := RillPlatformCurrent()
     if platform == null || !TextEquals(platform.name, TextBytes("plan9")) { return 1 }
@@ -90,6 +132,8 @@ Run :: () -> s32 {
     }
     if found != 1 || platform.list_launchers(null, 32) != 0 ||
         platform.list_launchers(*launchers[0], 0) != 0 { return 7 }
+    desktop_result := DesktopCases(platform)
+    if desktop_result != 0 { return desktop_result }
     if !File.CreateDirectory(Path("/wsys")) ||
         !File.CreateDirectory(Path("/wsys/700001")) ||
         !File.CreateDirectory(Path("/wsys/700002")) ||

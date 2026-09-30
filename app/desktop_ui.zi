@@ -7,6 +7,7 @@ using UI :: #import "Widgets";
 #import "shell"
 #import "date_time_types"
 #import "wallpaper"
+#import "desktop_files_ui"
 #if #defined(PLAN9_BUILD) {
     Time :: #import "date_time_plan9";
 } else {
@@ -16,6 +17,7 @@ using UI :: #import "Widgets";
 DesktopState :: struct {
     panel: PanelState
     wallpaper: WallpaperState
+    files: DesktopFilesState
 }
 
 Desktop :: (session: Session, viewport: Rectangle, state: *DesktopState,
@@ -35,7 +37,25 @@ Desktop :: (session: Session, viewport: Rectangle, state: *DesktopState,
         image.fit = cast(ImageFit)2
         Image(session, image)
     }
+    work := viewport
+    size := RillSettingsGetInteger(*app.settings, TextBytes("panel-height"), 40)
+    if size < 32 { size = 32 }
+    if size > 64 { size = 64 }
+    if RillSettingsGetInteger(*app.settings, TextBytes("panel-autohide"), 0) != 0 && !state.panel.shown { size = 2 }
+    side := RillSettingsGet(*app.settings, TextBytes("panel-side"), TextBytes("top"))
+    if state.panel.started && !app.settings_reloaded {
+        sides: [4]string = .["top", "bottom", "left", "right"]
+        if state.panel.edge >= 0 && state.panel.edge < 4 { side = TextBytes(sides[state.panel.edge]) }
+        size = state.panel.size
+        if state.panel.autohide && !state.panel.shown { size = 2 }
+    }
+    if TextEquals(side, TextBytes("left")) { work.x += cast(float32)size; work.width -= cast(float32)size }
+    else if TextEquals(side, TextBytes("right")) { work.width -= cast(float32)size }
+    else if TextEquals(side, TextBytes("bottom")) { work.height -= cast(float32)size }
+    else { work.y += cast(float32)size; work.height -= cast(float32)size }
+    DesktopFileGrid(session, work, *state.files, app, platform, state.panel.popup == 0 && !state.panel.context_open, Time.UnixMilliseconds())
     Panel(session, viewport, *state.panel, app, platform, reading)
+    DesktopFilesOverlay(session, viewport, *state.files, app, platform)
     if app.shell.status[0] != 0 && state.panel.popup == 0 && !state.panel.context_open {
         text: TextProps
         text.key = cast(u64)147002

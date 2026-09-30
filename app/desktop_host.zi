@@ -81,12 +81,14 @@ Draw :: (session: Session, platform: *RillPlatformServices) -> bool {
         }
     }
     compose(session, viewport, *application, platform)
-    if EndFrame(session) != cast(FrameStatus)FrameOk { return false }
+    status := EndFrame(session)
+    if status != cast(FrameStatus)FrameOk { print("Rill frame failed: %\n", cast(s32)status); return false }
     // Unhandled input belongs to this frame; it must not reach a popup
     // opened later. Text fields consume their input during composition.
     KeyboardTake(session)
     while TypedCodepointTake(session) != 0 {}
-    return EndLibdrawFrame()
+    if !EndLibdrawFrame() { print("Rill could not present its frame\n"); return false }
+    return true
 }
 
 RunApplication :: () -> s32 {
@@ -174,4 +176,9 @@ ApplicationMain :: (frame: DesktopFrame) -> s32 {
 DesktopMain :: (frame: DesktopFrame) -> s32 {
     refresh_tasks = true
     return ApplicationMain(frame)
+}
+
+DesktopMainWithCleanup :: (frame: DesktopFrame, finish: ApplicationCleanup) -> s32 {
+    refresh_tasks = true
+    return ApplicationMainWithCleanup(frame, finish)
 }

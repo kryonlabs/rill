@@ -1,0 +1,295 @@
+#import "platform_types"
+#import "shell_types"
+#import "native_memory"
+#import "settings"
+#import "applications"
+
+DesktopFileLimit :: 128;
+DesktopItemLimit :: 256;
+
+DesktopItem :: struct {
+    launcher: RillLauncher
+    selected: bool
+    positioned: bool
+    x: s32
+    y: s32
+    key: u64
+}
+
+DesktopFiles :: struct {
+    items: [256]DesktopItem
+    count: s32
+    focused: s32
+    anchor: s32
+    next_key: u64
+    layout: RillSettings
+    previous: RillSettings
+    layout_path: [1024]s8
+}
+
+DesktopNameValid :: (name: *s8) -> bool {
+    if name == null || name[0] == 0 || TextEquals(name, TextBytes(".")) ||
+        TextEquals(name, TextBytes("..")) || TextLength(name) > 255 { return false }
+    index: s32 = 0
+    while name[index] != 0 {
+        if name[index] < 0 || cast(u8)name[index] >= cast(u8)128 { index += 1; continue }
+        if name[index] < 32 || name[index] == 127 || name[index] == 47 { return false }
+        index += 1
+    }
+    return true
+}
+
+#scope_file
+IdentityValid :: (id: *s8) -> bool {
+    if id == null || id[0] == 0 { return false }
+    index: s32 = 0
+    while id[index] != 0 {
+        if id[index] == 61 || cast(u8)id[index] < cast(u8)32 || id[index] == 127 { return false }
+        index += 1
+    }
+    return true
+}
+
+Add :: (items: *DesktopItem, count: *s32, launcher: *RillLauncher) {
+    if count.* >= DesktopItemLimit || !IdentityValid(*launcher.id[0]) || launcher.name[0] == 0 { return }
+    index: s32 = 0
+    while index < count.* {
+        if TextEquals(*items[index].launcher.id[0], *launcher.id[0]) { return }
+        index += 1
+    }
+    items[count.*].launcher = launcher.*
+    count.* += 1
+}
+
+Position :: (text: *s8, x: *s32, y: *s32) -> bool {
+    if text == null { return false }
+    values: [2]s32
+    cursor: s32 = 0
+    part: s32 = 0
+    while part < 2 {
+        while text[cursor] == 32 || text[cursor] == 9 { cursor += 1 }
+        negative := text[cursor] == 45
+        if negative { cursor += 1 }
+        magnitude: s64 = 0
+        digits: s32 = 0
+        while text[cursor] >= 48 && text[cursor] <= 57 {
+            magnitude = magnitude * 10 + cast(s64)(text[cursor] - 48)
+            if magnitude > 2147483647 { return false }
+            cursor += 1
+            digits += 1
+        }
+        if digits == 0 { return false }
+        if part == 0 && text[cursor] != 32 && text[cursor] != 9 { return false }
+        if negative { magnitude = -magnitude }
+        values[part] = cast(s32)magnitude
+        part += 1
+    }
+    while text[cursor] == 32 || text[cursor] == 9 { cursor += 1 }
+    if text[cursor] != 0 { return false }
+    x.* = values[0]
+    y.* = values[1]
+    return true
+}
+
+#scope_export
+DesktopFilesInitialize :: (files: *DesktopFiles, platform: *RillPlatformServices) {
+    files.focused = -1
+    files.anchor = -1
+    files.next_key = cast(u64)200000
+    if platform == null || platform.settings_root == null { return }
+    root := platform.settings_root()
+    length := TextLength(root)
+    if length == 0 || length + 16 >= 1024 || RillSettingsEnsureDirectory(root) == 0 { return }
+    CopyText(*files.layout_path[0], 1024, root)
+    CopyText(*files.layout_path[length], 1024 - length, TextBytes("/desktop-layout"))
+    RillSettingsLoad(*files.layout, *files.layout_path[0])
+    files.previous = files.layout
+}
+
+// Build a fresh snapshot on the heap; refreshes never lose selection or
+// focus when filesystem order changes. Failed enumeration retains the view.
+DesktopFilesRefresh :: (files: *DesktopFiles, shell: *RillShellState,
+    platform: *RillPlatformServices) -> bool {
+    if files == null || shell == null { return false }
+    items := cast(*DesktopItem)AllocateZeroed(DesktopItemLimit, size_of(DesktopItem))
+    disk := cast(*RillLauncher)AllocateZeroed(DesktopFileLimit, size_of(RillLauncher))
+    if items == null || disk == null {
+        ReleaseAllocation(cast(*void)items); ReleaseAllocation(cast(*void)disk)
+        return false
+    }
+    count: s32 = 0
+    special: RillLauncher
+    names: [3]string = .["Home", "File System", "Trash"]
+    ids: [3]string = .["desktop-home", "desktop-filesystem", "desktop-trash"]
+    index: s32 = 0
+    while index < 3 {
+        special = .{}
+        CopyText(*special.id[0], 64, TextBytes(ids[index]))
+        CopyText(*special.name[0], 96, TextBytes(names[index]))
+        Add(items, *count, *special)
+        index += 1
+    }
+    found: s32 = 0
+    if platform != null && platform.list_desktop_files != null {
+        found = platform.list_desktop_files(disk, DesktopFileLimit)
+    }
+    if found < 0 {
+        ReleaseAllocation(cast(*void)items); ReleaseAllocation(cast(*void)disk)
+        return false
+    }
+    if found > DesktopFileLimit { found = DesktopFileLimit }
+    index = 0
+    while index < found { Add(items, *count, *disk[index]); index += 1 }
+    index = 0
+    while index < shell.launcher_count && index < shell.launcher_capacity {
+        if shell.launchers[index].favorite != 0 { Add(items, *count, *shell.launchers[index]) }
+        index += 1
+    }
+    focused: s32 = -1
+    anchor: s32 = -1
+    index = 0
+    while index < count {
+        previous: s32 = 0
+        while previous < files.count {
+            if TextEquals(*items[index].launcher.id[0], *files.items[previous].launcher.id[0]) {
+                items[index].selected = files.items[previous].selected
+                items[index].positioned = files.items[previous].positioned
+                items[index].x = files.items[previous].x
+                items[index].y = files.items[previous].y
+                items[index].key = files.items[previous].key
+                if files.focused == previous { focused = index }
+                if files.anchor == previous { anchor = index }
+                break
+            }
+            previous += 1
+        }
+        if items[index].key == cast(u64)0 {
+            files.next_key += cast(u64)10
+            items[index].key = files.next_key
+            items[index].positioned = Position(RillSettingsGet(*files.layout,
+                *items[index].launcher.id[0], null), *items[index].x, *items[index].y)
+        }
+        index += 1
+    }
+    MoveBytes(cast(*void)(*files.items[0]), cast(*void)items, cast(usize)count * size_of(DesktopItem))
+    files.count = count
+    files.focused = focused
+    files.anchor = anchor
+    ReleaseAllocation(cast(*void)items); ReleaseAllocation(cast(*void)disk)
+    return true
+}
+
+DesktopFilesClear :: (files: *DesktopFiles) {
+    index: s32 = 0
+    while index < files.count { files.items[index].selected = false; index += 1 }
+    files.focused = -1
+    files.anchor = -1
+}
+
+DesktopFilesSelect :: (files: *DesktopFiles, index: s32, control: bool, shift: bool) {
+    if index < 0 || index >= files.count { return }
+    if shift && files.anchor >= 0 && files.anchor < files.count {
+        if !control {
+            other: s32 = 0
+            while other < files.count { files.items[other].selected = false; other += 1 }
+        }
+        first := files.anchor
+        last := index
+        if first > last { first = index; last = files.anchor }
+        while first <= last { files.items[first].selected = true; first += 1 }
+    } else if control {
+        files.items[index].selected = !files.items[index].selected
+        files.anchor = index
+    } else {
+        DesktopFilesClear(files)
+        files.items[index].selected = true
+        files.anchor = index
+    }
+    files.focused = index
+}
+
+DesktopFilesSelectedPaths :: (files: *DesktopFiles, paths: **s8, capacity: s32) -> s32 {
+    if files == null || paths == null || capacity <= 0 { return 0 }
+    count: s32 = 0
+    index: s32 = 0
+    while index < files.count && count < capacity {
+        if files.items[index].selected && files.items[index].launcher.file_path[0] != 0 {
+            paths[count] = *files.items[index].launcher.file_path[0]
+            count += 1
+        }
+        index += 1
+    }
+    return count
+}
+
+DesktopFilesSavePositions :: (files: *DesktopFiles) -> bool {
+    if files.layout_path[0] == 0 { return false }
+    index: s32 = 0
+    while index < files.count {
+        item := *files.items[index]
+        if item.positioned {
+            value: [64]s8
+            used := FormatInteger(*value[0], 64, item.x)
+            value[used] = 32
+            FormatInteger(*value[used + 1], 63 - used, item.y)
+            RillSettingsSet(*files.layout, *item.launcher.id[0], *value[0])
+            if !TextEquals(RillSettingsGet(*files.layout, *item.launcher.id[0], null), *value[0]) { return false }
+        }
+        index += 1
+    }
+    return RillSettingsMergeSave(*files.layout, *files.previous, *files.layout_path[0]) != 0
+}
+
+DesktopFilesArrange :: (files: *DesktopFiles) -> bool {
+    // Persist a reset through the same merge operation as position edits,
+    // so another desktop's unrelated positions are retained.
+    index: s32 = 0
+    while index < files.count {
+        files.items[index].positioned = false
+        RillSettingsSet(*files.layout, *files.items[index].launcher.id[0], TextBytes("auto"))
+        index += 1
+    }
+    if files.layout_path[0] == 0 { return false }
+    return RillSettingsMergeSave(*files.layout, *files.previous, *files.layout_path[0]) != 0
+}
+
+DesktopFilesOpen :: (files: *DesktopFiles, index: s32, shell: *RillShellState,
+    platform: *RillPlatformServices, settings: *RillSettings, previous: *RillSettings,
+    settings_path: *s8) -> bool {
+    if index < 0 || index >= files.count || platform == null { return false }
+    item := *files.items[index].launcher
+    special := TextEquals(*item.id[0], TextBytes("desktop-home")) ||
+        TextEquals(*item.id[0], TextBytes("desktop-filesystem")) ||
+        TextEquals(*item.id[0], TextBytes("desktop-trash"))
+    if special {
+        path := TextBytes("/")
+        allocated: *s8 = null
+        if TextEquals(*item.id[0], TextBytes("desktop-home")) {
+            allocated = EnvironmentValue(TextBytes("home"))
+            if allocated == null || allocated[0] == 0 {
+                #if #defined(NATIVE_PLAN9) {
+                    ReleaseAllocation(cast(*void)allocated)
+                }
+                allocated = EnvironmentValue(TextBytes("HOME"))
+            }
+            if allocated != null && allocated[0] != 0 { path = allocated }
+        }
+        if TextEquals(*item.id[0], TextBytes("desktop-trash")) { path = TextBytes("trash://") }
+        ok := platform.open_path != null && platform.open_path(path) != 0
+        #if #defined(NATIVE_PLAN9) {
+            ReleaseAllocation(cast(*void)allocated)
+        }
+        return ok
+    }
+    if item.file_path[0] != 0 && item.desktop_file[0] == 0 {
+        return platform.open_path != null && platform.open_path(*item.file_path[0]) != 0
+    }
+    launcher: s32 = 0
+    while launcher < shell.launcher_count && launcher < shell.launcher_capacity {
+        if TextEquals(*shell.launchers[launcher].id[0], *item.id[0]) {
+            return RillApplicationsLaunch(shell, platform, settings, previous, settings_path, launcher) != 0
+        }
+        launcher += 1
+    }
+    return platform.launch != null && platform.launch(item) != 0
+}

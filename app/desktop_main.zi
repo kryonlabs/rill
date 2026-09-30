@@ -3,6 +3,7 @@
 #import "desktop_types"
 #import "desktop_overlay"
 #import "panel_ui"
+#import "desktop_files_ui"
 #import "shell"
 #import "native_memory"
 #import "clock"
@@ -20,7 +21,15 @@ DrawDesktop :: (session: Session, viewport: Rectangle,
     DesktopOverlayBegin(*overlay)
     DesktopOverlayRect(*overlay, state.panel.bar)
     DesktopOverlayRect(*overlay, state.panel.popup_bounds)
+    DesktopOverlayRect(*overlay, state.files.context_bounds)
+    DesktopOverlayRect(*overlay, state.files.modal_bounds)
+    DesktopOverlayRect(*overlay, state.files.transfer_bounds)
     if !DesktopOverlayPublish(*overlay) { RillShellSetStatus(*app.shell, TextBytes("Could not publish desktop panels")) }
+}
+
+FinishDesktop :: (platform: *RillPlatformServices) -> bool {
+    DesktopFilesClose(*state.files, platform)
+    return true
 }
 
 #if #defined(PLAN9_BUILD) {
@@ -28,9 +37,9 @@ DrawDesktop :: (session: Session, viewport: Rectangle,
     threadmain :: (argc: s32, argv: **s8) {
         unused argc
         unused argv
-        DesktopMain(DrawDesktop)
+        DesktopMainWithCleanup(DrawDesktop, FinishDesktop)
     }
 } else {
     #program_export
-    main :: () -> s32 { return DesktopMain(DrawDesktop) }
+    main :: () -> s32 { return DesktopMainWithCleanup(DrawDesktop, FinishDesktop) }
 }

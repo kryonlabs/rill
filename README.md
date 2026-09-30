@@ -83,8 +83,20 @@ services. Several of those services still need native Plan 9 implementations;
 their controls remain unavailable until then. Native wallpaper loading still
 uses Plan 9 image files through Kryon's asset-backed `Image` surface.
 
-The new entrypoint is not yet the boot default. Desktop icons and file
-operations, full tray images and menus, plugin Properties, notifications,
+Desktop files now use `src/desktop_files.zi` and `app/desktop_files_ui.zi`.
+The model retains selection and icon positions across directory refreshes;
+the Kryon view supports single/double click, keyboard selection, selection
+boxes, group dragging, folder drops, context menus, rename, New Folder, and
+file transfer progress and conflict choices. Layout saves merge with other
+desktop changes. Native Plan 9 services enumerate the desktop directory,
+create private folders exclusively, and rename without replacing existing
+files. Clipboard, copy/move, Trash, retry, and undo still depend on the platform
+transfer service; its Linux implementation remains C and its native Plan 9
+implementation is still pending. Native file icons also need PNG asset support.
+`make desktop-files-ui-test` checks the file controls from source and saved IR.
+
+The new entrypoint is not yet the boot default. Remaining file
+services, full tray images and menus, plugin Properties, notifications,
 and remaining services still need conversion and parity
 checks before replacing the former full desktop. The panel's Shift-drag
 behavior is checked with supplied modifier state; libdraw still needs a

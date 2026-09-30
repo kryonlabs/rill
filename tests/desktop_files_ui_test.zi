@@ -1,0 +1,249 @@
+#import "desktop_files_ui"
+#import "desktop_files"
+#import "desktop_types"
+#import "platform_types"
+#import "shell"
+#import "settings"
+#import "native_memory"
+#import "tree_draw"
+using UI :: #import "Widgets";
+using FrameStatus;
+#if #defined(PLAN9_BUILD) {
+    #import "libdraw_native"
+} else {
+    #import "cairo_raster"
+    #program_export
+    SystemClipboardOpenHost :: () -> s32 { return -1 }
+    #program_export
+    SystemClipboardByteHost :: (index: s32) -> s32 { unused index; return -1 }
+    #program_export
+    SystemClipboardWriteHost :: (value: string) -> bool { unused value; return true }
+}
+
+state: DesktopFilesState;
+app: DesktopApplication;
+platform: RillPlatformServices;
+session: Session;
+root: *s8;
+reverse: bool;
+scan_fail: bool;
+open_count: s32;
+copies: s32;
+cut: s32;
+transfers: s32;
+transfer_fail: bool;
+last_destination: [1024]s8;
+renames: s32;
+folders: s32;
+last_name: [256]s8;
+transfer: FileTransferStatus;
+resolution: s32;
+finished: s32;
+
+Root :: () -> *s8 { return root }
+Files :: (out: *RillLauncher, capacity: s32) -> s32 {
+    if scan_fail { return -1 }
+    if capacity < 2 { return 0 }
+    out[0] = .{}
+    out[1] = .{}
+    a: s32 = 0
+    b: s32 = 1
+    if reverse { a = 1; b = 0 }
+    CopyText(*out[a].id[0], 64, TextBytes("note"))
+    CopyText(*out[a].name[0], 96, TextBytes("Note.txt"))
+    CopyText(*out[a].file_path[0], 1024, TextBytes("/fixture/Note.txt"))
+    CopyText(*out[b].id[0], 64, TextBytes("folder"))
+    CopyText(*out[b].name[0], 96, TextBytes("Folder"))
+    CopyText(*out[b].file_path[0], 1024, TextBytes("/fixture/Folder"))
+    out[b].is_directory = 1
+    used := CopyText(*out[a].icon_path[0], 512, root)
+    CopyText(*out[a].icon_path[used], 512 - used, TextBytes("/icon1.png"))
+    used = CopyText(*out[b].icon_path[0], 512, root)
+    CopyText(*out[b].icon_path[used], 512 - used, TextBytes("/icon2.png"))
+    return 2
+}
+Open :: (path: *s8) -> s32 { unused path; open_count += 1; return 1 }
+Copy :: (paths: **s8, count: s32, move: s32) -> s32 { unused paths; copies = count; cut = move; return 1 }
+Start :: (operation: *s8, paths: **s8, count: s32, destination: *s8) -> s32 {
+    unused paths
+    if transfer_fail { return 0 }
+    CopyText(*last_destination[0], 1024, destination)
+    transfers += 1
+    transfer.id += cast(u32)1
+    transfer.running = 1
+    transfer.total = count
+    CopyText(*transfer.operation[0], 16, operation)
+    return 1
+}
+Poll :: (out: *FileTransferStatus) -> s32 { out.* = transfer; return cast(s32)(transfer.id != cast(u32)0) }
+Resolve :: (answer: s32, all: s32) -> s32 { unused all; resolution = answer; transfer.conflict = 0; return 1 }
+Finish :: () { finished += 1 }
+Operation :: (operation: *s8, source: *s8, name: *s8, error: *s8, size: s32) -> s32 {
+    unused source; unused error; unused size
+    if !DesktopNameValid(name) { return 0 }
+    CopyText(*last_name[0], 256, name)
+    if TextEquals(operation, TextBytes("mkdir")) { folders += 1 }
+    if TextEquals(operation, TextBytes("rename")) { renames += 1 }
+    return 1
+}
+
+Draw :: (point: Vector2, down: bool, pressed: bool, released: bool, secondary: bool,
+    key: s32, modifiers: s32, now: s64) -> bool {
+    BeginRasterFrame()
+    pointer := PointerFrame.{point.x, point.y, down, pressed, released}
+    TreePointerUpdate(session, pointer)
+    TreeSecondaryPointerUpdate(session, SecondaryPointerFrame.{secondary, secondary, false})
+    KeyboardSend(session, key)
+    KeyboardModifiersSend(session, modifiers)
+    viewport := Rectangle.{0.0, 0.0, 480.0, 300.0}
+    if BeginFrame(session, cast(u64)1, viewport) != cast(FrameStatus)FrameOk { return false }
+    DesktopFileGrid(session, Rectangle.{0.0, 40.0, 480.0, 260.0}, *state, *app, *platform, true, now)
+    DesktopFilesOverlay(session, viewport, *state, *app, *platform)
+    return EndFrame(session) == cast(FrameStatus)FrameOk && FinishRasterFrame()
+}
+Idle :: (now: s64) -> bool { return Draw(Vector2.{}, false, false, false, false, 0, 0, now) }
+ClickAt :: (point: Vector2, modifiers: s32, now: s64) -> bool {
+    return Draw(point, true, true, false, false, 0, modifiers, now) &&
+        Draw(point, true, false, false, false, 0, modifiers, now + 50) &&
+        Draw(point, false, false, true, false, 0, modifiers, now + 100)
+}
+ClickItem :: (index: s32, modifiers: s32, now: s64) -> bool {
+    cell := state.cells[index]
+    return ClickAt(Vector2.{cell.x + 40.0, cell.y + 20.0}, modifiers, now)
+}
+Bounds :: (key: u64) -> Rectangle {
+    index: s32 = 0
+    while index < TreeCount(session) {
+        node := TreeNodeAt(session, index)
+        if node.key == key { return node.bounds }
+        index += 1
+    }
+    return Rectangle.{}
+}
+ClickKey :: (key: u64, now: s64) -> bool {
+    cell := Bounds(key)
+    if cell.width <= 0.0 { return false }
+    return ClickAt(Vector2.{cell.x + cell.width / 2.0, cell.y + cell.height / 2.0}, 0, now)
+}
+
+Cases :: () -> s32 {
+    root = EnvironmentValue(TextBytes("RILL_TEST_ROOT"))
+    if root == null { return 99 }
+    if DesktopNameValid(TextBytes("../bad")) || DesktopNameValid(TextBytes("..")) ||
+        DesktopNameValid(TextBytes("bad\nname")) || !DesktopNameValid(TextBytes("é folder")) { return 1 }
+    RillShellInit(*app.shell)
+    platform.settings_root = Root
+    platform.desktop_directory = Root
+    platform.list_desktop_files = Files
+    platform.open_path = Open
+    platform.file_clipboard_copy = Copy
+    platform.file_transfer_start = Start
+    platform.file_transfer_poll = Poll
+    platform.file_transfer_resolve = Resolve
+    platform.file_transfer_finish = Finish
+    platform.file_operation = Operation
+    if !OpenRaster(480, 300) { return 2 }
+    session = SessionOpen()
+    if !Idle(1000) || state.files == null || state.files.count != 5 || !CaptureConfigured() { return 3 }
+    if !ClickItem(3, 0, 1100) || !state.files.items[3].selected || open_count != 0 { return 4 }
+    if !ClickItem(3, 0, 1300) || open_count != 1 { return 5 }
+    if !ClickItem(4, KeyModifierControl, 2000) || !state.files.items[3].selected || !state.files.items[4].selected { return 6 }
+    paths: [8]*s8
+    if DesktopFilesSelectedPaths(state.files, *paths[0], 8) != 2 { return 7 }
+    old := state.files.items[3].key
+    reverse = true
+    if !DesktopFilesRefresh(state.files, *app.shell, *platform) || !state.files.items[4].selected ||
+        state.files.items[4].key != old || state.files.focused != 3 { return 8 }
+    scan_fail = true
+    if DesktopFilesRefresh(state.files, *app.shell, *platform) || state.files.count != 5 ||
+        state.files.items[4].key != old { return 9 }
+    scan_fail = false
+    reverse = false
+    if !DesktopFilesRefresh(state.files, *app.shell, *platform) || !Idle(2200) { return 10 }
+    if !Draw(Vector2.{}, false, false, false, false, 67, KeyModifierControl, 2300) || copies != 2 || cut != 0 { return 11 }
+    // Move the complete selected group and reload its positions after saving.
+    origin := state.cells[3]
+    point := Vector2.{origin.x + 20.0, origin.y + 20.0}
+    if !Draw(point, true, true, false, false, 0, 0, 2400) { return 12 }
+    point.x += 28.0
+    if !Draw(point, true, false, false, false, 0, 0, 2450) || !state.drag ||
+        !Draw(point, false, false, true, false, 0, 0, 2500) || state.drag ||
+        !state.files.items[3].positioned || !state.files.items[4].positioned { return 13 }
+    loaded := cast(*DesktopFiles)AllocateZeroed(1, size_of(DesktopFiles))
+    if loaded == null { return 14 }
+    DesktopFilesInitialize(loaded, *platform)
+    if !DesktopFilesRefresh(loaded, *app.shell, *platform) || !loaded.items[3].positioned ||
+        loaded.items[3].x != state.files.items[3].x { ReleaseAllocation(cast(*void)loaded); return 15 }
+    ReleaseAllocation(cast(*void)loaded)
+    // Rename is a foreground modal: background selection/input cannot change it.
+    DesktopFilesSelect(state.files, 3, false, false)
+    cell := state.cells[3]
+    if !Draw(Vector2.{cell.x + 10.0, cell.y + 10.0}, false, false, false, true, 0, 0, 2700) || !state.context || !Idle(2750) { return 16 }
+    if !ClickKey(ContextMenuRowKey(cast(u64)220010, 3), 2800) || state.action != 1 { return 17 }
+    CopyText(*state.name[0], 256, TextBytes("renamed.txt"))
+    state.cursor = 11
+    state.anchor = 11
+    if !Idle(2900) || !ClickKey(cast(u64)220104, 3000) || state.action != 0 || renames != 1 ||
+        !TextEquals(*last_name[0], TextBytes("renamed.txt")) { return 18 }
+    // Background menus stay reachable at 480x300 and offer New Folder.
+    if !Draw(Vector2.{430.0, 240.0}, false, false, false, true, 0, 0, 3300) || !Idle(3350) ||
+        !ClickKey(ContextMenuRowKey(cast(u64)220010, 1), 3400) || state.action != 2 { return 19 }
+    if !Idle(3450) || !ClickKey(cast(u64)220104, 3500) || folders != 1 || state.action != 0 { return 20 }
+    // A moving selection must not conceal an unselected drop destination.
+    DesktopFilesSelect(state.files, 3, false, false)
+    cell = state.cells[3]
+    point = Vector2.{cell.x + 20.0, cell.y + 20.0}
+    if !Draw(point, true, true, false, false, 0, 0, 3600) { return 23 }
+    cell = state.cells[4]
+    point = Vector2.{cell.x + 40.0, cell.y + 20.0}
+    if !Draw(point, true, false, false, false, 0, 0, 3650) ||
+        !Draw(point, false, false, true, false, 0, 0, 3700) || transfers != 1 ||
+        !TextEquals(*last_destination[0], TextBytes("/fixture/Folder")) { return 24 }
+    // A previous transfer being visible does not make a failed Trash succeed.
+    transfer_fail = true
+    if !Draw(Vector2.{}, false, false, false, false, KeyDelete, 0, 3800) || state.action != 3 ||
+        !Idle(3850) || !ClickKey(cast(u64)220104, 3900) || state.action != 3 || transfers != 1 { return 25 }
+    if !Draw(Vector2.{}, false, false, false, false, KeyEscape, 0, 4100) || state.action != 0 { return 26 }
+    transfer.id = cast(u32)1
+    transfer.running = 1
+    transfer.conflict = 1
+    CopyText(*transfer.conflict_destination[0], 512, TextBytes("/fixture/conflict"))
+    if !Idle(4300) || !ClickKey(cast(u64)220213, 4400) || resolution != 3 { return 21 }
+    DesktopFilesClose(*state, *platform)
+    if state.files != null || finished != 1 { return 22 }
+    CloseSession(session)
+    CloseRaster()
+    RillShellDispose(*app.shell)
+    #if #defined(NATIVE_PLAN9) {
+        ReleaseAllocation(cast(*void)root)
+    }
+    return 0
+}
+Report :: () -> s32 {
+    result := Cases()
+    if result != 0 { print("rill-desktop-files-ui-test-failed: %\n", result) }
+    else { print("rill-desktop-files-ui-test-ok\n") }
+    return result
+}
+#if #defined(PLAN9_BUILD) {
+    thread_library :: #system_library "thread";
+    ThreadStart :: #type (value: *void) #c_call;
+    ThreadCreate :: (start: ThreadStart, value: *void, stack: u32) -> s32 #foreign thread_library "threadcreate";
+    ThreadExits :: (status: *s8) #foreign thread_library "threadexits";
+    ThreadExitsAll :: (status: *s8) #foreign thread_library "threadexitsall";
+    #program_export
+    TestThread :: (value: *void) {
+        unused value
+        if Report() == 0 { ThreadExitsAll(null) }
+        else { ThreadExitsAll(TextBytes("Desktop files UI failed")) }
+    }
+    #program_export
+    threadmain :: (argc: s32, argv: **s8) {
+        unused argc; unused argv
+        if ThreadCreate(TestThread, null, 1048576) < 0 { ThreadExitsAll(TextBytes("Desktop files UI failed")) }
+        ThreadExits(null)
+    }
+} else {
+    #program_export
+    main :: () -> s32 { return Report() }
+}

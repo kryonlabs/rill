@@ -4,6 +4,7 @@
 #import "panel_types"
 #import "desktop_overlay"
 #import "desktop_types"
+#import "desktop_files_ui"
 #import "shell"
 #import "shell_types"
 #import "settings"
@@ -271,6 +272,7 @@ Cases :: () -> s32 {
     if !Draw(0, pointer, SecondaryPointerFrame.{}, 1, 0.0) ||
         state.panel.model.leading_count != 1 || state.panel.model.trailing_count != 9 ||
         state.panel.model.trailing[0].kind != RILL_PANEL_CLOCK || state.panel.popup != 0 { return 46 }
+    DesktopFilesClose(*state.files, *platform)
     CloseSession(session)
     CloseRaster()
     RillShellDispose(*app.shell)
