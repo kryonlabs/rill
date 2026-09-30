@@ -23,7 +23,7 @@ for input in source saved; do
     fi
     "${CC:-cc}" -std=c11 -O2 -ffunction-sections -fdata-sections \
         -I"$work/$input" "$work/$input"/*.c -o "$work/$input/run" \
-        -Wl,--gc-sections -lm -lcairo -ldl
+        -Wl,--gc-sections -lm -lcairo -lfreetype -ldl
     RILL_TEST_ROOT="$work/$input-data" KRYON_CAPTURE_PATH="$work/$input.png" "$work/$input/run"
 done
 cmp "$work/source.png" "$work/saved.png"

@@ -8,5 +8,5 @@ DesktopApplication :: struct {
     settings_path: [1024]s8
     user: [96]s8
     closed: bool
+    settings_reloaded: bool
 }
-

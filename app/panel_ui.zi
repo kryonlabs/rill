@@ -137,9 +137,8 @@ ScrollView :: (session: Session, key: u64, bounds: Rectangle, extent: s32,
     props.scroll_offset = offset
     props.input = input.*
     result := Scroll(session, props)
-    if result.frame.start_drag { input.owns_drag = true }
-    if result.frame.clear_drag { input.owns_drag = false }
-    input.grab = result.frame.grab
+    input.* = ScrollInputAfter(input.*, result.frame)
+    if result.frame.cancel_press { TreePointerCancel(session) }
     return result
 }
 
@@ -681,6 +680,14 @@ Initialize :: (state: *PanelState, app: *DesktopApplication, platform: *RillPlat
             PanelLoad(*state.model, *state.path[0])
         }
     }
+    ApplyPreferences(state, app)
+    state.drag_index = -1
+    RillApplicationsLoadRecent(*app.shell, *app.settings)
+    state.started = true
+}
+
+ApplyPreferences :: (state: *PanelState, app: *DesktopApplication) {
+    state.edge = 0
     side := RillSettingsGet(*app.settings, TextBytes("panel-side"), TextBytes("top"))
     if TextEquals(side, TextBytes("bottom")) { state.edge = 1 }
     if TextEquals(side, TextBytes("left")) { state.edge = 2 }
@@ -689,9 +696,6 @@ Initialize :: (state: *PanelState, app: *DesktopApplication, platform: *RillPlat
     if state.size < 32 { state.size = 32 }
     if state.size > 64 { state.size = 64 }
     state.autohide = RillSettingsGetInteger(*app.settings, TextBytes("panel-autohide"), 0) != 0
-    state.drag_index = -1
-    RillApplicationsLoadRecent(*app.shell, *app.settings)
-    state.started = true
 }
 
 #scope_export
@@ -699,6 +703,12 @@ Panel :: (session: Session, viewport: Rectangle, state: *PanelState,
     app: *DesktopApplication, platform: *RillPlatformServices, reading: LocalDateTime) {
     if state == null || app == null { return }
     if !state.started { Initialize(state, app, platform) }
+    if app.settings_reloaded {
+        ApplyPreferences(state, app)
+        if !state.model.dirty && state.path[0] != 0 { PanelLoad(*state.model, *state.path[0]) }
+        RillApplicationsLoadRecent(*app.shell, *app.settings)
+        app.settings_reloaded = false
+    }
     state.popup_bounds = .{}
     secondary := SecondaryPointerSample(session)
     pointer := PointerSample(session)

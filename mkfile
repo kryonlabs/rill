@@ -9,7 +9,7 @@ OUT=$O.out
 RILLGEN=build/ziran/plan9
 RILLHEADERS=`{ls $RILLGEN/*.h}
 RILLOBJS=$RILLGEN/native_memory.$O $RILLGEN/platform_types.$O \
-	$RILLGEN/shell_types.$O $RILLGEN/shell.$O $RILLGEN/run_dialog.$O $RILLGEN/applications.$O \
+	$RILLGEN/shell_types.$O $RILLGEN/shell.$O $RILLGEN/run_dialog.$O $RILLGEN/applications.$O $RILLGEN/preferences.$O \
 	$RILLGEN/c_string.$O $RILLGEN/file_plan9.$O $RILLGEN/native_files.$O \
 	$RILLGEN/panel_types.$O $RILLGEN/panel.$O $RILLGEN/settings.$O \
 	$RILLGEN/platform_plan9.$O $RILLGEN/process_plan9.$O \
@@ -62,6 +62,8 @@ install:V: check-rill-ziran check-t9 $BIN/$TARG
 	mk -f app/run.mk install
 	mk -f app/applications.mk install
 	mk -f app/calendar.mk install
+	mk -f app/settings.mk install
+	mk -f app/about.mk install
 
 check-rill-ziran:V:
 	if(! test -f $RILLGEN/shell.c || ! test -f $RILLGEN/panel.c || ! test -f $RILLGEN/settings.c || ! test -f $RILLGEN/platform_plan9.c) {

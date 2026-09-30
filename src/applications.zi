@@ -3,6 +3,7 @@
 #import "platform_types"
 #import "settings"
 #import "native_memory"
+#import "preferences"
 
 RILL_APPLICATION_CATEGORIES :: 12;
 
@@ -211,8 +212,7 @@ RillApplicationsLaunch :: (shell: *RillShellState, platform: *RillPlatformServic
     } else if TextEquals(*launcher.command[0], TextBytes("internal:settings")) ||
               TextEquals(*launcher.command[0], TextBytes("internal:about")) {
         command = launcher.*
-        name := "rill --settings"
-        if TextEquals(*launcher.command[0], TextBytes("internal:about")) { name = "rill --about" }
+        name := PreferencesCommand(platform, TextEquals(*launcher.command[0], TextBytes("internal:about")))
         CopyText(*command.command[0], 256, TextBytes(name))
         target = *command
     }

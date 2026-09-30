@@ -6,9 +6,16 @@ using UI :: #import "Widgets";
 #import "settings"
 #import "shell"
 #import "date_time_types"
+#import "wallpaper"
+#if #defined(PLAN9_BUILD) {
+    Time :: #import "date_time_plan9";
+} else {
+    Time :: #import "date_time_linux";
+}
 
 DesktopState :: struct {
     panel: PanelState
+    wallpaper: WallpaperState
 }
 
 Desktop :: (session: Session, viewport: Rectangle, state: *DesktopState,
@@ -18,7 +25,7 @@ Desktop :: (session: Session, viewport: Rectangle, state: *DesktopState,
     background.bounds = viewport
     background.fill = Color.{52, 67, 88, 255}
     Box(session, background)
-    wallpaper := RillSettingsGet(*app.settings, TextBytes("wallpaper"), null)
+    wallpaper := WallpaperPath(*state.wallpaper, *app.settings, platform, Time.UnixNow())
     if wallpaper != null && wallpaper[0] != 0 {
         image: ImageProps
         image.key = cast(u64)147001

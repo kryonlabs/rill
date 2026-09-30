@@ -147,15 +147,22 @@ RillSettingsMergeSave :: (settings: *RillSettings, previous: *RillSettings,
     ok: s32 = 0
     if latest != null {
         RillSettingsLoad(latest, path)
+        fits: bool = true
         index: s32 = 0
         while index < settings.count {
             key := *settings.keys[index][0]
             value := *settings.values[index][0]
             old := RillSettingsGet(previous, key, null)
-            if old == null || !TextEquals(old, value) { RillSettingsSet(latest, key, value) }
+            if old == null || !TextEquals(old, value) {
+                if latest.count >= RILL_SETTINGS_MAX && RillSettingsGet(latest, key, null) == null {
+                    fits = false
+                    break
+                }
+                RillSettingsSet(latest, key, value)
+            }
             index += 1
         }
-        ok = RillSettingsSave(latest, path)
+        if fits { ok = RillSettingsSave(latest, path) }
         if ok != 0 {
             MoveBytes(cast(*void)settings, cast(*void)latest, size_of(RillSettings))
             MoveBytes(cast(*void)previous, cast(*void)latest, size_of(RillSettings))

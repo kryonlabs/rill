@@ -186,7 +186,7 @@ ListLaunchers :: (out: *RillLauncher, cap: s32) -> s32 {
     if cap > 2 { Launcher(*out[2], "settings", "Settings", "Configure the desktop",
         "Settings", "internal:settings", 1) }
     if cap > 3 { Launcher(*out[3], "about", "About Rill", "Desktop information",
-        "System", "window -m -dx 500 -dy 460 rill --about", 0) }
+        "System", "window -m -dx 500 -dy 460 rill-about", 0) }
     if cap < 4 { return cap }
     return 4
 }

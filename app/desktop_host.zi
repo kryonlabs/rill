@@ -3,6 +3,7 @@
 #import "shell_types"
 #import "platform_types"
 #import "settings"
+#import "preferences"
 #import "native_memory"
 using UI :: #import "Widgets";
 #import "tree_draw"
@@ -22,6 +23,7 @@ using FrameStatus;
 
 DesktopFrame :: #type (session: Session, viewport: Rectangle,
     app: *DesktopApplication, platform: *RillPlatformServices) #c_call;
+ApplicationCleanup :: #type (platform: *RillPlatformServices) -> bool #c_call;
 
 #scope_file
 application: DesktopApplication;
@@ -29,6 +31,7 @@ compose: DesktopFrame;
 refresh_tasks: bool;
 refresh_at: s64;
 desktop_services: RillPlatformServices;
+cleanup: ApplicationCleanup;
 
 Preferences :: (platform: *RillPlatformServices) {
     RillSettingsInit(*application.settings)
@@ -72,6 +75,8 @@ Draw :: (session: Session, platform: *RillPlatformServices) -> bool {
         now := Time.UnixNow()
         if now != refresh_at {
             RillShellRefresh(*application.shell, platform)
+            application.settings_reloaded = PreferencesRefresh(*application.settings,
+                *application.previous, *application.settings_path[0])
             refresh_at = now
         }
     }
@@ -121,6 +126,7 @@ RunApplication :: () -> s32 {
             if ok && !application.closed { PauseLibdraw() }
         }
     }
+    if cleanup != null && !cleanup(platform) { ok = false }
     CloseSession(session)
     CloseLibdraw()
     RillShellDispose(*application.shell)
@@ -144,6 +150,11 @@ RunApplication :: () -> s32 {
 }
 
 #scope_export
+ApplicationMainWithCleanup :: (frame: DesktopFrame, finish: ApplicationCleanup) -> s32 {
+    cleanup = finish
+    return ApplicationMain(frame)
+}
+
 ApplicationMain :: (frame: DesktopFrame) -> s32 {
     compose = frame
     #if #defined(PLAN9_BUILD) {

@@ -1,0 +1,42 @@
+#import "platform_types"
+#import "settings"
+#import "native_memory"
+
+WallpaperState :: struct {
+    paths: [24]WallpaperImage
+    count: s32
+    index: s32
+    enabled: bool
+    base: [256]s8
+    active: [512]s8
+    changed_at: s64
+}
+
+WallpaperPath :: (state: *WallpaperState, settings: *RillSettings,
+    platform: *RillPlatformServices, now: s64) -> *s8 {
+    base := RillSettingsGet(settings, TextBytes("wallpaper"), TextBytes(""))
+    enabled := RillSettingsGetInteger(settings, TextBytes("wallpaper-slideshow"), 0) != 0
+    if !enabled { state.enabled = false; return base }
+    if !state.enabled || !TextEquals(*state.base[0], base) {
+        state.count = 0
+        if platform != null && platform.list_wallpapers != null {
+            state.count = platform.list_wallpapers(*state.paths[0], 24)
+        }
+        if state.count < 0 { state.count = 0 }
+        if state.count > 24 { state.count = 24 }
+        state.index = -1
+        index: s32 = 0
+        while index < state.count { if TextEquals(*state.paths[index].path[0], base) { state.index = index }; index += 1 }
+        CopyText(*state.base[0], 256, base)
+        CopyText(*state.active[0], 512, base)
+        state.changed_at = now
+        state.enabled = true
+    }
+    if now < state.changed_at { state.changed_at = now }
+    if state.count > 1 && now - state.changed_at >= 300 {
+        state.index = (state.index + 1) % state.count
+        CopyText(*state.active[0], 512, *state.paths[state.index].path[0])
+        state.changed_at = now
+    }
+    return *state.active[0]
+}

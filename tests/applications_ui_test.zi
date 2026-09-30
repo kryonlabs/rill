@@ -61,7 +61,9 @@ Draw :: (key: s32, scalar: s32, x: float32, y: float32,
 
 Key :: (key: s32, scalar: s32) -> bool { return Draw(key, scalar, 80.0, 110.0, false, false, false, 0.0) }
 Click :: (x: float32, y: float32) -> bool {
-    return Draw(0, 0, x, y, true, true, false, 0.0) && Draw(0, 0, x, y, false, false, true, 0.0)
+    return Draw(0, 0, x, y, true, true, false, 0.0) &&
+        Draw(0, 0, x, y, true, false, false, 0.0) &&
+        Draw(0, 0, x, y, false, false, true, 0.0)
 }
 Reset :: () {
     CloseSession(session)

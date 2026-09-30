@@ -1,0 +1,196 @@
+#import "settings_ui"
+#import "desktop_types"
+#import "platform_types"
+#import "preferences"
+#import "panel_config"
+#import "settings"
+#import "shortcuts"
+#import "shell"
+#import "native_memory"
+using UI :: #import "Widgets";
+#import "tree_draw"
+using FrameStatus;
+#if #defined(PLAN9_BUILD) {
+    #import "libdraw_native"
+} else {
+    #import "cairo_raster"
+    #program_export
+    SystemClipboardOpenHost :: () -> s32 { return -1 }
+    #program_export
+    SystemClipboardByteHost :: (index: s32) -> s32 { unused index; return -1 }
+    #program_export
+    SystemClipboardWriteHost :: (value: string) -> bool { unused value; return true }
+}
+
+state: SettingsState;
+app: DesktopApplication;
+platform: RillPlatformServices;
+session: Session;
+test_root: [1024]s8;
+mode_calls: s32;
+apply_calls: s32;
+applied_width: s32;
+applied_height: s32;
+apply_ok: bool;
+panel_calls: s32;
+stored_panels: PanelConfigs;
+keyboard_calls: s32;
+pointer_calls: s32;
+system_calls: s32;
+
+Root :: () -> *s8 { return *test_root[0] }
+Outputs :: (out: *RillDisplayOutput, capacity: s32) -> s32 {
+    if capacity < 2 { return 0 }
+    out[0] = .{width = 1024, height = 768, connected = 1, primary = 1}
+    out[1] = .{width = 900, height = 600, connected = 1}
+    CopyText(*out[0].name[0], 64, TextBytes("first"))
+    CopyText(*out[1].name[0], 64, TextBytes("second"))
+    return 2
+}
+Modes :: (output: *s8, out: *RillDisplayMode, capacity: s32) -> s32 {
+    if capacity < 2 { return 0 }
+    mode_calls += 1
+    out[0] = .{width = 1024, height = 768}
+    out[1] = .{width = 1280, height = 720}
+    if TextEquals(output, TextBytes("second")) { out[0] = .{width = 900, height = 600}; out[1] = .{width = 1440, height = 900} }
+    return 2
+}
+Apply :: (output: *s8, width: s32, height: s32, error: *s8, capacity: s32) -> s32 {
+    unused output
+    unused error
+    unused capacity
+    apply_calls += 1
+    applied_width = width
+    applied_height = height
+    return cast(s32)apply_ok
+}
+StorePanels :: (text: *s8) -> s32 { panel_calls += 1; return cast(s32)PanelsParse(*stored_panels, CString(text)) }
+Keyboard :: (delay: s32, rate: s32) -> s32 { unused delay; unused rate; keyboard_calls += 1; return 1 }
+Pointer :: (numerator: s32, denominator: s32, threshold: s32) -> s32 { unused numerator; unused denominator; unused threshold; pointer_calls += 1; return 1 }
+System :: (category: *s8) -> s32 { unused category; system_calls += 1; return 1 }
+
+Draw :: (x: float32, y: float32, key: s32, scalar: s32, down: bool, pressed: bool, released: bool, now: s64) -> bool {
+    BeginRasterFrame()
+    pointer: PointerFrame
+    pointer.x = x
+    pointer.y = y
+    pointer.down = down
+    pointer.pressed = pressed
+    pointer.released = released
+    TreePointerUpdate(session, pointer)
+    KeyboardSend(session, key)
+    if scalar != 0 { TypedCodepointSend(session, scalar) }
+    viewport := Rectangle.{0.0, 0.0, 480.0, 300.0}
+    if BeginFrame(session, cast(u64)1, viewport) != cast(FrameStatus)FrameOk { return false }
+    Settings(session, viewport, *state, *app, *platform, now)
+    return EndFrame(session) == cast(FrameStatus)FrameOk && FinishRasterFrame()
+}
+Idle :: (now: s64) -> bool { return Draw(0.0, 0.0, 0, 0, false, false, false, now) }
+Click :: (x: float32, y: float32, now: s64) -> bool {
+    return Draw(x, y, 0, 0, true, true, false, now) &&
+        Draw(x, y, 0, 0, true, false, false, now) &&
+        Draw(x, y, 0, 0, false, false, true, now)
+}
+
+Cases :: () -> s32 {
+    root := EnvironmentValue(TextBytes("RILL_TEST_ROOT"))
+    if root == null { return 99 }
+    CopyText(*test_root[0], 1024, root)
+    CopyText(*app.settings_path[0], 1024, root)
+    length := TextLength(root)
+    CopyText(*app.settings_path[length], 1024 - length, TextBytes("/settings"))
+    RillShellInit(*app.shell)
+    app.shell.status[0] = 0
+    platform.settings_root = Root
+    platform.display_outputs = Outputs
+    platform.display_modes = Modes
+    platform.display_apply = Apply
+    platform.panel_config_store = StorePanels
+    platform.keyboard_set_repeat = Keyboard
+    platform.pointer_set = Pointer
+    platform.open_settings = System
+    apply_ok = true
+    if !OpenRaster(480, 300) { return 1 }
+    session = SessionOpen()
+    if !Idle(cast(s64)100) || !CaptureConfigured() || !state.started { return 2 }
+    if !Click(170.0, 124.0, cast(s64)100) ||
+        !TextEquals(RillSettingsGet(*app.settings, TextBytes("panel-side"), null), TextBytes("bottom")) { return 3 }
+    if !Click(170.0, 24.0, cast(s64)101) || state.tab != 1 ||
+        !Click(200.0, 100.0, cast(s64)101) || system_calls != 1 { return 4 }
+    if !Click(286.0, 24.0, cast(s64)102) || state.tab != 2 { return 5 }
+    // All eight panel rows can be saved, beyond the legacy five-row limit.
+    while state.panels.count < 8 { PanelsAdd(*state.panels) }
+    state.panels_dirty = true
+    state.scroll[2] = 1100
+    if !Idle(cast(s64)102) || !Click(340.0, 170.0, cast(s64)102) || panel_calls != 1 ||
+        stored_panels.count != 8 || state.panels_dirty { return 6 }
+    if !Click(400.0, 24.0, cast(s64)103) || state.tab != 3 || !Idle(cast(s64)103) { return 7 }
+    if !Click(70.0, 100.0, cast(s64)103) || state.output_selected != 1 || mode_calls != 2 ||
+        state.mode_count != 2 || state.modes[0].width != 900 { return 8 }
+    if !Click(220.0, 100.0, cast(s64)103) || state.mode_selected != 1 ||
+        !Click(400.0, 100.0, cast(s64)103) || !state.display.pending || applied_width != 1440 { return 9 }
+    // Modal tabs cannot activate; timeout rollback still runs if the active
+    // page is changed by a caller while a preview is pending.
+    if !Idle(cast(s64)104) || state.tab != 3 || !state.display.pending { return 10 }
+    state.tab = 1
+    apply_ok = false
+    if !Idle(cast(s64)118) || !state.display.pending || apply_calls != 2 { return 11 }
+    apply_ok = true
+    if !Idle(cast(s64)119) || state.display.pending || applied_width != 900 || applied_height != 600 { return 12 }
+    state.tab = 3
+    state.scroll[3] = 1100
+    if !Idle(cast(s64)120) || !Click(340.0, 176.0, cast(s64)120) || state.shortcut_edit != 18 { return 13 }
+    CopyText(*state.binding[0], 64, TextBytes("Control+Alt+Right"))
+    if !Draw(0.0, 0.0, 257, 0, false, false, false, cast(s64)120) || state.shortcut_edit != 18 { return 14 }
+    CopyText(*state.binding[0], 64, TextBytes("Super+z"))
+    state.binding_cursor = 7
+    state.binding_anchor = 7
+    if !Draw(0.0, 0.0, 257, 0, false, false, false, cast(s64)120) || state.shortcut_edit != -1 ||
+        !TextEquals(*state.shortcuts.bindings[18][0], TextBytes("Super+z")) { return 15 }
+    // Closing Settings while previewing reverts first; Escape dismisses the
+    // confirmation before a later Escape closes the application.
+    state.scroll[3] = 0
+    if !Idle(cast(s64)121) || !Click(400.0, 100.0, cast(s64)121) || !state.display.pending ||
+        !Draw(0.0, 0.0, 256, 0, false, false, false, cast(s64)122) || state.display.pending || app.closed { return 16 }
+    if !Draw(0.0, 0.0, 256, 0, false, false, false, cast(s64)123) || !app.closed { return 17 }
+    CloseSession(session)
+    session = SessionOpen()
+    state = .{}
+    app.closed = false
+    platform = .{}
+    index: s32 = 0
+    while index < 4 { state.tab = index; if !Idle(cast(s64)124) { return 18 }; index += 1 }
+    CloseSession(session)
+    CloseRaster()
+    RillShellDispose(*app.shell)
+    return 0
+}
+Report :: () -> s32 {
+    result := Cases()
+    if result != 0 { print("rill-settings-ui-test-failed: %\n", result) }
+    else { print("rill-settings-ui-test-ok\n") }
+    return result
+}
+#if #defined(PLAN9_BUILD) {
+    thread_library :: #system_library "thread";
+    ThreadStart :: #type (value: *void) #c_call;
+    ThreadCreate :: (start: ThreadStart, value: *void, stack: u32) -> s32 #foreign thread_library "threadcreate";
+    ThreadExits :: (status: *s8) #foreign thread_library "threadexits";
+    ThreadExitsAll :: (status: *s8) #foreign thread_library "threadexitsall";
+    #program_export
+    TestThread :: (value: *void) {
+        unused value
+        if Report() == 0 { ThreadExitsAll(null) }
+        else { ThreadExitsAll(TextBytes("Settings UI failed")) }
+    }
+    #program_export
+    threadmain :: (argc: s32, argv: **s8) {
+        unused argc
+        unused argv
+        if ThreadCreate(TestThread, null, 1048576) < 0 { ThreadExitsAll(TextBytes("Could not start Settings UI test")) }
+        ThreadExits(null)
+    }
+} else {
+    #program_export
+    main :: () -> s32 { return Report() }
+}

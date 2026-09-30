@@ -42,9 +42,8 @@ MenuScroll :: (session: Session, key: u64, bounds: Rectangle, height: s32,
     props.scroll_offset = offset
     props.input = input.*
     result := Scroll(session, props)
-    if result.frame.start_drag { input.owns_drag = true }
-    if result.frame.clear_drag { input.owns_drag = false }
-    input.grab = result.frame.grab
+    input.* = ScrollInputAfter(input.*, result.frame)
+    if result.frame.cancel_press { TreePointerCancel(session) }
     return result
 }
 

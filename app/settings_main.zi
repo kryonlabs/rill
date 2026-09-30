@@ -1,0 +1,34 @@
+#import "settings_ui"
+#import "desktop_host"
+#import "desktop_types"
+#import "platform_types"
+#import "preferences"
+using UI :: #import "Widgets";
+#if #defined(PLAN9_BUILD) {
+    Time :: #import "date_time_plan9";
+} else {
+    Time :: #import "date_time_linux";
+}
+
+state: SettingsState;
+
+FinishSettings :: (platform: *RillPlatformServices) -> bool {
+    return DisplayRevert(*state.display, platform)
+}
+
+DrawSettings :: (session: Session, viewport: Rectangle,
+    app: *DesktopApplication, platform: *RillPlatformServices) {
+    Settings(session, viewport, *state, app, platform, Time.UnixNow())
+}
+
+#if #defined(PLAN9_BUILD) {
+    #program_export
+    threadmain :: (argc: s32, argv: **s8) {
+        unused argc
+        unused argv
+        ApplicationMainWithCleanup(DrawSettings, FinishSettings)
+    }
+} else {
+    #program_export
+    main :: () -> s32 { return ApplicationMainWithCleanup(DrawSettings, FinishSettings) }
+}

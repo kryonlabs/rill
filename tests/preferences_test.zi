@@ -1,0 +1,168 @@
+#import "preferences"
+#import "panel_config"
+#import "shortcuts"
+#import "platform_types"
+#import "settings"
+#import "shell"
+#import "shell_types"
+#import "native_memory"
+#import "xfce_panel"
+#import "panel_model"
+#import "panel_types"
+#import "wallpaper"
+
+settings: RillSettings;
+previous: RillSettings;
+other: RillSettings;
+platform: RillPlatformServices;
+shell: RillShellState;
+apply_count: s32;
+apply_ok: bool;
+width: s32;
+height: s32;
+command: [256]s8;
+
+Apply :: (output: *s8, w: s32, h: s32, error: *s8, capacity: s32) -> s32 {
+    unused output
+    unused error
+    unused capacity
+    apply_count += 1
+    width = w
+    height = h
+    return cast(s32)apply_ok
+}
+
+Launch :: (launcher: *RillLauncher) -> s32 { CopyText(*command[0], 256, *launcher.command[0]); return 1 }
+
+Wallpapers :: (paths: *WallpaperImage, capacity: s32) -> s32 {
+    if capacity < 2 { return 0 }
+    CopyText(*paths[0].path[0], 512, TextBytes("first.bit"))
+    CopyText(*paths[1].path[0], 512, TextBytes("second.bit"))
+    return 2
+}
+
+Cases :: (root: *s8) -> s32 {
+    panels: PanelConfigs
+    PanelConfigsDefault(*panels)
+    if !PanelsParse(*panels, "[{\"id\":\"primary\",\"output\":\"D\\\"P\\\\1\",\"edge\":\"left\",\"size\":48,\"autohide\":true,\"orientation\":\"deskbar\"}]") ||
+        panels.count != 1 || panels.entries[0].edge != 2 || panels.entries[0].size != 48 ||
+        panels.entries[0].autohide != 1 || panels.entries[0].deskbar != 1 ||
+        !TextEquals(*panels.entries[0].output[0], TextBytes("D\"P\\1")) { return 1 }
+    json: [4096]s8
+    copied: PanelConfigs
+    if !PanelsText(*panels, *json[0], 4096) || !PanelsParse(*copied, CString(*json[0])) ||
+        !TextEquals(*copied.entries[0].output[0], *panels.entries[0].output[0]) { return 2 }
+    if PanelsParse(*panels, "[{\"id\":\"same\"},{\"id\":\"same\"}]") ||
+        PanelsParse(*panels, "[{\"id\":\"../bad\"}]") || PanelsParse(*panels, "[{\"output\":\"bad\\nline\"}]") ||
+        PanelsParse(*panels, "[{\"size\":32.5}]") || PanelsParse(*panels, "[{\"size\":65}]") ||
+        PanelsParse(*panels, "[{\"edge\":\"bad\"}]") || PanelsParse(*panels, "[]") ||
+        PanelsParse(*panels, "[{}] trailing") || panels.entries[0].size != 48 { return 3 }
+    while panels.count < 8 { if !PanelsAdd(*panels) { return 4 } }
+    if PanelsAdd(*panels) || !PanelsRemove(*panels, 1) || !PanelsAdd(*panels) ||
+        !TextEquals(*panels.entries[7].id[0], TextBytes("panel-1")) { return 5 }
+    CopyText(*panels.entries[7].id[0], 64, *panels.entries[0].id[0])
+    if PanelsText(*panels, *json[0], 4096) || json[0] != 0 { return 6 }
+    while panels.count > 1 { PanelsRemove(*panels, 1) }
+    if PanelsRemove(*panels, 0) { return 7 }
+    panel: PanelModel
+    imported := XfcePanelParse(*panel, "<channel><property name=\"panels\"><property name=\"panel-1\"><property name=\"plugin-ids\"><value value=\"2\"/><value value=\"1\"/><value value=\"3\"/></property></property></property><property name=\"plugins\"><property name=\"plugin-1\" value=\"launcher\"><property name=\"items\"><value value=\"/apps/te&amp;rm.desktop\"/></property></property><property name=\"plugin-2\" value=\"tasklist\"/><property name=\"plugin-3\" value=\"clock\"/></property></channel>")
+    if !imported ||
+        panel.leading_count != 2 || panel.trailing_count != 1 || panel.leading[0].kind != RILL_PANEL_TASK_LIST ||
+        !TextEquals(*panel.leading[1].launcher_id[0], TextBytes("te&rm")) || panel.trailing[0].kind != RILL_PANEL_CLOCK ||
+        XfcePanelParse(*panel, "<property name=\"plugins\"><property name=\"plugin-1\" value=\"unknown\"/></property>") ||
+        XfcePanelParse(*panel, "<property name=\"plugins\">") || panel.leading_count != 2 { return 20 }
+    shortcuts: Shortcuts
+    ShortcutsDefault(*shortcuts)
+    canonical: [64]s8
+    if !ShortcutCanonical("Shift+Control+Alt+Q", *canonical[0], 64) ||
+        !TextEquals(*canonical[0], TextBytes("Ctrl+Alt+Shift+q")) ||
+        ShortcutCanonical("Ctrl+Ctrl+q", *canonical[0], 64) ||
+        ShortcutCanonical("Ctrl+", *canonical[0], 64) || ShortcutCanonical("Alt+bad key", *canonical[0], 64) ||
+        ShortcutCanonical("Ctrl+q\n", *canonical[0], 64) { return 8 }
+    if ShortcutSet(*shortcuts, 0, "Control+Alt+Right") != 11 ||
+        ShortcutSet(*shortcuts, 0, "Ctrl+Q") != -1 || !ShortcutsValid(*shortcuts) { return 9 }
+    path: [1024]s8
+    CopyText(*path[0], 1024, root)
+    length := TextLength(*path[0])
+    CopyText(*path[length], 1024 - length, TextBytes("/wm-keys"))
+    RillSettingsSet(*other, TextBytes("future-action"), TextBytes("Alt+F12"))
+    if RillSettingsSave(*other, *path[0]) == 0 || !ShortcutsSave(*shortcuts, *path[0]) { return 10 }
+    ShortcutsDefault(*shortcuts)
+    if !ShortcutsLoad(*shortcuts, *path[0]) || !TextEquals(*shortcuts.bindings[0][0], TextBytes("Ctrl+q")) ||
+        RillSettingsLoad(*other, *path[0]) == 0 || RillSettingsGet(*other, TextBytes("future-action"), null) == null { return 11 }
+    RillSettingsSet(*other, TextBytes("minimize"), TextBytes("Control+Q"))
+    if RillSettingsSave(*other, *path[0]) == 0 || ShortcutsLoad(*shortcuts, *path[0]) ||
+        !TextEquals(*shortcuts.bindings[1][0], TextBytes("Alt+F9")) { return 12 }
+    CopyText(*path[length], 1024 - length, TextBytes("/settings"))
+    RillSettingsSet(*settings, TextBytes("panel-side"), TextBytes("top"))
+    if RillSettingsSave(*settings, *path[0]) == 0 { return 13 }
+    previous = settings
+    other = settings
+    RillSettingsSet(*other, TextBytes("panel-side"), TextBytes("bottom"))
+    RillSettingsSet(*other, TextBytes("external-value"), TextBytes("keep"))
+    RillSettingsSet(*settings, TextBytes("unsaved-local"), TextBytes("pending"))
+    if RillSettingsSave(*other, *path[0]) == 0 || !PreferencesRefresh(*settings, *previous, *path[0]) ||
+        !TextEquals(RillSettingsGet(*settings, TextBytes("panel-side"), null), TextBytes("bottom")) ||
+        !TextEquals(RillSettingsGet(*settings, TextBytes("unsaved-local"), null), TextBytes("pending")) ||
+        !PreferenceSaveInteger(*settings, *previous, *path[0], "panel-height", 48) ||
+        PreferenceSave(*settings, *previous, *path[0], "bad", TextBytes("line\nbreak")) ||
+        RillSettingsLoad(*other, *path[0]) == 0 || RillSettingsGet(*other, TextBytes("external-value"), null) == null { return 14 }
+    platform.display_apply = Apply
+    output: RillDisplayOutput
+    output.connected = 1
+    output.width = 1024
+    output.height = 768
+    CopyText(*output.name[0], 64, TextBytes("test-output"))
+    mode: RillDisplayMode = .{width = 1280, height = 720}
+    change: DisplayChange
+    apply_ok = true
+    if !DisplayPreview(*change, *platform, output, mode, cast(s64)100) ||
+        DisplayPreview(*change, *platform, output, mode, cast(s64)101) ||
+        !DisplayTick(*change, *platform, cast(s64)114) || !change.pending || apply_count != 1 { return 15 }
+    apply_ok = false
+    if DisplayTick(*change, *platform, cast(s64)115) || !change.pending || apply_count != 2 { return 16 }
+    apply_ok = true
+    if !DisplayTick(*change, *platform, cast(s64)116) || change.pending || width != 1024 || height != 768 { return 17 }
+    if !DisplayPreview(*change, *platform, output, mode, cast(s64)200) ||
+        !DisplayTick(*change, *platform, cast(s64)199) || change.pending { return 18 }
+    slideshow: WallpaperState
+    platform.list_wallpapers = Wallpapers
+    RillSettingsSet(*settings, TextBytes("wallpaper"), TextBytes("first.bit"))
+    RillSettingsSetInteger(*settings, TextBytes("wallpaper-slideshow"), 1)
+    if !TextEquals(WallpaperPath(*slideshow, *settings, *platform, cast(s64)100), TextBytes("first.bit")) ||
+        !TextEquals(WallpaperPath(*slideshow, *settings, *platform, cast(s64)399), TextBytes("first.bit")) ||
+        !TextEquals(WallpaperPath(*slideshow, *settings, *platform, cast(s64)400), TextBytes("second.bit")) ||
+        !TextEquals(RillSettingsGet(*settings, TextBytes("wallpaper"), null), TextBytes("first.bit")) { return 21 }
+    RillSettingsSetInteger(*settings, TextBytes("wallpaper-slideshow"), 0)
+    if !TextEquals(WallpaperPath(*slideshow, *settings, *platform, cast(s64)700), TextBytes("first.bit")) { return 22 }
+    RillShellInit(*shell)
+    platform.launch = Launch
+    if RillPreferencesOpen(*shell, *platform, 0) == 0 || !TextEquals(*command[0], TextBytes("rill-settings")) ||
+        RillPreferencesOpen(*shell, *platform, 1) == 0 || !TextEquals(*command[0], TextBytes("rill-about")) { return 19 }
+    RillShellDispose(*shell)
+    RillSettingsInit(*other)
+    index: s32 = 0
+    while index < RILL_SETTINGS_MAX {
+        name: [32]s8
+        FormatInteger(*name[0], 32, index)
+        RillSettingsSet(*other, *name[0], TextBytes("external"))
+        index += 1
+    }
+    if RillSettingsSave(*other, *path[0]) == 0 ||
+        PreferenceSaveInteger(*settings, *previous, *path[0], "new-value", 1) ||
+        PreferencesRefresh(*settings, *previous, *path[0]) ||
+        RillSettingsGet(*settings, TextBytes("new-value"), null) == null ||
+        ShortcutsSave(*shortcuts, *path[0]) || RillSettingsLoad(*other, *path[0]) == 0 ||
+        other.count != RILL_SETTINGS_MAX || RillSettingsGet(*other, TextBytes("new-value"), null) != null { return 23 }
+    return 0
+}
+
+#program_export
+main :: () -> s32 {
+    root := EnvironmentValue(TextBytes("RILL_TEST_ROOT"))
+    if root == null || root[0] == 0 { return 99 }
+    result := Cases(root)
+    if result != 0 { print("rill-preferences-test-failed: %\n", result) }
+    else { print("rill-preferences-test-ok\n") }
+    return result
+}

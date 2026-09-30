@@ -55,16 +55,42 @@ clipboard scrolling, session confirmation, and actual libdraw interaction
 on a private Xvfb display. The native Taiji gate includes the same desktop
 fixture and builds, privately installs, and captures `rill-desktop`.
 
+Settings and About now use `app/settings_main.zi` and `app/about_main.zi`.
+Settings retains the Desktop, System, Panels, and Input pages with current
+Kryon widgets. Preferences merge with changes made by other applications.
+The desktop reloads saved panel placement, sizing, autohide, wallpaper, clock,
+recent applications, and imported panel layouts. Wallpaper rotation changes
+the displayed image every five minutes without overwriting the chosen image.
+Panel JSON validates identifiers, sizes, output names, and all eight entries.
+The Xfce importer reads nested plugin properties and ordered launcher items.
+All nineteen window shortcuts can be edited and saved; modifier aliases and
+order are normalized before checking collisions. Shortcuts load when the
+window manager starts. Display previews revert after fifteen seconds,
+including while another page is active or Settings closes. Failed rollback
+keeps the confirmation available for retry.
+
+`make settings-build about-build settings-plan9 about-plan9` builds the hosted
+applications and generates their native output. `mk -f app/settings.mk install`
+and `mk -f app/about.mk install` build and install the native applications.
+`make preferences-test settings-ui-test settings-window-test` checks policy,
+source and saved-IR rendering, modal input, all panel and shortcut rows, and
+actual windows on a private display. The legacy Settings renderer, `.kry`
+screen, and unused C bridge were removed. Available control panels, displays,
+input devices, panel configuration storage, and wallpapers depend on platform
+services. Several of those services still need native Plan 9 implementations;
+their controls remain unavailable until then. Native wallpaper loading still
+uses Plan 9 image files through Kryon's asset-backed `Image` surface.
+
 The new entrypoint is not yet the boot default. Desktop icons and file
 operations, full tray images and menus, plugin Properties, notifications,
-Settings/About, and remaining services still need conversion and parity
+and remaining services still need conversion and parity
 checks before replacing the former full desktop. The panel's Shift-drag
 behavior is checked with supplied modifier state; libdraw still needs a
 held-modifier input path before that gesture works on native devices.
 
 The conversion remains incomplete. Other graphical screens, file operations,
 Linux platform services, window management, and the session daemon still need
-conversion. The C desktop entrypoint and legacy Settings `.kry` screen depend on
+conversion. The remaining C desktop entrypoint depends on
 the former Kryon interface, so the full desktop build is not yet restored
 against current Kryon.
 
@@ -100,7 +126,7 @@ offscreen rendering.
 `make applications-build` builds `build/rill-applications`; its Linux service
 adapter remains C. `make applications-plan9` emits the entire native menu and
 host through `plan9-c`, and `mk -f app/applications.mk` builds it in the guest.
-Run, Applications, and Calendar share `app/desktop_host.zi` for libdraw input, preferences,
+Run, Applications, Calendar, Settings, About, and Desktop share `app/desktop_host.zi` for libdraw input, preferences,
 frame composition, and window lifetime. Their text fields use Kryon's shared
 keyboard and Unicode input APIs.
 

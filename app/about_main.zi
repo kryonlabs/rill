@@ -1,0 +1,22 @@
+#import "about_ui"
+#import "desktop_host"
+#import "desktop_types"
+#import "platform_types"
+using UI :: #import "Widgets";
+
+DrawAbout :: (session: Session, viewport: Rectangle, app: *DesktopApplication, platform: *RillPlatformServices) {
+    unused platform
+    About(session, viewport, app)
+}
+
+#if #defined(PLAN9_BUILD) {
+    #program_export
+    threadmain :: (argc: s32, argv: **s8) {
+        unused argc
+        unused argv
+        ApplicationMain(DrawAbout)
+    }
+} else {
+    #program_export
+    main :: () -> s32 { return ApplicationMain(DrawAbout) }
+}

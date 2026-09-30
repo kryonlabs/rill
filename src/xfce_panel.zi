@@ -1,0 +1,214 @@
+#import "panel_model"
+#import "panel_types"
+#import "native_memory"
+
+#scope_file
+Plugin :: struct { id: s32; name: [64]s8; item: [256]s8; }
+
+Prefix :: (value: string, prefix: string) -> bool {
+    return prefix.count <= value.count && value[0:prefix.count] == prefix
+}
+
+Suffix :: (value: string, suffix: string) -> bool {
+    return suffix.count <= value.count && value[value.count - suffix.count:] == suffix
+}
+
+Attribute :: (tag: string, wanted: string) -> string {
+    index: s32 = 0
+    while index < cast(s32)tag.count {
+        while index < cast(s32)tag.count && (tag[index] == cast(u8)32 || tag[index] == cast(u8)9 || tag[index] == cast(u8)10 || tag[index] == cast(u8)13) { index += 1 }
+        start := index
+        while index < cast(s32)tag.count && tag[index] != cast(u8)61 && tag[index] != cast(u8)32 && tag[index] != cast(u8)9 && tag[index] != cast(u8)47 { index += 1 }
+        name := tag[start:index]
+        while index < cast(s32)tag.count && (tag[index] == cast(u8)32 || tag[index] == cast(u8)9) { index += 1 }
+        if index >= cast(s32)tag.count || tag[index] != cast(u8)61 {
+            if index == start { index += 1 }
+            continue
+        }
+        index += 1
+        while index < cast(s32)tag.count && (tag[index] == cast(u8)32 || tag[index] == cast(u8)9) { index += 1 }
+        if index >= cast(s32)tag.count { return "" }
+        quote := tag[index]
+        if quote != cast(u8)34 && quote != cast(u8)39 { return "" }
+        index += 1
+        start = index
+        while index < cast(s32)tag.count && tag[index] != quote { index += 1 }
+        if index >= cast(s32)tag.count { return "" }
+        value := tag[start:index]
+        index += 1
+        if name == wanted { return value }
+    }
+    return ""
+}
+
+CopyAttribute :: (value: string, output: *s8, capacity: s32) -> bool {
+    cursor: s32 = 0
+    used: s32 = 0
+    while cursor < cast(s32)value.count {
+        byte := value[cursor]
+        if byte == cast(u8)38 {
+            rest := value[cursor:]
+            if Prefix(rest, "&amp;") { byte = cast(u8)38; cursor += 4 }
+            else if Prefix(rest, "&quot;") { byte = cast(u8)34; cursor += 5 }
+            else if Prefix(rest, "&apos;") { byte = cast(u8)39; cursor += 5 }
+            else if Prefix(rest, "&lt;") { byte = cast(u8)60; cursor += 3 }
+            else if Prefix(rest, "&gt;") { byte = cast(u8)62; cursor += 3 }
+            else { return false }
+        }
+        if used + 1 >= capacity || byte < cast(u8)32 || byte == cast(u8)127 { return false }
+        output[used] = cast(s8)byte
+        used += 1
+        cursor += 1
+    }
+    output[used] = 0
+    return true
+}
+
+Number :: (text: string) -> s32 {
+    value: s64 = 0
+    if text.count == 0 { return 0 }
+    index: s32 = 0
+    while index < cast(s32)text.count {
+        ch := text[index]
+        if ch < cast(u8)48 || ch > cast(u8)57 { return 0 }
+        value = value * 10 + cast(s64)(ch - cast(u8)48)
+        if value > 2147483647 { return 0 }
+        index += 1
+    }
+    return cast(s32)value
+}
+
+Mapped :: (source: *Plugin, output: *RillPanelPlugin) -> bool {
+    output.* = .{}
+    name := CString(*source.name[0])
+    id := ""
+    if name == "whiskermenu" || name == "applicationsmenu" || name == "directorymenu" { output.kind = RILL_PANEL_MENU; id = "applications"; output.menu_id = 1; output.width = 104 }
+    if name == "launcher" {
+        output.kind = RILL_PANEL_LAUNCHER
+        item := CString(*source.item[0])
+        start: s32 = 0
+        index: s32 = 0
+        while index < cast(s32)item.count { if item[index] == cast(u8)47 { start = index + 1 }; index += 1 }
+        item = item[start:]
+        if Suffix(item, ".desktop") { item = item[0:item.count - 8] }
+        if item == "" { item = "terminal" }
+        if item.count >= 64 { return false }
+        index = 0
+        while index < cast(s32)item.count { output.launcher_id[index] = cast(s8)item[index]; index += 1 }
+        output.launcher_id[index] = 0
+        id = CString(*output.launcher_id[0])
+        output.width = 26
+    }
+    if name == "tasklist" || name == "windowmenu" { output.kind = RILL_PANEL_TASK_LIST; id = "task-list"; output.width = 180 }
+    if name == "pager" { output.kind = RILL_PANEL_WORKSPACES; id = "workspaces"; output.width = 42 }
+    if name == "systray" { output.kind = RILL_PANEL_TRAY; id = "tray"; output.width = 72 }
+    if name == "clock" { output.kind = RILL_PANEL_CLOCK; id = "clock"; output.width = 120 }
+    if name == "showdesktop" { output.kind = RILL_PANEL_SHOW_DESKTOP; id = "show-desktop"; output.width = 26 }
+    if name == "actions" || name == "actionsmenu" { output.kind = RILL_PANEL_ACTIONS; id = "actions"; output.width = 58 }
+    if name == "separator" { output.kind = RILL_PANEL_SEPARATOR; id = "separator"; output.width = 6 }
+    if name == "pulseaudio" { output.kind = RILL_PANEL_VOLUME; id = "volume"; output.width = 58 }
+    if name == "xfce4-clipman-plugin" || name == "clipman" { output.kind = RILL_PANEL_CLIPBOARD; id = "clipboard"; output.width = 26 }
+    if id == "" { return false }
+    CopyText(*output.id[0], 64, TextBytes(id))
+    CopyText(*output.label[0], 96, TextBytes(id))
+    if output.kind == RILL_PANEL_MENU { CopyText(*output.label[0], 96, TextBytes("Applications")) }
+    output.advance = output.width + 2
+    return true
+}
+
+#scope_export
+// Read xfconf's property/value format, retaining the first panel's plugin
+// order and nested launcher items. Unknown plugins are omitted. A malformed
+// or empty import leaves the existing layout untouched.
+XfcePanelParse :: (model: *PanelModel, xml: string) -> bool {
+    if model == null || xml.count == 0 || xml.count > 65535 { return false }
+    plugins: [64]Plugin
+    plugin_count: s32 = 0
+    order: [64]s32
+    order_count: s32 = 0
+    active: [64]s32
+    ordering: [64]bool
+    items: [64]bool
+    depth: s32 = 0
+    cursor: s32 = 0
+    while cursor < cast(s32)xml.count {
+        while cursor < cast(s32)xml.count && xml[cursor] != cast(u8)60 { cursor += 1 }
+        if cursor >= cast(s32)xml.count { break }
+        start := cursor + 1
+        quote: u8 = 0
+        cursor = start
+        while cursor < cast(s32)xml.count {
+            ch := xml[cursor]
+            if quote != cast(u8)0 { if ch == quote { quote = cast(u8)0 } }
+            else if ch == cast(u8)34 || ch == cast(u8)39 { quote = ch }
+            else if ch == cast(u8)62 { break }
+            cursor += 1
+        }
+        if cursor >= cast(s32)xml.count { return false }
+        tag := xml[start:cursor]
+        cursor += 1
+        if Prefix(tag, "/property") { if depth < 1 { return false }; depth -= 1; continue }
+        if Prefix(tag, "property ") || Prefix(tag, "property\t") {
+            if depth >= 64 { return false }
+            current: s32 = -1
+            in_order: bool = false
+            in_items: bool = false
+            if depth > 0 { current = active[depth - 1]; in_order = ordering[depth - 1]; in_items = items[depth - 1] }
+            name := Attribute(tag, "name")
+            value := Attribute(tag, "value")
+            if Prefix(name, "plugin-") && name != "plugin-ids" {
+                id := Number(name[7:])
+                if id <= 0 || plugin_count >= 64 { return false }
+                other: s32 = 0
+                while other < plugin_count { if plugins[other].id == id { return false }; other += 1 }
+                current = plugin_count
+                plugins[current].id = id
+                if !CopyAttribute(value, *plugins[current].name[0], 64) { return false }
+                plugin_count += 1
+            }
+            if name == "plugin-ids" && order_count == 0 { in_order = true }
+            if current >= 0 && name == "name" && value != "" { if !CopyAttribute(value, *plugins[current].name[0], 64) { return false } }
+            if current >= 0 && name == "items" { in_items = true; if value != "" && !CopyAttribute(value, *plugins[current].item[0], 256) { return false } }
+            active[depth] = current
+            ordering[depth] = in_order
+            items[depth] = in_items
+            if !Suffix(tag, "/") { depth += 1 }
+        } else if Prefix(tag, "value ") && depth > 0 {
+            value := Attribute(tag, "value")
+            if ordering[depth - 1] && order_count < 64 {
+                id := Number(value)
+                if id <= 0 { return false }
+                order[order_count] = id
+                order_count += 1
+            }
+            current := active[depth - 1]
+            if current >= 0 && items[depth - 1] && plugins[current].item[0] == 0 {
+                if !CopyAttribute(value, *plugins[current].item[0], 256) { return false }
+            }
+        }
+    }
+    if depth != 0 { return false }
+    if order_count == 0 {
+        index: s32 = 0
+        while index < plugin_count { order[index] = plugins[index].id; index += 1 }
+        order_count = plugin_count
+    }
+    parsed: PanelModel
+    index: s32 = 0
+    while index < order_count {
+        entry: s32 = 0
+        while entry < plugin_count && plugins[entry].id != order[index] { entry += 1 }
+        if entry < plugin_count {
+            plugin: RillPanelPlugin
+            if Mapped(*plugins[entry], *plugin) {
+                group: s32 = 1
+                if plugin.kind <= RILL_PANEL_TASK_LIST { group = 0 }
+                if !PanelAppend(*parsed, group, plugin) { return false }
+            }
+        }
+        index += 1
+    }
+    if parsed.leading_count + parsed.trailing_count == 0 { return false }
+    model.* = parsed
+    return true
+}

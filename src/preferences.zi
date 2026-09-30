@@ -1,0 +1,144 @@
+#import "native_memory"
+#import "platform_types"
+#import "shell_types"
+#import "shell"
+#import "settings"
+
+PreferenceInteger :: (settings: *RillSettings, key: string, fallback: s32, minimum: s32, maximum: s32) -> s32 {
+    value := RillSettingsGetInteger(settings, TextBytes(key), fallback)
+    if value < minimum { return minimum }
+    if value > maximum { return maximum }
+    return value
+}
+
+PreferenceSave :: (settings: *RillSettings, previous: *RillSettings,
+    path: *s8, key: string, value: *s8) -> bool {
+    if settings == null || previous == null || path == null || path[0] == 0 ||
+        key.count == 0 || key.count >= RILL_SETTINGS_KEY ||
+        value == null || TextLength(value) >= RILL_SETTINGS_VALUE { return false }
+    cursor: s32 = 0
+    while value[cursor] != 0 {
+        if value[cursor] == 10 || value[cursor] == 13 { return false }
+        cursor += 1
+    }
+    RillSettingsSet(settings, TextBytes(key), value)
+    if !TextEquals(RillSettingsGet(settings, TextBytes(key), null), value) { return false }
+    return RillSettingsMergeSave(settings, previous, path) != 0
+}
+
+PreferenceSaveInteger :: (settings: *RillSettings, previous: *RillSettings,
+    path: *s8, key: string, value: s32) -> bool {
+    text: [32]s8
+    FormatInteger(*text[0], 32, value)
+    return PreferenceSave(settings, previous, path, key, *text[0])
+}
+
+// Refresh saved values without losing a local edit whose save failed.
+PreferencesRefresh :: (settings: *RillSettings, previous: *RillSettings, path: *s8) -> bool {
+    if settings == null || previous == null || path == null || path[0] == 0 ||
+        settings.count < 0 || settings.count > RILL_SETTINGS_MAX { return false }
+    latest := cast(*RillSettings)AllocateZeroed(1, size_of(RillSettings))
+    merged := cast(*RillSettings)AllocateZeroed(1, size_of(RillSettings))
+    if latest == null || merged == null {
+        ReleaseAllocation(cast(*void)latest)
+        ReleaseAllocation(cast(*void)merged)
+        return false
+    }
+    ok := RillSettingsLoad(latest, path) != 0
+    if ok {
+        merged.* = latest.*
+        index: s32 = 0
+        while index < settings.count {
+            key := *settings.keys[index][0]
+            value := *settings.values[index][0]
+            old := RillSettingsGet(previous, key, null)
+            if old == null || !TextEquals(old, value) {
+                if merged.count >= RILL_SETTINGS_MAX && RillSettingsGet(merged, key, null) == null {
+                    ok = false
+                    break
+                }
+                RillSettingsSet(merged, key, value)
+            }
+            index += 1
+        }
+        if ok { previous.* = latest.*; settings.* = merged.* }
+    }
+    ReleaseAllocation(cast(*void)latest)
+    ReleaseAllocation(cast(*void)merged)
+    return ok
+}
+
+DisplayChange :: struct {
+    pending: bool
+    output: [64]s8
+    previous_width: s32
+    previous_height: s32
+    deadline: s64
+    started_at: s64
+    error: [256]s8
+}
+
+DisplayRevert :: (change: *DisplayChange, platform: *RillPlatformServices) -> bool {
+    if !change.pending { return true }
+    if platform == null || platform.display_apply == null { return false }
+    if platform.display_apply(*change.output[0], change.previous_width,
+        change.previous_height, *change.error[0], 256) == 0 { return false }
+    change.pending = false
+    return true
+}
+
+DisplayPreview :: (change: *DisplayChange, platform: *RillPlatformServices,
+    output: RillDisplayOutput, mode: RillDisplayMode, now: s64) -> bool {
+    if change == null || change.pending || platform == null || platform.display_apply == null ||
+        output.connected == 0 || output.width <= 0 || output.height <= 0 ||
+        mode.width <= 0 || mode.height <= 0 { return false }
+    if platform.display_apply(*output.name[0], mode.width, mode.height, *change.error[0], 256) == 0 { return false }
+    CopyText(*change.output[0], 64, *output.name[0])
+    change.previous_width = output.width
+    change.previous_height = output.height
+    change.started_at = now
+    change.deadline = now + 15
+    change.pending = true
+    return true
+}
+
+DisplayTick :: (change: *DisplayChange, platform: *RillPlatformServices, now: s64) -> bool {
+    if change.pending && (now >= change.deadline || now < change.started_at) { return DisplayRevert(change, platform) }
+    return true
+}
+
+#program_export
+PreferencesCommand :: (platform: *RillPlatformServices, about: bool) -> string {
+    native := platform != null && TextEquals(platform.name, TextBytes("plan9"))
+    if about {
+        if native { return "window -m -dx 500 -dy 460 rill-about" }
+        return "rill-about"
+    }
+    if native { return "window -m -dx 548 -dy 448 rill-settings" }
+    return "rill-settings"
+}
+
+#program_export
+RillPreferencesOpen :: (shell: *RillShellState, platform: *RillPlatformServices, about: s32) -> s32 {
+    if shell == null { return 0 }
+    launcher: RillLauncher
+    name := "Settings"
+    command := PreferencesCommand(platform, about != 0)
+    id := "settings"
+    kind := RILL_APP_SETTINGS
+    if about != 0 { name = "About Rill"; id = "about"; kind = RILL_APP_ABOUT }
+    CopyText(*launcher.id[0], 64, TextBytes(id))
+    CopyText(*launcher.name[0], 96, TextBytes(name))
+    CopyText(*launcher.command[0], 256, TextBytes(command))
+    index: s32 = 0
+    while index < shell.app_count && index < RILL_MAX_APPS {
+        if shell.apps[index].kind == kind { RillShellCloseApp(shell, shell.apps[index].id) }
+        else { index += 1 }
+    }
+    if platform == null || platform.launch == null || platform.launch(*launcher) == 0 {
+        RillShellSetStatus(shell, TextBytes("Could not open desktop preferences"))
+        return 0
+    }
+    shell.status[0] = 0
+    return 1
+}

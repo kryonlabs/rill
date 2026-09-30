@@ -83,6 +83,10 @@ typedef struct RillDisplayMode {
     int height;
 } RillDisplayMode;
 
+typedef struct WallpaperImage {
+    char path[512];
+} WallpaperImage;
+
 /* One removable volume reported by the platform's volume monitor. */
 typedef struct RillVolume {
     char name[96];
@@ -104,7 +108,7 @@ typedef struct RillPlatformServices {
     int (*current_workspace)(void);
     int (*switch_workspace)(int index);
     /* Wallpaper candidates for the settings app; paths are 512-byte buffers. */
-    int (*list_wallpapers)(char (*paths)[512], int cap);
+    int (*list_wallpapers)(WallpaperImage *paths, int cap);
     /* Session actions: "lock", "logout", "restart", "shutdown", "suspend". */
     int (*session_action)(const char *action);
     /* Toggle the WM's show-desktop state (EWMH _NET_SHOWING_DESKTOP). */

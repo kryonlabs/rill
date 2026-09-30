@@ -1,0 +1,27 @@
+using UI :: #import "Widgets";
+#import "desktop_types"
+
+About :: (session: Session, viewport: Rectangle, app: *DesktopApplication) {
+    box: BoxProps
+    box.key = cast(u64)166001
+    box.bounds = viewport
+    box.fill = Color.{248, 249, 252, 255}
+    Box(session, box)
+    title: TextProps
+    title.key = cast(u64)166002
+    title.bounds = Rectangle.{viewport.x + 20.0, viewport.y + 24.0, viewport.width - 40.0, 40.0}
+    title.text = "Rill"
+    title.font = 24
+    Text(session, title)
+    text: TextProps
+    text.key = cast(u64)166003
+    text.bounds = Rectangle.{viewport.x + 20.0, viewport.y + 84.0, viewport.width - 40.0, 100.0}
+    text.text = "A Kryon desktop for Taiji and Plan 9."
+    text.font = 14
+    Text(session, text)
+    close: ButtonProps
+    close.key = cast(u64)166004
+    close.bounds = Rectangle.{viewport.x + viewport.width - 100.0, viewport.y + viewport.height - 48.0, 80.0, 32.0}
+    close.label = "Close"
+    if Button(session, close) > 0 || KeyboardTake(session) == 256 { app.closed = true }
+}

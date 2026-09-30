@@ -1,13 +1,13 @@
 APP_NAME := rill
 .DEFAULT_GOAL := all
 KRYON_DIR ?= ../kryon
-PLAN9PORT_DIR ?= $(if $(wildcard ../plan9port/lib/libdraw.a),../plan9port,../../taijiosnet/plan9port)
+PLAN9PORT_DIR ?= $(if $(wildcard ../../plan9port/lib/libdraw.a),../../plan9port,$(if $(wildcard ../plan9port/lib/libdraw.a),../plan9port,../../taijiosnet/plan9port))
 KRYON_BACKEND ?= libdraw
 KRYON_WITH_SYNC ?= 0
 ZIRAN_DIR ?= ../../ziranlang/ziran
 ZIRAN ?= $(ZIRAN_DIR)/build/bin/ziran
 
-SHELL_MODULES := native_memory platform_types shell_types shell run_dialog applications clock date_time_types date_time_linux calendar
+SHELL_MODULES := native_memory platform_types shell_types shell run_dialog applications preferences clock date_time_types date_time_linux calendar
 SHELL_GEN := build/ziran/c
 SHELL_C := $(addprefix $(SHELL_GEN)/,$(addsuffix .c,$(SHELL_MODULES)))
 PERSISTENCE_MODULES := c_string file_linux native_files panel_types panel settings
@@ -30,7 +30,7 @@ $(PLAN9_C): src/platform_plan9.zi src/platform_types.zi src/native_memory.zi $(P
 	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=c --root src --module-path $(ZIRAN_DIR)/std -o $(PLAN9_HOST_GEN) src/platform_plan9.zi
 
 .PHONY: ziran-c-plan9 shell-test persistence-test
-ziran-c-plan9: run-dialog-plan9 applications-plan9 calendar-plan9 desktop-plan9
+ziran-c-plan9: run-dialog-plan9 applications-plan9 calendar-plan9 desktop-plan9 settings-plan9 about-plan9
 	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root src --module-path $(ZIRAN_DIR)/std -o build/ziran/plan9 src/shell.zi src/panel.zi src/settings.zi src/platform_plan9.zi src/run_dialog.zi src/applications.zi src/clock.zi
 	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root tests --module-path src --module-path $(ZIRAN_DIR)/std -o build/ziran/plan9-test tests/persistence_test.zi
 
@@ -137,11 +137,46 @@ desktop-window-test: $(DESKTOP_BIN)
 		PLAN9="$(abspath $(PLAN9PORT_DIR))" DEVDRAW="$(abspath $(PLAN9PORT_DIR))/bin/devdraw" \
 		xvfb-run -a -n 100 python3 tests/desktop_window_test.py
 
+SETTINGS_GEN := build/ziran/settings-c
+SETTINGS_BIN := build/rill-settings
+
+.PHONY: settings-build settings-plan9 settings-ui-test settings-window-test
+settings-build: $(SETTINGS_BIN)
+
+settings-plan9:
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --define PLAN9_BUILD --root app --module-path src --module-path $(KRYON_DIR)/src/ui --module-path $(KRYON_DIR)/src/backend --module-path $(ZIRAN_DIR)/std -o build/ziran/settings-plan9 app/settings_main.zi
+
+$(SETTINGS_GEN)/.generated: $(RUN_SOURCES) $(ZIRAN)
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=c --root app --module-path src --module-path $(KRYON_DIR)/src/ui --module-path $(KRYON_DIR)/src/backend --module-path $(ZIRAN_DIR)/std -o $(SETTINGS_GEN) app/settings_main.zi
+	touch $@
+
+settings-ui-test:
+	ZIRAN="$(abspath $(ZIRAN))" ZIRAN_STD="$(abspath $(ZIRAN_DIR)/std)" KRYON_DIR="$(abspath $(KRYON_DIR))" sh tests/settings_ui_test.sh
+
+settings-window-test: $(SETTINGS_BIN) build/rill-about
+	env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY RILL_PRIVATE_XVFB=1 \
+		PLAN9="$(abspath $(PLAN9PORT_DIR))" DEVDRAW="$(abspath $(PLAN9PORT_DIR))/bin/devdraw" \
+		xvfb-run -a -n 100 python3 tests/settings_window_test.py
+
+ABOUT_GEN := build/ziran/about-c
+ABOUT_BIN := build/rill-about
+
+.PHONY: about-build about-plan9
+about-build: $(ABOUT_BIN)
+
+about-plan9:
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --define PLAN9_BUILD --root app --module-path src --module-path $(KRYON_DIR)/src/ui --module-path $(KRYON_DIR)/src/backend --module-path $(ZIRAN_DIR)/std -o build/ziran/about-plan9 app/about_main.zi
+
+$(ABOUT_GEN)/.generated: $(RUN_SOURCES) $(ZIRAN)
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=c --root app --module-path src --module-path $(KRYON_DIR)/src/ui --module-path $(KRYON_DIR)/src/backend --module-path $(ZIRAN_DIR)/std -o $(ABOUT_GEN) app/about_main.zi
+	touch $@
+
 CC ?= cc
 CFLAGS ?= -Wall -Wextra -O2
 CPPFLAGS := -Iinclude -I$(KRYON_DIR)/include
 LDFLAGS := -rdynamic
 LDLIBS =
+CAIRO_LDLIBS := $(shell pkg-config --libs cairo freetype2 2>/dev/null || printf '%s' '-lcairo -lfreetype')
 GTK_PKG_CFLAGS := $(shell pkg-config --cflags gtk+-3.0 gio-unix-2.0 2>/dev/null)
 GTK_PKG_LIBS := $(shell pkg-config --libs gtk+-3.0 gio-unix-2.0 2>/dev/null)
 X11_PKGS := x11 xext xrandr xcomposite xdamage xfixes xrender xtst
@@ -175,28 +210,42 @@ $(RUN_BIN): $(RUN_GEN)/.generated src/platform_linux.c src/files.c src/rill_wayl
 		-ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $(RUN_GEN)/*.c \
 		src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(GTK_PKG_LIBS) $(PLATFORM_LDLIBS) \
 		$(shell pkg-config --libs wayland-client 2>/dev/null) \
-		-Wl,-E -L$(PLAN9PORT_DIR)/lib -ldraw -lmemdraw -lmux -lthread -l9 -lpthread -lm -lcairo
+		-Wl,-E -L$(PLAN9PORT_DIR)/lib -ldraw -lmemdraw -lmux -lthread -l9 -lpthread -lm $(CAIRO_LDLIBS)
 
 $(APPLICATIONS_BIN): $(APPLICATIONS_GEN)/.generated src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(wildcard include/*.h)
 	$(CC) $(CPPFLAGS) -I$(APPLICATIONS_GEN) $(CFLAGS) \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $(APPLICATIONS_GEN)/*.c \
 		src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(GTK_PKG_LIBS) $(PLATFORM_LDLIBS) \
 		$(shell pkg-config --libs wayland-client 2>/dev/null) \
-		-Wl,-E -L$(PLAN9PORT_DIR)/lib -ldraw -lmemdraw -lmux -lthread -l9 -lpthread -lm -lcairo
+		-Wl,-E -L$(PLAN9PORT_DIR)/lib -ldraw -lmemdraw -lmux -lthread -l9 -lpthread -lm $(CAIRO_LDLIBS)
 
 $(CALENDAR_BIN): $(CALENDAR_GEN)/.generated src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(wildcard include/*.h)
 	$(CC) $(CPPFLAGS) -I$(CALENDAR_GEN) $(CFLAGS) \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $(CALENDAR_GEN)/*.c \
 		src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(GTK_PKG_LIBS) $(PLATFORM_LDLIBS) \
 		$(shell pkg-config --libs wayland-client 2>/dev/null) \
-		-Wl,-E -L$(PLAN9PORT_DIR)/lib -ldraw -lmemdraw -lmux -lthread -l9 -lpthread -lm -lcairo
+		-Wl,-E -L$(PLAN9PORT_DIR)/lib -ldraw -lmemdraw -lmux -lthread -l9 -lpthread -lm $(CAIRO_LDLIBS)
 
 $(DESKTOP_BIN): $(DESKTOP_GEN)/.generated src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(wildcard include/*.h)
 	$(CC) $(CPPFLAGS) -I$(DESKTOP_GEN) $(CFLAGS) \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $(DESKTOP_GEN)/*.c \
 		src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(GTK_PKG_LIBS) $(PLATFORM_LDLIBS) \
 		$(shell pkg-config --libs wayland-client 2>/dev/null) \
-		-Wl,-E -L$(PLAN9PORT_DIR)/lib -ldraw -lmemdraw -lmux -lthread -l9 -lpthread -lm -lcairo
+		-Wl,-E -L$(PLAN9PORT_DIR)/lib -ldraw -lmemdraw -lmux -lthread -l9 -lpthread -lm $(CAIRO_LDLIBS)
+
+$(SETTINGS_BIN): $(SETTINGS_GEN)/.generated src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(wildcard include/*.h)
+	$(CC) $(CPPFLAGS) -I$(SETTINGS_GEN) $(CFLAGS) \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $(SETTINGS_GEN)/*.c \
+		src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(GTK_PKG_LIBS) $(PLATFORM_LDLIBS) \
+		$(shell pkg-config --libs wayland-client 2>/dev/null) \
+		-Wl,-E -L$(PLAN9PORT_DIR)/lib -ldraw -lmemdraw -lmux -lthread -l9 -lpthread -lm $(CAIRO_LDLIBS)
+
+$(ABOUT_BIN): $(ABOUT_GEN)/.generated src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(wildcard include/*.h)
+	$(CC) $(CPPFLAGS) -I$(ABOUT_GEN) $(CFLAGS) \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $(ABOUT_GEN)/*.c \
+		src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC) $(GTK_PKG_LIBS) $(PLATFORM_LDLIBS) \
+		$(shell pkg-config --libs wayland-client 2>/dev/null) \
+		-Wl,-E -L$(PLAN9PORT_DIR)/lib -ldraw -lmemdraw -lmux -lthread -l9 -lpthread -lm $(CAIRO_LDLIBS)
 
 KRYON_BUILD_ROOT := $(abspath build/kryon-$(KRYON_BACKEND))
 KRYON_BUILD_DIR := $(KRYON_BUILD_ROOT)/$(PLATFORM)-$(ARCH)
@@ -446,3 +495,7 @@ $(BUILD_DIR)/wm_test: tests/wm_test.c | $(BUILD_DIR)
 .PHONY: wm-test
 wm-test: $(WM_BIN) $(BUILD_DIR)/wm_test
 	xvfb-run -a -s '-screen 0 1280x800x24' $(BUILD_DIR)/wm_test $(abspath $(WM_BIN))
+
+.PHONY: preferences-test
+preferences-test:
+	ZIRAN="$(abspath $(ZIRAN))" ZIRAN_STD="$(abspath $(ZIRAN_DIR)/std)" sh tests/preferences_test.sh

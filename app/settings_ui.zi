@@ -1,0 +1,574 @@
+using UI :: #import "Widgets";
+#import "desktop_types"
+#import "platform_types"
+#import "native_memory"
+#import "settings"
+#import "preferences"
+#import "panel_config"
+#import "shortcuts"
+#import "ui_text"
+#import "xfce_panel"
+#import "panel_model"
+
+SettingsState :: struct {
+    started: bool
+    tab: s32
+    scroll: [4]s32
+    input: [4]ScrollInput
+    wallpaper: [256]s8
+    wallpapers: [24]WallpaperImage
+    wallpaper_count: s32
+    cursor: s32
+    anchor: s32
+    text_scroll: s32
+    focused: bool
+    panels: PanelConfigs
+    panels_dirty: bool
+    outputs: [8]RillDisplayOutput
+    output_count: s32
+    output_selected: s32
+    modes: [16]RillDisplayMode
+    mode_count: s32
+    mode_selected: s32
+    display: DisplayChange
+    keyboard_delay: s32
+    keyboard_rate: s32
+    pointer_numerator: s32
+    pointer_denominator: s32
+    pointer_threshold: s32
+    shortcuts: Shortcuts
+    shortcuts_path: [1024]s8
+    shortcut_edit: s32
+    binding: [64]s8
+    binding_cursor: s32
+    binding_anchor: s32
+    binding_scroll: s32
+    binding_focused: bool
+    diagnostics: [1024]s8
+    diagnostics_at: s64
+}
+
+#scope_file
+Label :: (session: Session, key: u64, bounds: Rectangle, text: string) {
+    props: TextProps
+    props.key = key
+    props.bounds = bounds
+    props.text = text
+    props.font = 14
+    Text(session, props)
+}
+
+Control :: (session: Session, key: u64, bounds: Rectangle, text: string,
+    disabled: bool, selected: bool) -> bool {
+    props: ButtonProps
+    props.key = key
+    props.bounds = bounds
+    props.label = text
+    props.disabled = disabled
+    props.selected = selected
+    return Button(session, props) > 0
+}
+
+Status :: (app: *DesktopApplication, text: string) { CopyText(*app.shell.status[0], 256, TextBytes(text)) }
+
+Save :: (app: *DesktopApplication, key: string, value: *s8) {
+    if PreferenceSave(*app.settings, *app.previous, *app.settings_path[0], key, value) { Status(app, "Preference saved") }
+    else { Status(app, "Could not save the preference") }
+}
+
+SaveInteger :: (app: *DesktopApplication, key: string, value: s32) {
+    text: [32]s8
+    FormatInteger(*text[0], 32, value)
+    Save(app, key, *text[0])
+}
+
+Count :: (value: s32, capacity: s32) -> s32 {
+    if value < 0 { return 0 }
+    if value > capacity { return capacity }
+    return value
+}
+
+Outputs :: (state: *SettingsState, platform: *RillPlatformServices) {
+    state.output_count = 0
+    if platform != null && platform.display_outputs != null {
+        state.output_count = Count(platform.display_outputs(*state.outputs[0], 8), 8)
+    }
+    if state.output_selected < 0 || state.output_selected >= state.output_count { state.output_selected = 0 }
+    state.mode_count = 0
+    state.mode_selected = 0
+    if state.output_count > 0 && platform != null && platform.display_modes != null {
+        state.mode_count = Count(platform.display_modes(*state.outputs[state.output_selected].name[0], *state.modes[0], 16), 16)
+    }
+}
+
+Initialize :: (state: *SettingsState, app: *DesktopApplication, platform: *RillPlatformServices) {
+    state.shortcut_edit = -1
+    CopyText(*state.wallpaper[0], 256, RillSettingsGet(*app.settings, TextBytes("wallpaper"), null))
+    state.cursor = TextLength(*state.wallpaper[0])
+    state.anchor = state.cursor
+    if platform != null && platform.list_wallpapers != null {
+        state.wallpaper_count = Count(platform.list_wallpapers(*state.wallpapers[0], 24), 24)
+    }
+    PanelConfigsDefault(*state.panels)
+    if platform != null && platform.panel_config_load != null {
+        json: [4096]s8
+        if platform.panel_config_load(*json[0], 4096) != 0 && !PanelsParse(*state.panels, CString(*json[0])) {
+            Status(app, "Panel configuration could not be read; defaults are shown")
+        }
+    }
+    state.keyboard_delay = PreferenceInteger(*app.settings, "keyboard-repeat-delay", 500, 100, 2000)
+    state.keyboard_rate = PreferenceInteger(*app.settings, "keyboard-repeat-rate", 25, 1, 100)
+    state.pointer_numerator = PreferenceInteger(*app.settings, "pointer-accel", 2, 1, 20)
+    state.pointer_denominator = 1
+    state.pointer_threshold = PreferenceInteger(*app.settings, "pointer-threshold", 4, 0, 50)
+    if platform != null && platform.keyboard_repeat != null {
+        platform.keyboard_repeat(*state.keyboard_delay, *state.keyboard_rate)
+    }
+    if platform != null && platform.pointer_settings != null {
+        platform.pointer_settings(*state.pointer_numerator, *state.pointer_denominator, *state.pointer_threshold)
+    }
+    if state.keyboard_delay < 100 || state.keyboard_delay > 2000 { state.keyboard_delay = 500 }
+    if state.keyboard_rate < 1 || state.keyboard_rate > 100 { state.keyboard_rate = 25 }
+    if state.pointer_numerator < 1 || state.pointer_numerator > 20 { state.pointer_numerator = 2 }
+    if state.pointer_denominator < 1 { state.pointer_denominator = 1 }
+    if state.pointer_threshold < 0 || state.pointer_threshold > 50 { state.pointer_threshold = 4 }
+    ShortcutsDefault(*state.shortcuts)
+    if platform != null && platform.settings_root != null {
+        root := platform.settings_root()
+        length := TextLength(root)
+        if length > 0 && length + 9 < 1024 {
+            CopyText(*state.shortcuts_path[0], 1024, root)
+            CopyText(*state.shortcuts_path[length], 1024 - length, TextBytes("/wm-keys"))
+            ShortcutsLoad(*state.shortcuts, *state.shortcuts_path[0])
+        }
+    }
+    Outputs(state, platform)
+    state.started = true
+}
+
+SliderValue :: (session: Session, key: u64, bounds: Rectangle,
+    label: string, value: s32, min: s32, max: s32, disabled: bool) -> SliderDiscreteStep {
+    props: DiscreteSliderProps
+    props.key = key
+    props.bounds = bounds
+    props.label = label
+    props.value = value
+    props.min = min
+    props.max = max
+    props.disabled = disabled
+    return DiscreteSlider(session, props)
+}
+
+Toggle :: (session: Session, key: u64, bounds: Rectangle,
+    label: string, checked: bool, disabled: bool) -> CheckboxValueResult {
+    props: CheckboxProps
+    props.key = key
+    props.bounds = bounds
+    props.label = label
+    props.checked = checked
+    props.disabled = disabled
+    return Checkbox(session, props)
+}
+
+DesktopPreferences :: (session: Session, content: Rectangle, state: *SettingsState, app: *DesktopApplication) {
+    x := content.x
+    y := content.y
+    width := content.width - 12.0
+    Label(session, cast(u64)160100, Rectangle.{x, y, width, 24.0}, "Desktop preferences")
+    Label(session, cast(u64)160101, Rectangle.{x, y + 30.0, width, 24.0}, "Primary panel edge")
+    side := RillSettingsGet(*app.settings, TextBytes("panel-side"), TextBytes("top"))
+    edge: s32 = 0
+    while edge < 4 {
+        name := PanelEdgeName(edge)
+        if Control(session, cast(u64)(160110 + edge), Rectangle.{x + cast(float32)edge * width / 4.0,
+            y + 58.0, width / 4.0 - 4.0, 30.0}, name, false, TextEquals(side, TextBytes(name))) {
+            Save(app, "panel-side", TextBytes(name))
+        }
+        edge += 1
+    }
+    value := PreferenceInteger(*app.settings, "panel-height", 40, 32, 64)
+    step := SliderValue(session, cast(u64)160120, Rectangle.{x, y + 98.0, width, 38.0}, "Panel size", value, 32, 64, false)
+    if step.changed { SaveInteger(app, "panel-height", step.value) }
+    hide := Toggle(session, cast(u64)160121, Rectangle.{x, y + 142.0, width, 30.0}, "Hide the panel automatically",
+        PreferenceInteger(*app.settings, "panel-autohide", 0, 0, 1) != 0, false)
+    if hide.changed { SaveInteger(app, "panel-autohide", cast(s32)hide.checked) }
+    Label(session, cast(u64)160122, Rectangle.{x, y + 184.0, width, 24.0}, "Clock format")
+    patterns: [3]string = .["%H:%M", "%H:%M:%S", "%a %d %b %H:%M"]
+    names: [3]string = .["Hours and minutes", "With seconds", "Date and time"]
+    pattern := RillSettingsGet(*app.settings, TextBytes("clock-format"), TextBytes("%H:%M"))
+    index: s32 = 0
+    while index < 3 {
+        if Control(session, cast(u64)(160130 + index), Rectangle.{x + cast(float32)index * width / 3.0,
+            y + 212.0, width / 3.0 - 4.0, 32.0}, names[index], false, TextEquals(pattern, TextBytes(patterns[index]))) {
+            Save(app, "clock-format", TextBytes(patterns[index]))
+        }
+        index += 1
+    }
+    slide := Toggle(session, cast(u64)160140, Rectangle.{x, y + 254.0, width, 30.0}, "Change wallpaper every five minutes",
+        PreferenceInteger(*app.settings, "wallpaper-slideshow", 0, 0, 1) != 0, state.wallpaper_count < 2)
+    if slide.changed { SaveInteger(app, "wallpaper-slideshow", cast(s32)slide.checked) }
+    Label(session, cast(u64)160141, Rectangle.{x, y + 302.0, width, 24.0}, "Wallpaper path (leave empty for the default background)")
+    typed: [128]u8
+    text := TypedTextTake(session, typed[:])
+    field: TextFieldProps
+    field.key = cast(u64)160142
+    field.focus_id = 160142
+    field.bounds = Rectangle.{x, y + 334.0, width - 90.0, 32.0}
+    field.value = CString(*state.wallpaper[0])
+    field.placeholder = "Wallpaper image path"
+    field.max_bytes = 255
+    field.cursor = state.cursor
+    field.anchor = state.anchor
+    field.scroll_x = state.text_scroll
+    field.focused = state.focused
+    key := KeyboardTake(session)
+    field.input = TextFieldInputFor(key, KeyboardModifiers(session), text)
+    result := TextField(session, field)
+    ApplyTextEdit(*state.wallpaper[0], 256, result.edit)
+    state.cursor = result.cursor
+    state.anchor = result.anchor
+    state.text_scroll = result.scroll_x
+    state.focused = result.focused
+    if Control(session, cast(u64)160143, Rectangle.{x + width - 84.0, y + 334.0, 84.0, 32.0}, "Apply", false, false) {
+        Save(app, "wallpaper", *state.wallpaper[0])
+    }
+    index = 0
+    while index < state.wallpaper_count {
+        path := *state.wallpapers[index].path[0]
+        if Control(session, cast(u64)(160200 + index), Rectangle.{x, y + 382.0 + cast(float32)index * 36.0, width, 32.0},
+            CString(path), false, TextEquals(path, *state.wallpaper[0])) {
+            if TextLength(path) < 256 {
+                CopyText(*state.wallpaper[0], 256, path)
+                state.cursor = TextLength(path)
+                state.anchor = state.cursor
+                Save(app, "wallpaper", path)
+            } else { Status(app, "Wallpaper path is too long to save") }
+        }
+        index += 1
+    }
+}
+
+SystemPreferences :: (session: Session, content: Rectangle, state: *SettingsState,
+    app: *DesktopApplication, platform: *RillPlatformServices, now: s64) {
+    labels: [10]string = .["Displays", "Keyboard", "Mouse and touchpad", "Themes and fonts", "Default applications",
+        "Accessibility", "Power management", "Network", "Bluetooth", "Sound"]
+    categories: [10]string = .["display", "keyboard", "mouse", "appearance", "defaults", "accessibility", "power", "network", "bluetooth", "audio"]
+    Label(session, cast(u64)161001, Rectangle.{content.x, content.y, content.width, 24.0}, "System control panels")
+    index: s32 = 0
+    while index < 10 {
+        if Control(session, cast(u64)(161010 + index), Rectangle.{content.x,
+            content.y + 34.0 + cast(float32)index * 38.0, content.width - 12.0, 32.0}, labels[index],
+            platform == null || platform.open_settings == null, false) {
+            if platform.open_settings(TextBytes(categories[index])) == 0 { Status(app, "The system control panel is unavailable") }
+            else { Status(app, "System control panel opened") }
+        }
+        index += 1
+    }
+    if platform != null && platform.session_diagnostics != null &&
+        (state.diagnostics_at == 0 || now < state.diagnostics_at || now - state.diagnostics_at >= 10) {
+        platform.session_diagnostics(*state.diagnostics[0], 1024)
+        state.diagnostics_at = now
+    }
+    Label(session, cast(u64)161030, Rectangle.{content.x, content.y + 424.0, content.width - 12.0, 220.0}, CString(*state.diagnostics[0]))
+}
+
+PanelsPreferences :: (session: Session, content: Rectangle, state: *SettingsState,
+    app: *DesktopApplication, platform: *RillPlatformServices) {
+    writable := platform != null && platform.panel_config_store != null
+    width := content.width - 12.0
+    Label(session, cast(u64)162001, Rectangle.{content.x, content.y, width, 24.0}, "Panels and outputs")
+    Label(session, cast(u64)162002, Rectangle.{content.x, content.y + 28.0, width, 24.0}, "Saved panel configurations apply at the next login.")
+    if !writable { Label(session, cast(u64)162003, Rectangle.{content.x, content.y + 54.0, width, 24.0}, "Panel configuration service is unavailable.") }
+    index: s32 = 0
+    while index < state.panels.count {
+        entry := *state.panels.entries[index]
+        y := content.y + 86.0 + cast(float32)index * 130.0
+        key := cast(u64)(162100 + index * 20)
+        Label(session, key, Rectangle.{content.x, y, width / 2.0, 22.0}, CString(*entry.id[0]))
+        output := CString(*entry.output[0])
+        if output == "" { output = "Any output" }
+        if Control(session, key + cast(u64)1, Rectangle.{content.x + width / 2.0, y, width / 2.0, 28.0}, output,
+            !writable || state.output_count == 0, false) {
+            found: s32 = -1
+            other: s32 = 0
+            while other < state.output_count {
+                if TextEquals(*entry.output[0], *state.outputs[other].name[0]) { found = other }
+                other += 1
+            }
+            if found + 1 >= state.output_count { entry.output[0] = 0 }
+            else { CopyText(*entry.output[0], 64, *state.outputs[found + 1].name[0]) }
+            state.panels_dirty = true
+        }
+        column := width / 4.0
+        if Control(session, key + cast(u64)2, Rectangle.{content.x, y + 36.0, column - 4.0, 30.0}, PanelEdgeName(entry.edge), !writable, false) {
+            entry.edge = (entry.edge + 1) % 4
+            state.panels_dirty = true
+        }
+        orientation := "Bar"
+        if entry.deskbar != 0 { orientation = "Deskbar" }
+        if Control(session, key + cast(u64)3, Rectangle.{content.x + column, y + 36.0, column - 4.0, 30.0}, orientation, !writable, false) {
+            entry.deskbar = 1 - entry.deskbar
+            state.panels_dirty = true
+        }
+        hide := Toggle(session, key + cast(u64)4, Rectangle.{content.x + column * 2.0, y + 36.0, column - 4.0, 30.0}, "Autohide", entry.autohide != 0, !writable)
+        if hide.changed { entry.autohide = cast(s32)hide.checked; state.panels_dirty = true }
+        if Control(session, key + cast(u64)5, Rectangle.{content.x + column * 3.0, y + 36.0, column - 4.0, 30.0}, "Delete", !writable || state.panels.count <= 1, false) {
+            PanelsRemove(*state.panels, index)
+            state.panels_dirty = true
+            continue
+        }
+        step := SliderValue(session, key + cast(u64)6, Rectangle.{content.x, y + 78.0, width, 36.0}, "Panel size", entry.size, 20, 64, !writable)
+        if step.changed { entry.size = step.value; state.panels_dirty = true }
+        index += 1
+    }
+    y := content.y + 90.0 + cast(float32)state.panels.count * 130.0
+    if Control(session, cast(u64)162010, Rectangle.{content.x, y, width / 2.0 - 4.0, 32.0}, "Add panel", !writable || state.panels.count >= 8, false) {
+        if PanelsAdd(*state.panels) { state.panels_dirty = true }
+    }
+    if Control(session, cast(u64)162011, Rectangle.{content.x + width / 2.0, y, width / 2.0, 32.0}, "Save panels", !writable || !state.panels_dirty, false) {
+        json: [4096]s8
+        if PanelsText(*state.panels, *json[0], 4096) && platform.panel_config_store(*json[0]) != 0 {
+            state.panels_dirty = false
+            Status(app, "Panels saved; they apply at the next login")
+        } else { Status(app, "Could not save panel configurations") }
+    }
+    if Control(session, cast(u64)162012, Rectangle.{content.x, y + 44.0, width, 32.0}, "Import Xfce panel layout",
+        platform == null || platform.xfce_panel_config_load == null || platform.settings_root == null, false) {
+        ImportPanel(app, platform)
+    }
+}
+
+ImportPanel :: (app: *DesktopApplication, platform: *RillPlatformServices) {
+    xml := cast(*s8)AllocateZeroed(65536, 1)
+    if xml == null { Status(app, "Could not read the Xfce panel layout"); return }
+    loaded := platform.xfce_panel_config_load(xml, 65536) != 0
+    xml[65535] = 0
+    model: PanelModel
+    ok := loaded && XfcePanelParse(*model, CString(xml))
+    ReleaseAllocation(cast(*void)xml)
+    root := platform.settings_root()
+    length := TextLength(root)
+    if ok && length > 0 && length + 7 < 1024 {
+        path: [1024]s8
+        CopyText(*path[0], 1024, root)
+        CopyText(*path[length], 1024 - length, TextBytes("/panel"))
+        ok = PanelSave(*model, *path[0])
+    } else { ok = false }
+    if ok { Status(app, "Xfce panel layout imported") }
+    else { Status(app, "Could not import the Xfce panel layout") }
+}
+
+ModeText :: (mode: RillDisplayMode, output: *s8) {
+    length := FormatInteger(output, 64, mode.width)
+    CopyText(*output[length], 64 - length, TextBytes(" x "))
+    FormatInteger(*output[length + 3], 61 - length, mode.height)
+}
+
+InputPreferences :: (session: Session, content: Rectangle, state: *SettingsState,
+    app: *DesktopApplication, platform: *RillPlatformServices, now: s64) {
+    x := content.x
+    y := content.y
+    width := content.width - 12.0
+    Label(session, cast(u64)163001, Rectangle.{x, y, width, 24.0}, "Display")
+    output := "No display service"
+    if state.output_count > 0 { output = CString(*state.outputs[state.output_selected].name[0]) }
+    if Control(session, cast(u64)163002, Rectangle.{x, y + 34.0, width / 3.0 - 4.0, 32.0}, output, state.output_count == 0 || state.display.pending, false) {
+        state.output_selected = (state.output_selected + 1) % state.output_count
+        state.mode_count = 0
+        state.mode_selected = 0
+        if platform != null && platform.display_modes != null {
+            state.mode_count = Count(platform.display_modes(*state.outputs[state.output_selected].name[0], *state.modes[0], 16), 16)
+        }
+    }
+    mode: [64]s8
+    CopyText(*mode[0], 64, TextBytes("No modes"))
+    if state.mode_count > 0 { ModeText(state.modes[state.mode_selected], *mode[0]) }
+    if Control(session, cast(u64)163003, Rectangle.{x + width / 3.0, y + 34.0, width / 3.0 - 4.0, 32.0}, CString(*mode[0]), state.mode_count == 0 || state.display.pending, false) {
+        state.mode_selected = (state.mode_selected + 1) % state.mode_count
+    }
+    if Control(session, cast(u64)163004, Rectangle.{x + width * 2.0 / 3.0, y + 34.0, width / 3.0, 32.0}, "Preview", state.output_count == 0 || state.mode_count == 0 || state.display.pending || platform == null || platform.display_apply == null, false) {
+        if !DisplayPreview(*state.display, platform, state.outputs[state.output_selected], state.modes[state.mode_selected], now) {
+            Status(app, "Could not change the display mode")
+        }
+    }
+    Label(session, cast(u64)163010, Rectangle.{x, y + 94.0, width, 24.0}, "Keyboard repeat")
+    keyboard_available := platform != null && platform.keyboard_set_repeat != null
+    delay := SliderValue(session, cast(u64)163011, Rectangle.{x, y + 124.0, width, 38.0}, "Delay (ms)", state.keyboard_delay, 100, 2000, !keyboard_available)
+    rate := SliderValue(session, cast(u64)163012, Rectangle.{x, y + 170.0, width, 38.0}, "Rate (keys/sec)", state.keyboard_rate, 1, 100, !keyboard_available)
+    state.keyboard_delay = delay.value
+    state.keyboard_rate = rate.value
+    if Control(session, cast(u64)163013, Rectangle.{x, y + 216.0, width, 32.0}, "Apply keyboard repeat", !keyboard_available, false) {
+        if platform.keyboard_set_repeat(state.keyboard_delay, state.keyboard_rate) != 0 {
+            RillSettingsSetInteger(*app.settings, TextBytes("keyboard-repeat-delay"), state.keyboard_delay)
+            SaveInteger(app, "keyboard-repeat-rate", state.keyboard_rate)
+        } else { Status(app, "Could not apply keyboard repeat") }
+    }
+    Label(session, cast(u64)163020, Rectangle.{x, y + 280.0, width, 24.0}, "Pointer")
+    pointer_available := platform != null && platform.pointer_set != null
+    acceleration := SliderValue(session, cast(u64)163021, Rectangle.{x, y + 310.0, width, 38.0}, "Acceleration numerator", state.pointer_numerator, 1, 20, !pointer_available)
+    threshold := SliderValue(session, cast(u64)163022, Rectangle.{x, y + 356.0, width, 38.0}, "Threshold", state.pointer_threshold, 0, 50, !pointer_available)
+    state.pointer_numerator = acceleration.value
+    state.pointer_threshold = threshold.value
+    if Control(session, cast(u64)163023, Rectangle.{x, y + 402.0, width, 32.0}, "Apply pointer settings", !pointer_available, false) {
+        if platform.pointer_set(state.pointer_numerator, state.pointer_denominator, state.pointer_threshold) != 0 {
+            RillSettingsSetInteger(*app.settings, TextBytes("pointer-accel"), state.pointer_numerator)
+            SaveInteger(app, "pointer-threshold", state.pointer_threshold)
+        } else { Status(app, "Could not apply pointer settings") }
+    }
+    Label(session, cast(u64)163030, Rectangle.{x, y + 464.0, width, 24.0}, "Window shortcuts (loaded at window manager start)")
+    index: s32 = 0
+    while index < ShortcutCount {
+        row_y := y + 498.0 + cast(float32)index * 38.0
+        Label(session, cast(u64)(163100 + index * 2), Rectangle.{x, row_y + 4.0, width / 2.0, 24.0}, ShortcutAction(index))
+        if Control(session, cast(u64)(163101 + index * 2), Rectangle.{x + width / 2.0, row_y, width / 2.0, 32.0}, CString(*state.shortcuts.bindings[index][0]), false, state.shortcut_edit == index) {
+            state.shortcut_edit = index
+            CopyText(*state.binding[0], 64, *state.shortcuts.bindings[index][0])
+            state.binding_cursor = TextLength(*state.binding[0])
+            state.binding_anchor = state.binding_cursor
+            state.binding_focused = true
+        }
+        index += 1
+    }
+    keys_y := y + 510.0 + cast(float32)ShortcutCount * 38.0
+    if Control(session, cast(u64)163040, Rectangle.{x, keys_y, width / 2.0 - 4.0, 32.0}, "Save shortcuts", state.shortcuts_path[0] == 0, false) {
+        if ShortcutsSave(*state.shortcuts, *state.shortcuts_path[0]) { Status(app, "Shortcuts saved; they load at window manager start") }
+        else { Status(app, "Could not save shortcuts") }
+    }
+    if Control(session, cast(u64)163041, Rectangle.{x + width / 2.0, keys_y, width / 2.0, 32.0}, "Restore default shortcuts", false, false) { ShortcutsDefault(*state.shortcuts) }
+}
+
+ShortcutEditor :: (session: Session, viewport: Rectangle, state: *SettingsState, app: *DesktopApplication) {
+    bounds := Rectangle.{viewport.x + 16.0, viewport.y + 76.0, viewport.width - 32.0, 164.0}
+    props: DismissibleOverlayProps
+    props.key = cast(u64)164001
+    props.bounds = bounds
+    overlay := DismissibleOverlay(session, props)
+    if overlay.closed { state.shortcut_edit = -1; return }
+    TreePushScope(session, overlay.panel_node)
+    Label(session, cast(u64)164002, Rectangle.{bounds.x + 10.0, bounds.y + 10.0, bounds.width - 20.0, 24.0}, ShortcutAction(state.shortcut_edit))
+    typed: [128]u8
+    text := TypedTextTake(session, typed[:])
+    field: TextFieldProps
+    field.key = cast(u64)164003
+    field.focus_id = 164003
+    field.bounds = Rectangle.{bounds.x + 10.0, bounds.y + 44.0, bounds.width - 20.0, 32.0}
+    field.value = CString(*state.binding[0])
+    field.placeholder = "Ctrl+Alt+key"
+    field.max_bytes = 63
+    field.cursor = state.binding_cursor
+    field.anchor = state.binding_anchor
+    field.scroll_x = state.binding_scroll
+    field.focused = state.binding_focused
+    key := KeyboardTake(session)
+    field.input = TextFieldInputFor(key, KeyboardModifiers(session), text)
+    result := TextField(session, field)
+    ApplyTextEdit(*state.binding[0], 64, result.edit)
+    state.binding_cursor = result.cursor
+    state.binding_anchor = result.anchor
+    state.binding_scroll = result.scroll_x
+    state.binding_focused = result.focused
+    if Control(session, cast(u64)164004, Rectangle.{bounds.x + 10.0, bounds.y + 90.0, bounds.width / 2.0 - 16.0, 32.0}, "Use binding", false, false) || key == 257 {
+        collision := ShortcutSet(*state.shortcuts, state.shortcut_edit, CString(*state.binding[0]))
+        if collision == -1 { state.shortcut_edit = -1; Status(app, "Shortcut changed; save shortcuts to apply it") }
+        else if collision >= 0 { Status(app, "That binding is already used by another action") }
+        else { Status(app, "Enter a key with optional Ctrl, Alt, Shift or Super modifiers") }
+    }
+    if Control(session, cast(u64)164005, Rectangle.{bounds.x + bounds.width / 2.0, bounds.y + 90.0, bounds.width / 2.0 - 10.0, 32.0}, "Cancel", false, false) || key == 256 { state.shortcut_edit = -1 }
+    End(session)
+}
+
+DisplayConfirmation :: (session: Session, viewport: Rectangle, state: *SettingsState,
+    app: *DesktopApplication, platform: *RillPlatformServices, now: s64) {
+    bounds := Rectangle.{viewport.x + 16.0, viewport.y + 76.0, viewport.width - 32.0, 164.0}
+    props: DismissibleOverlayProps
+    props.key = cast(u64)165001
+    props.bounds = bounds
+    overlay := DismissibleOverlay(session, props)
+    TreePushScope(session, overlay.panel_node)
+    Label(session, cast(u64)165002, Rectangle.{bounds.x + 10.0, bounds.y + 10.0, bounds.width - 20.0, 24.0}, "Keep this display mode?")
+    seconds := state.display.deadline - now
+    if seconds < 0 { seconds = 0 }
+    text: [64]s8
+    CopyText(*text[0], 64, TextBytes("Reverting in "))
+    length := FormatInteger(*text[13], 51, cast(s32)seconds)
+    CopyText(*text[13 + length], 51 - length, TextBytes(" seconds"))
+    Label(session, cast(u64)165003, Rectangle.{bounds.x + 10.0, bounds.y + 44.0, bounds.width - 20.0, 24.0}, CString(*text[0]))
+    key := KeyboardTake(session)
+    if Control(session, cast(u64)165004, Rectangle.{bounds.x + 10.0, bounds.y + 90.0, bounds.width / 2.0 - 16.0, 32.0}, "Keep", false, false) || key == 257 {
+        state.display.pending = false
+        Outputs(state, platform)
+        Status(app, "Display mode kept")
+    }
+    if Control(session, cast(u64)165005, Rectangle.{bounds.x + bounds.width / 2.0, bounds.y + 90.0, bounds.width / 2.0 - 10.0, 32.0}, "Revert", false, false) || key == 256 || overlay.closed {
+        if DisplayRevert(*state.display, platform) { Outputs(state, platform); Status(app, "Previous display mode restored") }
+        else { Status(app, "Could not restore the previous display mode; retry Revert") }
+    }
+    End(session)
+}
+
+#scope_export
+Settings :: (session: Session, viewport: Rectangle, state: *SettingsState,
+    app: *DesktopApplication, platform: *RillPlatformServices, now: s64) {
+    if !state.started { Initialize(state, app, platform) }
+    pending := state.display.pending
+    if !DisplayTick(*state.display, platform, now) { Status(app, "Could not restore the previous display mode; retry Revert") }
+    if pending && !state.display.pending { Outputs(state, platform); Status(app, "Previous display mode restored") }
+    modal := state.display.pending || state.shortcut_edit >= 0
+    if !modal {
+        key := KeyboardTake(session)
+        if key == 256 { app.closed = true; return }
+        KeyboardSend(session, key)
+    }
+    background: BoxProps
+    background.key = cast(u64)160001
+    background.bounds = viewport
+    background.fill = Color.{248, 249, 252, 255}
+    Box(session, background)
+    names: [4]string = .["Desktop", "System", "Panels", "Input"]
+    index: s32 = 0
+    width := (viewport.width - 16.0) / 4.0
+    while index < 4 {
+        if Control(session, cast(u64)(160010 + index), Rectangle.{viewport.x + 8.0 + cast(float32)index * width,
+            viewport.y + 8.0, width - 4.0, 32.0}, names[index], modal, state.tab == index) { state.tab = index }
+        index += 1
+    }
+    content := Rectangle.{viewport.x + 12.0, viewport.y + 52.0, viewport.width - 24.0, viewport.height - 94.0}
+    extent: s32 = 680
+    if state.tab == 0 { extent = 390 + state.wallpaper_count * 36 }
+    if state.tab == 2 { extent = 190 + state.panels.count * 130 }
+    if state.tab == 3 { extent = 1280 }
+    input := *state.input[state.tab]
+    pointer := PointerSample(session)
+    input.enabled = !modal
+    input.pointer_allowed = !modal
+    input.mouse = Vector2.{pointer.x, pointer.y}
+    input.down = pointer.down && !modal
+    input.pressed = pointer.pressed && !modal
+    input.released = pointer.released && !modal
+    input.wheel = 0.0
+    if !modal { input.wheel = PointerWheelTake(session, content) }
+    props: ScrollProps
+    props.key = cast(u64)(160020 + state.tab)
+    props.bounds = content
+    props.content_height = extent
+    props.scroll_offset = state.scroll[state.tab]
+    props.input = input.*
+    view := Scroll(session, props)
+    state.scroll[state.tab] = view.scroll_offset
+    input.* = ScrollInputAfter(input.*, view.frame)
+    if view.frame.cancel_press { TreePointerCancel(session) }
+    if !modal {
+        if state.tab == 0 { DesktopPreferences(session, view.content, state, app) }
+        if state.tab == 1 { SystemPreferences(session, view.content, state, app, platform, now) }
+        if state.tab == 2 { PanelsPreferences(session, view.content, state, app, platform) }
+        if state.tab == 3 { InputPreferences(session, view.content, state, app, platform, now) }
+    }
+    End(session)
+    Label(session, cast(u64)160030, Rectangle.{viewport.x + 12.0, viewport.y + viewport.height - 34.0, viewport.width - 104.0, 28.0}, CString(*app.shell.status[0]))
+    if Control(session, cast(u64)160031, Rectangle.{viewport.x + viewport.width - 84.0, viewport.y + viewport.height - 36.0, 76.0, 30.0}, "Close", false, false) {
+        if DisplayRevert(*state.display, platform) { app.closed = true }
+        else { Status(app, "Could not restore the previous display mode; retry Revert") }
+    }
+    if state.display.pending { DisplayConfirmation(session, viewport, state, app, platform, now) }
+    else if state.shortcut_edit >= 0 { ShortcutEditor(session, viewport, state, app) }
+}

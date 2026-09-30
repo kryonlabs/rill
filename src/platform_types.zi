@@ -107,6 +107,11 @@ RillDisplayMode :: struct {
     height: s32
 }
 
+WallpaperImage :: struct {
+    #abi_incomplete
+    path: [512]s8
+}
+
 RillVolume :: struct {
     #abi_incomplete
     name: [96]s8
@@ -124,7 +129,7 @@ SettingsRootProcedure :: #type () -> *s8 #c_call;
 WorkspaceCountProcedure :: #type () -> s32 #c_call;
 CurrentWorkspaceProcedure :: #type () -> s32 #c_call;
 SwitchWorkspaceProcedure :: #type (index: s32) -> s32 #c_call;
-ListWallpapersProcedure :: #type (paths: *[512]s8, cap: s32) -> s32 #c_call;
+ListWallpapersProcedure :: #type (paths: *WallpaperImage, cap: s32) -> s32 #c_call;
 SessionActionProcedure :: #type (action: *s8) -> s32 #c_call;
 ShowDesktopProcedure :: #type (show: s32) -> s32 #c_call;
 TrayIconsProcedure :: #type (out: *RillTrayIcon, cap: s32) -> s32 #c_call;

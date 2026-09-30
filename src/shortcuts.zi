@@ -1,0 +1,154 @@
+#import "native_memory"
+#import "settings"
+#import "platform_types"
+#import "native_files"
+
+ShortcutCount :: 19;
+Shortcuts :: struct { bindings: [19][64]s8 }
+
+ShortcutAction :: (index: s32) -> string {
+    names: [19]string = .["close", "minimize", "maximize", "fullscreen", "move", "resize",
+        "cycle", "cycle-back", "window-menu", "run-dialog", "workspace-prev", "workspace-next",
+        "window-workspace-prev", "window-workspace-next", "tile-left", "tile-right", "tile-up", "tile-down", "show-desktop"]
+    if index < 0 || index >= ShortcutCount { return "" }
+    return names[index]
+}
+
+ShortcutDefault :: (index: s32) -> string {
+    bindings: [19]string = .["Alt+F4", "Alt+F9", "Alt+F10", "Alt+F11", "Alt+F7", "Alt+F8",
+        "Alt+Tab", "Shift+Alt+Tab", "Alt+space", "Alt+F2", "Ctrl+Alt+Left", "Ctrl+Alt+Right",
+        "Shift+Ctrl+Alt+Left", "Shift+Ctrl+Alt+Right", "Super+Left", "Super+Right", "Super+Up", "Super+Down", "Super+d"]
+    if index < 0 || index >= ShortcutCount { return "" }
+    return bindings[index]
+}
+
+ShortcutsDefault :: (shortcuts: *Shortcuts) {
+    index: s32 = 0
+    while index < ShortcutCount {
+        CopyText(*shortcuts.bindings[index][0], 64, TextBytes(ShortcutDefault(index)))
+        index += 1
+    }
+}
+
+// Normalize modifier order before testing collisions. No whitespace, control
+// bytes, empty components, duplicate modifiers or a missing key is accepted.
+ShortcutCanonical :: (binding: string, output: *s8, capacity: s32) -> bool {
+    if output == null || capacity < 1 { return false }
+    output[0] = 0
+    if binding.count < 1 || binding.count >= 64 { return false }
+    modifiers: s32 = 0
+    key_start: s32 = 0
+    cursor: s32 = 0
+    while cursor < cast(s32)binding.count {
+        byte := binding[cursor]
+        allowed := (byte >= cast(u8)65 && byte <= cast(u8)90) ||
+            (byte >= cast(u8)97 && byte <= cast(u8)122) ||
+            (byte >= cast(u8)48 && byte <= cast(u8)57) || byte == cast(u8)95
+        if byte == cast(u8)43 {
+            part := binding[key_start:cursor]
+            flag: s32 = 0
+            if part == "Ctrl" || part == "Control" { flag = 2 }
+            if part == "Alt" { flag = 4 }
+            if part == "Shift" { flag = 1 }
+            if part == "Super" { flag = 8 }
+            if flag == 0 || (modifiers & flag) != 0 { return false }
+            modifiers |= flag
+            key_start = cursor + 1
+        } else if !allowed { return false }
+        cursor += 1
+    }
+    key := binding[key_start:]
+    if key.count == 0 || key == "Ctrl" || key == "Control" || key == "Alt" || key == "Shift" || key == "Super" { return false }
+    text: [64]s8
+    used: s32 = 0
+    if (modifiers & 2) != 0 { used += CopyText(*text[used], 64 - used, TextBytes("Ctrl+")) }
+    if (modifiers & 4) != 0 { used += CopyText(*text[used], 64 - used, TextBytes("Alt+")) }
+    if (modifiers & 1) != 0 { used += CopyText(*text[used], 64 - used, TextBytes("Shift+")) }
+    if (modifiers & 8) != 0 { used += CopyText(*text[used], 64 - used, TextBytes("Super+")) }
+    if cast(s64)used + key.count >= capacity || cast(s64)used + key.count >= 64 { return false }
+    index: s32 = 0
+    while index < cast(s32)key.count { text[used] = cast(s8)key[index]; used += 1; index += 1 }
+    if key.count == 1 && text[used - 1] >= 65 && text[used - 1] <= 90 { text[used - 1] += 32 }
+    text[used] = 0
+    CopyText(output, capacity, *text[0])
+    return true
+}
+
+ShortcutSet :: (shortcuts: *Shortcuts, index: s32, binding: string) -> s32 {
+    if shortcuts == null || index < 0 || index >= ShortcutCount { return -2 }
+    canonical: [64]s8
+    if !ShortcutCanonical(binding, *canonical[0], 64) { return -2 }
+    other: s32 = 0
+    while other < ShortcutCount {
+        stored: [64]s8
+        if other != index && ShortcutCanonical(CString(*shortcuts.bindings[other][0]), *stored[0], 64) &&
+            TextEquals(*stored[0], *canonical[0]) { return other }
+        other += 1
+    }
+    CopyText(*shortcuts.bindings[index][0], 64, *canonical[0])
+    return -1
+}
+
+ShortcutsLoad :: (shortcuts: *Shortcuts, path: *s8) -> bool {
+    if shortcuts == null || path == null { return false }
+    loaded := cast(*RillSettings)AllocateZeroed(1, size_of(RillSettings))
+    if loaded == null { return false }
+    ok := RillSettingsLoad(loaded, path) != 0
+    parsed: Shortcuts
+    ShortcutsDefault(*parsed)
+    if ok {
+        index: s32 = 0
+        while index < ShortcutCount {
+            value := RillSettingsGet(loaded, TextBytes(ShortcutAction(index)), null)
+            canonical: [64]s8
+            if value == null { value = TextBytes(ShortcutDefault(index)) }
+            if !ShortcutCanonical(CString(value), *canonical[0], 64) { ok = false }
+            CopyText(*parsed.bindings[index][0], 64, *canonical[0])
+            index += 1
+        }
+    }
+    if ok { ok = ShortcutsValid(*parsed) }
+    if ok { shortcuts.* = parsed }
+    ReleaseAllocation(cast(*void)loaded)
+    return ok
+}
+
+ShortcutsValid :: (shortcuts: *Shortcuts) -> bool {
+    if shortcuts == null { return false }
+    index: s32 = 0
+    while index < ShortcutCount {
+        canonical: [64]s8
+        if !ShortcutCanonical(CString(*shortcuts.bindings[index][0]), *canonical[0], 64) { return false }
+        other: s32 = 0
+        while other < index {
+            stored: [64]s8
+            if !ShortcutCanonical(CString(*shortcuts.bindings[other][0]), *stored[0], 64) ||
+                TextEquals(*stored[0], *canonical[0]) { return false }
+            other += 1
+        }
+        index += 1
+    }
+    return true
+}
+
+ShortcutsSave :: (shortcuts: *Shortcuts, path: *s8) -> bool {
+    if path == null || path[0] == 0 || !ShortcutsValid(shortcuts) { return false }
+    lock := AcquireSettingsLock(path)
+    if lock < 0 { return false }
+    settings := cast(*RillSettings)AllocateZeroed(1, size_of(RillSettings))
+    if settings == null { ReleaseSettingsLock(lock); return false }
+    RillSettingsLoad(settings, path)
+    ok: bool = true
+    index: s32 = 0
+    while index < ShortcutCount {
+        canonical: [64]s8
+        if !ShortcutCanonical(CString(*shortcuts.bindings[index][0]), *canonical[0], 64) { ok = false }
+        RillSettingsSet(settings, TextBytes(ShortcutAction(index)), *canonical[0])
+        if !TextEquals(RillSettingsGet(settings, TextBytes(ShortcutAction(index)), null), *canonical[0]) { ok = false }
+        index += 1
+    }
+    if ok { ok = RillSettingsSave(settings, path) != 0 }
+    ReleaseAllocation(cast(*void)settings)
+    ReleaseSettingsLock(lock)
+    return ok
+}

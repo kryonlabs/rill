@@ -1018,7 +1018,7 @@ static int linux_switch_workspace(int index)
 }
 
 static int
-linux_wallpaper_dir(char (*paths)[512], int cap, int count, const char *dir)
+linux_wallpaper_dir(WallpaperImage *paths, int cap, int count, const char *dir)
 {
     DIR *directory;
     struct dirent *entry;
@@ -1037,7 +1037,7 @@ linux_wallpaper_dir(char (*paths)[512], int cap, int count, const char *dir)
         if(strcasecmp(dot, "png") != 0 && strcasecmp(dot, "jpg") != 0 &&
            strcasecmp(dot, "jpeg") != 0)
             continue;
-        snprintf(paths[count], 512, "%s/%s", dir, name);
+        snprintf(paths[count].path, 512, "%s/%s", dir, name);
         count++;
     }
     closedir(directory);
@@ -1045,7 +1045,7 @@ linux_wallpaper_dir(char (*paths)[512], int cap, int count, const char *dir)
 }
 
 static int
-linux_list_wallpapers(char (*paths)[512], int cap)
+linux_list_wallpapers(WallpaperImage *paths, int cap)
 {
     const char *home = getenv("HOME");
     char dir[1024];

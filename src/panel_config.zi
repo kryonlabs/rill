@@ -1,0 +1,235 @@
+#import "native_memory"
+JSON :: #import "json_scan";
+#import "byte_text_linux"
+
+PanelConfig :: struct {
+    #abi_incomplete
+    id: [64]s8
+    output: [64]s8
+    edge: s32
+    size: s32
+    autohide: s32
+    deskbar: s32
+}
+
+PanelConfigs :: struct {
+    entries: [8]PanelConfig
+    count: s32
+}
+
+PanelEdgeName :: (edge: s32) -> string {
+    names: [4]string = .["top", "bottom", "left", "right"]
+    if edge < 0 || edge > 3 { return "" }
+    return names[edge]
+}
+
+PanelConfigsDefault :: (panels: *PanelConfigs) {
+    panels.* = .{}
+    panels.count = 1
+    panels.entries[0].size = 40
+    CopyText(*panels.entries[0].id[0], 64, TextBytes("primary"))
+}
+
+#scope_file
+Identifier :: (id: *s8) -> bool {
+    if id == null || id[0] == 0 { return false }
+    index: s32 = 0
+    while index < 64 && id[index] != 0 {
+        ch := id[index]
+        allowed := (ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) ||
+            (ch >= 48 && ch <= 57) || ch == 45 || ch == 95
+        if !allowed { return false }
+        index += 1
+    }
+    return index < 64
+}
+
+IntegerField :: (text: string, at: s32, name: string, fallback: s32, min: s32, max: s32) -> s32 {
+    field := JSON.FieldAt(text, at, name)
+    if field < 0 { return fallback }
+    number := JSON.ReadNumber(text, field)
+    if !number.valid || number.value < cast(float64)min || number.value > cast(float64)max { return -1 }
+    value := cast(s32)number.value
+    if cast(float64)value != number.value { return -1 }
+    return value
+}
+
+BooleanField :: (text: string, at: s32, name: string) -> s32 {
+    field := JSON.FieldAt(text, at, name)
+    if field < 0 || JSON.MatchLiteral(text, field, "false") { return 0 }
+    if JSON.MatchLiteral(text, field, "true") { return 1 }
+    return IntegerField(text, at, name, 0, 0, 1)
+}
+
+StringField :: (text: string, at: s32, name: string, output: *s8, capacity: s32) -> bool {
+    field := JSON.FieldAt(text, at, name)
+    if field < 0 { return true }
+    bytes: [64]u8
+    length := JSON.ReadStringText(text, field, bytes[:])
+    if length < 0 || length >= capacity { return false }
+    index: s32 = 0
+    while index < length {
+        if bytes[index] < cast(u8)32 || bytes[index] == cast(u8)127 { return false }
+        index += 1
+    }
+    CopyText(output, capacity, cast(*s8)(*bytes[0]))
+    return true
+}
+
+Buffer :: struct {
+    bytes: [4096]u8
+    count: s32
+    ok: bool
+}
+
+Append :: (buffer: *Buffer, text: string) {
+    if !buffer.ok || cast(s64)buffer.count + text.count >= 4096 { buffer.ok = false; return }
+    index: s32 = 0
+    while index < cast(s32)text.count {
+        buffer.bytes[buffer.count] = text[index]
+        buffer.count += 1
+        index += 1
+    }
+}
+
+Quoted :: (buffer: *Buffer, text: *s8) {
+    Append(buffer, "\"")
+    index: s32 = 0
+    while index < 64 && text[index] != 0 {
+        ch := cast(u8)text[index]
+        if ch < cast(u8)32 || ch == cast(u8)127 { buffer.ok = false; return }
+        if ch == cast(u8)34 || ch == cast(u8)92 { Append(buffer, "\\") }
+        byte: [1]u8 = .[ch]
+        Append(buffer, TextView(byte[:]))
+        index += 1
+    }
+    if index == 64 { buffer.ok = false; return }
+    Append(buffer, "\"")
+}
+
+Number :: (buffer: *Buffer, value: s32) {
+    text: [32]s8
+    FormatInteger(*text[0], 32, value)
+    Append(buffer, CString(*text[0]))
+}
+
+#scope_export
+PanelsParse :: (panels: *PanelConfigs, text: string) -> bool {
+    if panels == null || text.count > 4095 { return false }
+    start := JSON.Space(text, 0)
+    end := JSON.ValueEnd(text, start, 0)
+    if end < 0 || JSON.Space(text, end) != cast(s32)text.count { return false }
+    count := JSON.ArrayCount(text, start)
+    if count < 1 || count > 8 { return false }
+    parsed: PanelConfigs
+    parsed.count = count
+    index: s32 = 0
+    while index < count {
+        at := JSON.ElementAt(text, start, index)
+        if at < 0 || text[at] != cast(u8)123 { return false }
+        entry := *parsed.entries[index]
+        CopyText(*entry.id[0], 64, TextBytes("primary"))
+        if !StringField(text, at, "id", *entry.id[0], 64) || !Identifier(*entry.id[0]) ||
+            !StringField(text, at, "output", *entry.output[0], 64) { return false }
+        previous: s32 = 0
+        while previous < index {
+            if TextEquals(*parsed.entries[previous].id[0], *entry.id[0]) { return false }
+            previous += 1
+        }
+        edge: [64]s8
+        CopyText(*edge[0], 64, TextBytes("top"))
+        if !StringField(text, at, "edge", *edge[0], 64) { return false }
+        found: bool = false
+        side: s32 = 0
+        while side < 4 {
+            if TextEquals(*edge[0], TextBytes(PanelEdgeName(side))) { entry.edge = side; found = true }
+            side += 1
+        }
+        if !found { return false }
+        entry.size = IntegerField(text, at, "size", 40, 20, 64)
+        entry.autohide = BooleanField(text, at, "autohide")
+        orientation: [64]s8
+        if !StringField(text, at, "orientation", *orientation[0], 64) { return false }
+        if orientation[0] != 0 && !TextEquals(*orientation[0], TextBytes("horizontal")) &&
+            !TextEquals(*orientation[0], TextBytes("vertical")) &&
+            !TextEquals(*orientation[0], TextBytes("deskbar")) { return false }
+        entry.deskbar = cast(s32)TextEquals(*orientation[0], TextBytes("deskbar"))
+        if entry.size < 0 || entry.autohide < 0 { return false }
+        index += 1
+    }
+    panels.* = parsed
+    return true
+}
+
+PanelsText :: (panels: *PanelConfigs, output: *s8, capacity: s32) -> bool {
+    if output == null || capacity < 1 { return false }
+    output[0] = 0
+    if panels == null || panels.count < 1 || panels.count > 8 { return false }
+    buffer: Buffer
+    buffer.ok = true
+    Append(*buffer, "[\n")
+    index: s32 = 0
+    while index < panels.count {
+        entry := *panels.entries[index]
+        if !Identifier(*entry.id[0]) || entry.edge < 0 || entry.edge > 3 ||
+            entry.size < 20 || entry.size > 64 || entry.autohide < 0 || entry.autohide > 1 ||
+            entry.deskbar < 0 || entry.deskbar > 1 { return false }
+        other: s32 = 0
+        while other < index {
+            if TextEquals(*panels.entries[other].id[0], *entry.id[0]) { return false }
+            other += 1
+        }
+        Append(*buffer, "  {\"id\":")
+        Quoted(*buffer, *entry.id[0])
+        Append(*buffer, ",\"output\":")
+        Quoted(*buffer, *entry.output[0])
+        Append(*buffer, ",\"edge\":")
+        Quoted(*buffer, TextBytes(PanelEdgeName(entry.edge)))
+        Append(*buffer, ",\"size\":")
+        Number(*buffer, entry.size)
+        Append(*buffer, ",\"autohide\":")
+        value := "false"
+        if entry.autohide != 0 { value = "true" }
+        Append(*buffer, value)
+        if entry.deskbar != 0 { Append(*buffer, ",\"orientation\":\"deskbar\"") }
+        Append(*buffer, "}")
+        if index + 1 < panels.count { Append(*buffer, ",") }
+        Append(*buffer, "\n")
+        index += 1
+    }
+    Append(*buffer, "]\n")
+    if !buffer.ok || buffer.count >= capacity { return false }
+    buffer.bytes[buffer.count] = 0
+    CopyText(output, capacity, cast(*s8)(*buffer.bytes[0]))
+    return true
+}
+
+PanelsAdd :: (panels: *PanelConfigs) -> bool {
+    if panels == null || panels.count < 0 || panels.count >= 8 { return false }
+    suffix: s32 = 1
+    id: [64]s8
+    while suffix < 100 {
+        CopyText(*id[0], 64, TextBytes("panel-"))
+        FormatInteger(*id[6], 58, suffix)
+        used: bool = false
+        index: s32 = 0
+        while index < panels.count { if TextEquals(*id[0], *panels.entries[index].id[0]) { used = true }; index += 1 }
+        if !used { break }
+        suffix += 1
+    }
+    entry := *panels.entries[panels.count]
+    entry.* = .{}
+    CopyText(*entry.id[0], 64, *id[0])
+    entry.size = 40
+    entry.edge = 1
+    panels.count += 1
+    return true
+}
+
+PanelsRemove :: (panels: *PanelConfigs, index: s32) -> bool {
+    if panels == null || panels.count <= 1 || panels.count > 8 || index < 0 || index >= panels.count { return false }
+    while index + 1 < panels.count { panels.entries[index] = panels.entries[index + 1]; index += 1 }
+    panels.count -= 1
+    panels.entries[panels.count] = .{}
+    return true
+}
