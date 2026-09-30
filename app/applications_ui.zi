@@ -6,6 +6,7 @@ using Applications :: #import "applications";
 #import "settings"
 #import "native_memory"
 #import "ui_text"
+Metrics :: #import "font_metrics";
 
 ApplicationsState :: struct {
     cursor: s32
@@ -197,7 +198,16 @@ ApplicationsMenu :: (session: Session, viewport: Rectangle, state: *Applications
         if state.selected >= count { state.selected = count - 1 }
         if state.selected < 0 { state.selected = 0 }
         category_width: float32 = 132.0
-        if viewport.width < 400.0 { category_width = 112.0 }
+        category: s32 = 0
+        while category < 12 {
+            width := cast(float32)Metrics.GlyphWidth(
+                CString(RillApplicationsCategoryName(category)), 14, "") + 24.0
+            if width > category_width { category_width = width }
+            category += 1
+        }
+        // Reserve the scrollbar without clipping complete category labels on
+        // the native bitmap font. Keep an application column on small windows.
+        if category_width > viewport.width - 140.0 { category_width = viewport.width - 140.0 }
         list := content
         list.width -= category_width + 8.0
         categories := Rectangle.{list.x + list.width + 8.0, content.y, category_width, content.height}

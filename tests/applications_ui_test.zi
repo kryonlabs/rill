@@ -6,6 +6,7 @@
 #import "settings"
 #import "native_memory"
 Memory :: #import "native_memory";
+Font :: #import "font_metrics";
 using UI :: #import "Widgets";
 #import "tree_draw"
 using FrameStatus;
@@ -93,6 +94,19 @@ Cases :: () -> s32 {
     if !OpenRaster(480, 300) { return 1 }
     session = SessionOpen()
     if !Key(0, 0) || !CaptureConfigured() { return 2 }
+    // The native bitmap font must fit a complete category label even while
+    // its column reserves space for a scrollbar.
+    found: bool = false
+    node: s32 = 0
+    while node < TreeCount(session) {
+        entry := TreeNodeAt(session, node)
+        if entry.key == cast(u64)12102 {
+            if entry.bounds.width < cast(float32)Font.GlyphWidth("All Applications", 14, "") + 4.0 { return 14 }
+            found = true
+        }
+        node += 1
+    }
+    if !found { return 14 }
     index = 0
     while index < 9 { if !Key(KeyDown, 0) { return 3 }; index += 1 }
     if state.selected != 9 || state.list_scroll <= 0 || !Key(KeyEnter, 0) ||
