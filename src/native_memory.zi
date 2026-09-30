@@ -23,12 +23,56 @@ EnvironmentValue :: (name: *s8) -> *s8 { return Getenv(name) }
 
 TextDescriptor :: struct {
     data: *s8
-    count: s64
+    count: usize
 }
 
 TextBytes :: (value: string) -> *s8 {
     descriptor := cast(*TextDescriptor)(*value)
     return descriptor.data
+}
+
+TextLength :: (value: *s8) -> s32 {
+    if value == null { return 0 }
+    count: s32 = 0
+    while value[count] != 0 { count += 1 }
+    return count
+}
+
+// The C desktop ABI lends NUL-terminated buffers. Borrow the bytes for the
+// duration of a native call without allocating or changing their contents.
+CString :: (value: *s8) -> string {
+    result: string = ""
+    descriptor := cast(*TextDescriptor)(*result)
+    descriptor.data = value
+    descriptor.count = cast(usize)TextLength(value)
+    return result
+}
+
+FormatInteger :: (output: *s8, capacity: s32, value: s32) -> s32 {
+    if output == null || capacity < 2 { return 0 }
+    digits: [16]s8
+    magnitude: s64 = cast(s64)value
+    negative := magnitude < 0
+    if negative { magnitude = -magnitude }
+    count: s32 = 0
+    while true {
+        digits[count] = cast(s8)(48 + magnitude % 10)
+        count += 1
+        magnitude /= 10
+        if magnitude == 0 { break }
+    }
+    needed := count
+    if negative { needed += 1 }
+    if needed >= capacity { output[0] = 0; return 0 }
+    used: s32 = 0
+    if negative { output[used] = 45; used += 1 }
+    while count > 0 {
+        count -= 1
+        output[used] = digits[count]
+        used += 1
+    }
+    output[used] = 0
+    return used
 }
 
 CopyText :: (destination: *s8, capacity: s32, source: *s8) -> s32 {

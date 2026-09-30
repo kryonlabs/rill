@@ -10,22 +10,30 @@ ZIRAN ?= $(ZIRAN_DIR)/build/bin/ziran
 SHELL_MODULES := native_memory platform_types shell_types shell
 SHELL_GEN := build/ziran/c
 SHELL_C := $(addprefix $(SHELL_GEN)/,$(addsuffix .c,$(SHELL_MODULES)))
+PERSISTENCE_MODULES := c_string file_linux native_files panel_types panel settings
+PERSISTENCE_C := $(addprefix $(SHELL_GEN)/,$(addsuffix .c,$(PERSISTENCE_MODULES)))
 STUB_C := $(SHELL_GEN)/platform_stub.c
 SHELL_STAMP := $(SHELL_GEN)/.generated
 SHELL_SOURCES := $(addprefix src/,$(addsuffix .zi,$(SHELL_MODULES))) src/platform_stub.zi
+PERSISTENCE_SOURCES := src/native_files.zi src/panel_types.zi src/panel.zi src/settings.zi \
+	$(ZIRAN_DIR)/std/c_string.zi $(ZIRAN_DIR)/std/file_linux.zi $(ZIRAN_DIR)/std/file_plan9.zi
 
-$(SHELL_STAMP): $(SHELL_SOURCES) $(ZIRAN)
-	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=c --root src -o $(SHELL_GEN) src/shell.zi src/platform_stub.zi
+$(SHELL_STAMP): $(SHELL_SOURCES) $(PERSISTENCE_SOURCES) $(ZIRAN)
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=c --root src --module-path $(ZIRAN_DIR)/std -o $(SHELL_GEN) src/shell.zi src/platform_stub.zi src/panel.zi src/settings.zi
 	touch $@
 
-$(SHELL_C) $(STUB_C): $(SHELL_STAMP)
+$(SHELL_C) $(PERSISTENCE_C) $(STUB_C): $(SHELL_STAMP)
 
-.PHONY: ziran-c-plan9 shell-test
+.PHONY: ziran-c-plan9 shell-test persistence-test
 ziran-c-plan9:
-	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root src -o build/ziran/plan9 src/shell.zi
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root src --module-path $(ZIRAN_DIR)/std -o build/ziran/plan9 src/shell.zi src/panel.zi src/settings.zi
+	env -u DISPLAY -u WAYLAND_DISPLAY $(ZIRAN) build --target=plan9-c --define NATIVE_PLAN9 --root tests --module-path src --module-path $(ZIRAN_DIR)/std -o build/ziran/plan9-test tests/persistence_test.zi
 
 shell-test:
 	ZIRAN="$(abspath $(ZIRAN))" sh tests/shell_test.sh
+
+persistence-test:
+	ZIRAN="$(abspath $(ZIRAN))" ZIRAN_STD="$(abspath $(ZIRAN_DIR)/std)" sh tests/persistence_test.sh
 
 CC ?= cc
 CFLAGS ?= -Wall -Wextra -O2
@@ -94,8 +102,8 @@ BUILD_DIR := build/$(PLATFORM)-$(ARCH)
 BIN := $(BUILD_DIR)/$(APP_NAME)
 TEST_BIN := $(BUILD_DIR)/rill_shell_test
 LINUX_LAUNCHER_TEST_BIN := $(BUILD_DIR)/rill_linux_launcher_test
-SRCS := src/main.c src/rill_settings.c $(SHELL_C) src/rill_panel.c src/rill_x11.c src/rill_dnd.c $(PLATFORM_SRC) $(WAYLAND_SRC)
-TEST_SRCS := tests/rill_shell_test.c $(SHELL_C) src/rill_panel.c $(STUB_C)
+SRCS := src/main.c $(SHELL_C) $(PERSISTENCE_C) src/rill_x11.c src/rill_dnd.c $(PLATFORM_SRC) $(WAYLAND_SRC)
+TEST_SRCS := tests/rill_shell_test.c $(SHELL_C) $(PERSISTENCE_C) $(STUB_C)
 LINUX_LAUNCHER_TEST_SRCS := tests/rill_linux_launcher_test.c src/platform_linux.c src/files.c src/rill_wayland.c $(WAYLAND_SRC)
 DND_TEST_SRCS := tests/rill_dnd_test.c src/rill_dnd.c
 
@@ -152,8 +160,8 @@ run: $(BIN)
 clean:
 	rm -rf build
 
-$(BUILD_DIR)/rill_platform_test: tests/rill_platform_test.c src/platform_plan9.c src/rill_panel.c src/rill_settings.c $(wildcard include/*.h) | $(BUILD_DIR)
-	$(CC) -Iinclude $(CFLAGS) -o $@ tests/rill_platform_test.c src/platform_plan9.c src/rill_panel.c src/rill_settings.c
+$(BUILD_DIR)/rill_platform_test: tests/rill_platform_test.c src/platform_plan9.c $(SHELL_GEN)/native_memory.c $(SHELL_GEN)/platform_types.c $(PERSISTENCE_C) $(wildcard include/*.h) | $(BUILD_DIR)
+	$(CC) -Iinclude $(CFLAGS) -o $@ tests/rill_platform_test.c src/platform_plan9.c $(SHELL_GEN)/native_memory.c $(SHELL_GEN)/platform_types.c $(PERSISTENCE_C)
 
 $(BUILD_DIR)/rill_x11_protocol_test: tests/rill_x11_protocol_test.c src/rill_x11.c $(wildcard include/*.h) $(KRYON_LIB) | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ tests/rill_x11_protocol_test.c src/rill_x11.c $(PLATFORM_LDLIBS)
@@ -193,7 +201,7 @@ $(BUILD_DIR)/rill_dnd_test: $(wildcard include/rill_dnd.h) $(DND_TEST_SRCS) | $(
 dnd-test: $(BUILD_DIR)/rill_dnd_test
 	xvfb-run -a $(BUILD_DIR)/rill_dnd_test
 
-test: platform-test xembed-test xsettings-test clipboard-test sessiond-test dnd-test
+test: shell-test persistence-test platform-test xembed-test xsettings-test clipboard-test sessiond-test dnd-test
 
 $(BUILD_DIR)/files_test: tests/files_test.c src/files.c include/files.h | $(BUILD_DIR)
 	$(CC) -Iinclude $(GTK_PKG_CFLAGS) $(CFLAGS) -o $@ tests/files_test.c src/files.c $(GTK_PKG_LIBS) -lX11

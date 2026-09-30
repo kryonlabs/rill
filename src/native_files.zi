@@ -1,0 +1,270 @@
+#import "native_memory"
+
+#scope_file
+PLAN9 :: #defined(NATIVE_PLAN9);
+#scope_export
+#if PLAN9 {
+    File :: #import "file_plan9"
+} else {
+    File :: #import "file_linux"
+}
+#scope_file
+libc :: #system_library "libc";
+#if !PLAN9 {
+    MakeTemporary :: (path: *s8) -> s32 #foreign libc "mkstemp";
+    OpenLock :: (path: *s8, flags: s32, mode: ..any) -> s32 #foreign libc "open";
+    LockRaw :: (descriptor: s32, operation: s32) -> s32 #foreign libc "flock";
+    CloseRaw :: (descriptor: s32) -> s32 #foreign libc "close";
+}
+
+#scope_export
+Reader :: struct {
+    file: File.FileHandle
+    buffer: [4096]u8
+    cursor: s32
+    count: s32
+    offset: s64
+    failed: bool
+}
+
+Writer :: struct {
+    file: File.FileHandle
+    buffer: [4096]u8
+    count: s32
+    offset: s64
+    failed: bool
+    temporary: [1200]s8
+}
+
+OpenReader :: (path: *s8) -> *Reader {
+    if path == null || path[0] == 0 { return null }
+    file := File.OpenRead(CString(path))
+    #if PLAN9 {
+        if !file.valid {
+            backup: [1200]s8
+            length := TextLength(path)
+            if length + 5 >= 1200 { return null }
+            CopyText(*backup[0], 1200, path)
+            CopyText(*backup[length], 1200 - length, TextBytes(".old"))
+            file = File.OpenRead(CString(*backup[0]))
+        }
+    }
+    if !file.valid { return null }
+    reader := cast(*Reader)AllocateZeroed(1, size_of(Reader))
+    if reader == null { File.CloseFile(file); return null }
+    reader.file = file
+    return reader
+}
+
+PeekByte :: (reader: *Reader) -> s32 {
+    if reader == null || reader.failed { return -1 }
+    if reader.cursor >= reader.count {
+        count := File.ReadAt(reader.file, reader.buffer[:], reader.offset)
+        if count < 0 { reader.failed = true; return -1 }
+        reader.cursor = 0
+        reader.count = cast(s32)count
+        if count == 0 { return -1 }
+        reader.offset += count
+    }
+    return cast(s32)reader.buffer[reader.cursor]
+}
+
+ReadByte :: (reader: *Reader) -> s32 {
+    byte := PeekByte(reader)
+    if byte >= 0 { reader.cursor += 1 }
+    return byte
+}
+
+CloseReader :: (reader: *Reader) -> bool {
+    if reader == null { return false }
+    ok := File.CloseFile(reader.file)
+    ReleaseAllocation(cast(*void)reader)
+    return ok
+}
+
+ReadLine :: (reader: *Reader, output: *s8, capacity: s32) -> bool {
+    if output == null || capacity <= 1 { return false }
+    used: s32 = 0
+    while used + 1 < capacity {
+        byte := ReadByte(reader)
+        if byte < 0 { break }
+        output[used] = cast(s8)byte
+        used += 1
+        if byte == 10 { break }
+    }
+    output[used] = 0
+    return used > 0
+}
+
+Whitespace :: (byte: s32) -> bool {
+    return byte == 32 || (byte >= 9 && byte <= 13)
+}
+
+SkipWhitespace :: (reader: *Reader) {
+    while Whitespace(PeekByte(reader)) { ReadByte(reader) }
+}
+
+ReadInteger :: (reader: *Reader, value: *s32) -> bool {
+    if reader == null || value == null { return false }
+    SkipWhitespace(reader)
+    negative: bool = false
+    if PeekByte(reader) == 45 { negative = true; ReadByte(reader) }
+    else if PeekByte(reader) == 43 { ReadByte(reader) }
+    magnitude: s64 = 0
+    digits: s32 = 0
+    while true {
+        byte := PeekByte(reader)
+        if byte < 48 || byte > 57 { break }
+        magnitude = magnitude * 10 + cast(s64)(ReadByte(reader) - 48)
+        if magnitude > 2147483648 { return false }
+        digits += 1
+    }
+    if digits == 0 || (!negative && magnitude > 2147483647) { return false }
+    if negative { magnitude = -magnitude }
+    value.* = cast(s32)magnitude
+    return true
+}
+
+ReadWord :: (reader: *Reader, output: *s8, capacity: s32) -> bool {
+    if reader == null || output == null || capacity <= 1 { return false }
+    SkipWhitespace(reader)
+    used: s32 = 0
+    while PeekByte(reader) >= 0 && !Whitespace(PeekByte(reader)) {
+        if used + 1 >= capacity { return false }
+        output[used] = cast(s8)ReadByte(reader)
+        used += 1
+    }
+    output[used] = 0
+    return used > 0
+}
+
+OpenWriter :: (path: *s8) -> *Writer {
+    if path == null || path[0] == 0 || TextLength(path) + 12 >= 1200 { return null }
+    writer := cast(*Writer)AllocateZeroed(1, size_of(Writer))
+    if writer == null { return null }
+    used := CopyText(*writer.temporary[0], 1200, path)
+    #if PLAN9 {
+        CopyText(*writer.temporary[used], 1200 - used, TextBytes(".tmp"))
+        writer.file = File.OpenPrivateReplace(CString(*writer.temporary[0]))
+    } else {
+        CopyText(*writer.temporary[used], 1200 - used, TextBytes(".XXXXXX"))
+        writer.file.fd = MakeTemporary(*writer.temporary[0])
+        writer.file.valid = writer.file.fd >= 0
+    }
+    if !writer.file.valid { ReleaseAllocation(cast(*void)writer); return null }
+    return writer
+}
+
+FlushWriter :: (writer: *Writer) -> bool {
+    if writer == null || writer.failed { return false }
+    written: s32 = 0
+    while written < writer.count {
+        count := File.WriteAt(writer.file, writer.buffer[written:writer.count], writer.offset)
+        if count <= 0 { writer.failed = true; return false }
+        written += cast(s32)count
+        writer.offset += count
+    }
+    writer.count = 0
+    return true
+}
+
+WriteByte :: (writer: *Writer, byte: u8) -> bool {
+    if writer == null || writer.failed { return false }
+    if writer.count == 4096 && !FlushWriter(writer) { return false }
+    writer.buffer[writer.count] = byte
+    writer.count += 1
+    return true
+}
+
+WriteText :: (writer: *Writer, text: *s8) -> bool {
+    if text == null { return false }
+    index: s32 = 0
+    while text[index] != 0 {
+        if !WriteByte(writer, cast(u8)text[index]) { return false }
+        index += 1
+    }
+    return true
+}
+
+WriteInteger :: (writer: *Writer, value: s32) -> bool {
+    text: [32]s8
+    if FormatInteger(*text[0], 32, value) == 0 { return false }
+    return WriteText(writer, *text[0])
+}
+
+// The native filesystem cannot replace an existing name directly. Retain
+// the old file until the new one is published, and restore it on failure.
+CommitWriter :: (writer: *Writer, path: *s8, valid: bool) -> bool {
+    if writer == null { return false }
+    ok := valid && FlushWriter(writer)
+    #if !PLAN9 {
+        if ok && !File.SyncFile(writer.file) { ok = false }
+    }
+    if !File.CloseFile(writer.file) { ok = false }
+    #if PLAN9 {
+        backup: [1200]s8
+        length := CopyText(*backup[0], 1200, path)
+        CopyText(*backup[length], 1200 - length, TextBytes(".old"))
+        moved: bool = false
+        if ok && File.PathExists(CString(path)) {
+            File.RemoveFile(CString(*backup[0]))
+            moved = File.RenameNoReplace(CString(path), CString(*backup[0]))
+            if !moved { ok = false }
+        }
+        if ok {
+            ok = File.RenameNoReplace(CString(*writer.temporary[0]), CString(path))
+            if ok { File.RemoveFile(CString(*backup[0])) }
+            else if moved { File.RenameNoReplace(CString(*backup[0]), CString(path)) }
+        }
+    } else {
+        if ok { ok = File.RenamePath(CString(*writer.temporary[0]), CString(path)) }
+    }
+    if !ok { File.RemoveFile(CString(*writer.temporary[0])) }
+    ReleaseAllocation(cast(*void)writer)
+    return ok
+}
+
+EnsureDirectory :: (path: *s8) -> bool {
+    copy: [1024]s8
+    if path == null || path[0] != 47 || TextLength(path) >= 1024 { return false }
+    CopyText(*copy[0], 1024, path)
+    index: s32 = 1
+    while true {
+        if copy[index] == 47 || copy[index] == 0 {
+            saved := copy[index]
+            copy[index] = 0
+            if !File.CreatePrivateDirectory(CString(*copy[0])) { return false }
+            copy[index] = saved
+            if saved == 0 { return true }
+        }
+        index += 1
+    }
+    return false
+}
+
+AcquireSettingsLock :: (path: *s8) -> s32 {
+    #if PLAN9 {
+        unused path
+        return 0
+    } else {
+        lock_path: [1200]s8
+        length := TextLength(path)
+        if length + 6 >= 1200 { return -1 }
+        CopyText(*lock_path[0], 1200, path)
+        CopyText(*lock_path[length], 1200 - length, TextBytes(".lock"))
+        // O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, owner read/write.
+        descriptor := OpenLock(*lock_path[0], 64 | 2 | 524288 | 131072, 384)
+        if descriptor < 0 { return -1 }
+        if LockRaw(descriptor, 2) != 0 { CloseRaw(descriptor); return -1 }
+        return descriptor
+    }
+}
+
+ReleaseSettingsLock :: (descriptor: s32) {
+    #if !PLAN9 {
+        if descriptor >= 0 { LockRaw(descriptor, 8); CloseRaw(descriptor) }
+    }
+    #if PLAN9 {
+        unused descriptor
+    }
+}

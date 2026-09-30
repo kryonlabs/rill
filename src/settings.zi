@@ -1,0 +1,170 @@
+#import "platform_types"
+#import "native_memory"
+#import "native_files"
+
+#scope_export
+#program_export
+RillSettingsInit :: (settings: *RillSettings) {
+    if settings != null { SetBytes(cast(*void)settings, 0, size_of(RillSettings)) }
+}
+
+#program_export
+RillSettingsGet :: (settings: *RillSettings, key: *s8, fallback: *s8) -> *s8 {
+    if settings == null || key == null { return fallback }
+    index: s32 = 0
+    while index < settings.count && index < RILL_SETTINGS_MAX {
+        if TextEquals(*settings.keys[index][0], key) {
+            return *settings.values[index][0]
+        }
+        index += 1
+    }
+    return fallback
+}
+
+#program_export
+RillSettingsGetInteger :: (settings: *RillSettings, key: *s8, fallback: s32) -> s32 {
+    text := RillSettingsGet(settings, key, null)
+    if text == null || text[0] == 0 { return fallback }
+    index: s32 = 0
+    while Whitespace(cast(s32)text[index]) { index += 1 }
+    negative := text[index] == 45
+    if negative || text[index] == 43 { index += 1 }
+    magnitude: s64 = 0
+    while text[index] >= 48 && text[index] <= 57 {
+        magnitude = magnitude * 10 + cast(s64)(text[index] - 48)
+        if magnitude > 2147483648 { return fallback }
+        index += 1
+    }
+    if !negative && magnitude > 2147483647 { return fallback }
+    if negative { magnitude = -magnitude }
+    return cast(s32)magnitude
+}
+
+#program_export
+RillSettingsSet :: (settings: *RillSettings, key: *s8, value: *s8) {
+    if settings == null || key == null || key[0] == 0 { return }
+    index: s32 = 0
+    while index < settings.count && index < RILL_SETTINGS_MAX {
+        if TextEquals(*settings.keys[index][0], key) {
+            CopyText(*settings.values[index][0], RILL_SETTINGS_VALUE, value)
+            return
+        }
+        index += 1
+    }
+    if settings.count < 0 || settings.count >= RILL_SETTINGS_MAX { return }
+    CopyText(*settings.keys[settings.count][0], RILL_SETTINGS_KEY, key)
+    CopyText(*settings.values[settings.count][0], RILL_SETTINGS_VALUE, value)
+    settings.count += 1
+}
+
+#program_export
+RillSettingsSetInteger :: (settings: *RillSettings, key: *s8, value: s32) {
+    text: [32]s8
+    FormatInteger(*text[0], 32, value)
+    RillSettingsSet(settings, key, *text[0])
+}
+
+#scope_file
+Representable :: (text: *s8, key: bool) -> bool {
+    index: s32 = 0
+    while text[index] != 0 {
+        if text[index] == 10 || text[index] == 13 || (key && text[index] == 61) {
+            return false
+        }
+        index += 1
+    }
+    return true
+}
+
+Trim :: (text: *s8, line_end: bool) -> *s8 {
+    start: s32 = 0
+    while text[start] == 32 || text[start] == 9 { start += 1 }
+    end := TextLength(text)
+    while end > start {
+        byte := text[end - 1]
+        if byte != 32 && byte != 9 && (!line_end || (byte != 10 && byte != 13)) {
+            break
+        }
+        end -= 1
+        text[end] = 0
+    }
+    return *text[start]
+}
+
+#scope_export
+#program_export
+RillSettingsSave :: (settings: *RillSettings, path: *s8) -> s32 {
+    if settings == null || settings.count < 0 || settings.count > RILL_SETTINGS_MAX {
+        return 0
+    }
+    writer := OpenWriter(path)
+    if writer == null { return 0 }
+    ok := WriteText(writer, TextBytes("# Rill settings\n"))
+    index: s32 = 0
+    while index < settings.count && ok {
+        key := *settings.keys[index][0]
+        value := *settings.values[index][0]
+        ok = Representable(key, true) && Representable(value, false) &&
+            WriteText(writer, key) && WriteText(writer, TextBytes(" = ")) &&
+            WriteText(writer, value) && WriteByte(writer, 10)
+        index += 1
+    }
+    return cast(s32)CommitWriter(writer, path, ok)
+}
+
+#program_export
+RillSettingsLoad :: (settings: *RillSettings, path: *s8) -> s32 {
+    if settings == null { return 0 }
+    RillSettingsInit(settings)
+    reader := OpenReader(path)
+    if reader == null { return 0 }
+    line: [360]s8
+    while ReadLine(reader, *line[0], 360) {
+        if line[0] == 35 || line[0] == 10 { continue }
+        separator: s32 = 0
+        while line[separator] != 0 && line[separator] != 61 { separator += 1 }
+        if line[separator] == 0 { continue }
+        line[separator] = 0
+        key := Trim(*line[0], false)
+        value := Trim(*line[separator + 1], true)
+        if key[0] != 0 { RillSettingsSet(settings, key, value) }
+    }
+    ok := !reader.failed
+    if !CloseReader(reader) { ok = false }
+    return cast(s32)ok
+}
+
+#program_export
+RillSettingsMergeSave :: (settings: *RillSettings, previous: *RillSettings,
+    path: *s8) -> s32 {
+    if settings == null || previous == null || path == null || path[0] == 0 {
+        return 0
+    }
+    if settings.count < 0 || settings.count > RILL_SETTINGS_MAX { return 0 }
+    lock := AcquireSettingsLock(path)
+    if lock < 0 { return 0 }
+    latest := cast(*RillSettings)AllocateZeroed(1, size_of(RillSettings))
+    ok: s32 = 0
+    if latest != null {
+        RillSettingsLoad(latest, path)
+        index: s32 = 0
+        while index < settings.count {
+            key := *settings.keys[index][0]
+            value := *settings.values[index][0]
+            old := RillSettingsGet(previous, key, null)
+            if old == null || !TextEquals(old, value) { RillSettingsSet(latest, key, value) }
+            index += 1
+        }
+        ok = RillSettingsSave(latest, path)
+        if ok != 0 {
+            MoveBytes(cast(*void)settings, cast(*void)latest, size_of(RillSettings))
+            MoveBytes(cast(*void)previous, cast(*void)latest, size_of(RillSettings))
+        }
+        ReleaseAllocation(cast(*void)latest)
+    }
+    ReleaseSettingsLock(lock)
+    return ok
+}
+
+#program_export
+RillSettingsEnsureDirectory :: (path: *s8) -> s32 { return cast(s32)EnsureDirectory(path) }

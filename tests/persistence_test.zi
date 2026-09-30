@@ -1,0 +1,209 @@
+#import "settings"
+#import "platform_types"
+#import "panel"
+#import "panel_types"
+#import "native_memory"
+#import "native_files"
+#if #defined(NATIVE_PLAN9) {
+    File :: #import "file_plan9"
+} else {
+    File :: #import "file_linux"
+}
+
+#scope_file
+settings: RillSettings;
+loaded: RillSettings;
+first: RillSettings;
+second: RillSettings;
+first_previous: RillSettings;
+second_previous: RillSettings;
+left: [4]RillPanelPlugin;
+right: [4]RillPanelPlugin;
+loaded_left: [4]RillPanelPlugin;
+loaded_right: [4]RillPanelPlugin;
+path: [1200]s8;
+backup: [1200]s8;
+root: *s8;
+
+TestPath :: (name: string) -> *s8 {
+    used := CopyText(*path[0], 1200, root)
+    path[used] = 47
+    used += 1
+    CopyText(*path[used], 1200 - used, TextBytes(name))
+    return *path[0]
+}
+
+Put :: (destination: *s8, text: string) -> bool {
+    writer := OpenWriter(destination)
+    if writer == null { return false }
+    ok := WriteText(writer, TextBytes(text))
+    return CommitWriter(writer, destination, ok)
+}
+
+PanelCases :: () -> s32 {
+    count: s32
+    defaults := RillPanelDefaultLeft(*count)
+    if count != 3 || defaults[0].kind != RILL_PANEL_MENU ||
+        defaults[0].width != 104 || defaults[0].menu_id != 1 { return 1 }
+    defaults = RillPanelDefaultRight(*count)
+    if count != 8 || defaults[4].kind != RILL_PANEL_CLOCK || defaults[4].advance != 64 { return 2 }
+    kind: s32 = 0
+    while kind <= RILL_PANEL_CLIPBOARD {
+        found: s32 = -1
+        if RillPanelPluginKindFromName(RillPanelPluginKindName(kind), *found) != 1 ||
+            found != kind { return 3 }
+        kind += 1
+    }
+    if RillPanelPluginKindFromName(TextBytes("unknown"), *kind) != 0 ||
+        RillPanelPluginKindFromName(null, *kind) != 0 { return 4 }
+    destination := TestPath("panel")
+    left[0].kind = RILL_PANEL_MENU
+    left[0].menu_id = 1
+    left[0].width = 104
+    left[0].advance = 106
+    CopyText(*left[0].id[0], 64, TextBytes("applications"))
+    CopyText(*left[0].label[0], 96, TextBytes("Applications menu"))
+    right[0].kind = RILL_PANEL_CLOCK
+    right[0].width = 60
+    right[0].advance = 64
+    CopyText(*right[0].id[0], 64, TextBytes("clock"))
+    CopyText(*right[0].label[0], 96, TextBytes("Time\nDate"))
+    if RillPanelSave(destination, *left[0], 1, *right[0], 1) == 0 { return 5 }
+    nl: s32
+    nr: s32
+    if RillPanelLoad(destination, *loaded_left[0], *nl, *loaded_right[0], *nr, 4) == 0 ||
+        nl != 1 || nr != 1 || !TextEquals(*loaded_left[0].label[0], *left[0].label[0]) ||
+        !TextEquals(*loaded_right[0].label[0], *right[0].label[0]) { return 6 }
+    invalid: [5]string = .[
+        "Rill panel 1\n2 0\nclock 0 20 20 0\n999999:bad\n",
+        "Rill panel 1\n1 0\nclock 0 4097 20 0\n0:\n0:\n0:\n",
+        "Rill panel 1\n1 0\nclock 0 20 20 0\n1:\u0000\n0:\n0:\n",
+        "Rill panel 1\n0 0\ntrailing",
+        "Rill panel 1\n2147483648 0\n"
+    ]
+    index: s32 = 0
+    while index < 5 {
+        text := invalid[index]
+        file := File.OpenReplace(CString(destination))
+        if !file.valid { return 7 }
+        byte: [1]u8
+        offset: s64 = 0
+        while offset < text.count {
+            byte[0] = text[offset]
+            if File.WriteAt(file, byte[:], offset) != 1 { File.CloseFile(file); return 8 }
+            offset += 1
+        }
+        if !File.CloseFile(file) { return 9 }
+        if RillPanelLoad(destination, *loaded_left[0], *nl, *loaded_right[0], *nr, 4) != 0 ||
+            nl != 1 || nr != 1 || loaded_left[0].kind != RILL_PANEL_MENU ||
+            !TextEquals(*loaded_left[0].label[0], *left[0].label[0]) ||
+            !TextEquals(*loaded_right[0].label[0], *right[0].label[0]) { return 10 }
+        index += 1
+    }
+    if RillPanelSave(destination, *left[0], 1, *right[0], 1) == 0 { return 11 }
+    #if #defined(NATIVE_PLAN9) {
+        used := CopyText(*backup[0], 1200, destination)
+        CopyText(*backup[used], 1200 - used, TextBytes(".old"))
+        if !File.RenameNoReplace(CString(destination), CString(*backup[0])) ||
+            RillPanelLoad(destination, *loaded_left[0], *nl, *loaded_right[0], *nr, 4) == 0 ||
+            nl != 1 || nr != 1 { return 12 }
+    }
+    if RillPanelSave(destination, null, 0, null, 0) == 0 ||
+        RillPanelLoad(destination, *loaded_left[0], *nl, *loaded_right[0], *nr, 4) == 0 ||
+        nl != 0 || nr != 0 { return 13 }
+    if !File.RemoveFile(CString(destination)) { return 14 }
+    return 0
+}
+
+SettingsCases :: () -> s32 {
+    destination := TestPath("settings")
+    RillSettingsInit(*settings)
+    RillSettingsSet(*settings, TextBytes("clock-format"), TextBytes("%a %H:%M"))
+    RillSettingsSetInteger(*settings, TextBytes("panel-height"), 32)
+    RillSettingsSet(*settings, TextBytes("clock-format"), TextBytes("%H:%M"))
+    RillSettingsSetInteger(*settings, TextBytes("minimum"), cast(s32)-2147483648)
+    RillSettingsSetInteger(*settings, TextBytes("maximum"), 2147483647)
+    if settings.count != 4 || RillSettingsSave(*settings, destination) == 0 ||
+        RillSettingsLoad(*loaded, destination) == 0 || loaded.count != 4 ||
+        RillSettingsGetInteger(*loaded, TextBytes("minimum"), 1) != cast(s32)-2147483648 ||
+        RillSettingsGetInteger(*loaded, TextBytes("maximum"), 1) != 2147483647 { return 21 }
+    MoveBytes(cast(*void)(*first), cast(*void)(*loaded), size_of(RillSettings))
+    MoveBytes(cast(*void)(*second), cast(*void)(*loaded), size_of(RillSettings))
+    MoveBytes(cast(*void)(*first_previous), cast(*void)(*loaded), size_of(RillSettings))
+    MoveBytes(cast(*void)(*second_previous), cast(*void)(*loaded), size_of(RillSettings))
+    RillSettingsSetInteger(*first, TextBytes("panel-height"), 40)
+    if RillSettingsMergeSave(*first, *first_previous, destination) == 0 { return 22 }
+    RillSettingsSet(*second, TextBytes("wallpaper"), TextBytes("/tmp/another image.png"))
+    if RillSettingsMergeSave(*second, *second_previous, destination) == 0 ||
+        RillSettingsLoad(*loaded, destination) == 0 ||
+        RillSettingsGetInteger(*loaded, TextBytes("panel-height"), 0) != 40 ||
+        !TextEquals(RillSettingsGet(*loaded, TextBytes("wallpaper"), null),
+            TextBytes("/tmp/another image.png")) { return 23 }
+    RillSettingsSet(*second, TextBytes("invalid"), TextBytes("one\ntwo"))
+    if RillSettingsSave(*second, destination) != 0 ||
+        RillSettingsLoad(*loaded, destination) == 0 ||
+        RillSettingsGet(*loaded, TextBytes("invalid"), null) != null { return 24 }
+    #if #defined(NATIVE_PLAN9) {
+        used := CopyText(*backup[0], 1200, destination)
+        CopyText(*backup[used], 1200 - used, TextBytes(".old"))
+        if !File.RenameNoReplace(CString(destination), CString(*backup[0])) ||
+            RillSettingsLoad(*loaded, destination) == 0 ||
+            RillSettingsGetInteger(*loaded, TextBytes("panel-height"), 0) != 40 { return 25 }
+    }
+    if !Put(destination, "# comment\n\nnoise-without-equals\n\t wallpaper \t=\t /tmp/photo with spaces.png \r\n") ||
+        RillSettingsLoad(*loaded, destination) == 0 || loaded.count != 1 ||
+        !TextEquals(RillSettingsGet(*loaded, TextBytes("wallpaper"), null),
+            TextBytes("/tmp/photo with spaces.png")) { return 26 }
+    RillSettingsInit(*settings)
+    key: [32]s8
+    index: s32 = 0
+    while index < RILL_SETTINGS_MAX {
+        FormatInteger(*key[0], 32, index)
+        RillSettingsSet(*settings, *key[0], TextBytes("a preference value long enough to cross buffered writes"))
+        index += 1
+    }
+    RillSettingsSet(*settings, TextBytes("overflow"), TextBytes("ignored"))
+    if settings.count != RILL_SETTINGS_MAX || RillSettingsSave(*settings, destination) == 0 ||
+        RillSettingsLoad(*loaded, destination) == 0 || loaded.count != RILL_SETTINGS_MAX ||
+        !TextEquals(RillSettingsGet(*loaded, TextBytes("255"), null),
+            TextBytes("a preference value long enough to cross buffered writes")) { return 27 }
+    if !File.RemoveFile(CString(destination)) { return 28 }
+    #if !#defined(NATIVE_PLAN9) {
+        used := CopyText(*backup[0], 1200, destination)
+        CopyText(*backup[used], 1200 - used, TextBytes(".lock"))
+        if !File.RemoveFile(CString(*backup[0])) { return 29 }
+    }
+    return 0
+}
+
+Run :: () -> s32 {
+    print("rill-persistence-test: directories\n")
+    directory := TestPath("config/rill")
+    if RillSettingsEnsureDirectory(directory) == 0 || RillSettingsEnsureDirectory(directory) == 0 ||
+        !File.DirectoryExists(CString(directory)) || RillSettingsEnsureDirectory(TextBytes("relative")) != 0 {
+        return 30
+    }
+    if !Put(TestPath("ordinary-file"), "bytes") ||
+        RillSettingsEnsureDirectory(TestPath("ordinary-file/child")) != 0 { return 31 }
+    File.RemoveFile(CString(TestPath("ordinary-file")))
+    print("rill-persistence-test: panel\n")
+    result := PanelCases()
+    if result != 0 { return result }
+    print("rill-persistence-test: settings\n")
+    return SettingsCases()
+}
+
+#scope_export
+#program_export
+main :: () -> s32 {
+    root = EnvironmentValue(TextBytes("RILL_TEST_ROOT"))
+    if root == null { print("rill-persistence-test-failed: missing test root\n"); return 99 }
+    print("rill-persistence-test: start\n")
+    result := Run()
+    #if #defined(NATIVE_PLAN9) {
+        ReleaseAllocation(cast(*void)root)
+    }
+    if result != 0 { print("rill-persistence-test-failed: %\n", result) }
+    else { print("rill-persistence-test-ok\n") }
+    return result
+}

@@ -1,0 +1,199 @@
+#import "panel_types"
+#import "native_memory"
+#import "native_files"
+
+#scope_file
+left_plugins: [3]RillPanelPlugin;
+right_plugins: [8]RillPanelPlugin;
+defaults_ready: bool;
+
+DefaultPlugin :: (plugin: *RillPanelPlugin, kind: s32, id: string,
+    width: s32, advance: s32) {
+    plugin.kind = kind
+    CopyText(*plugin.id[0], 64, TextBytes(id))
+    plugin.width = width
+    plugin.advance = advance
+}
+
+InitializeDefaults :: () {
+    if defaults_ready { return }
+    DefaultPlugin(*left_plugins[0], RILL_PANEL_MENU, "applications", 104, 106)
+    CopyText(*left_plugins[0].label[0], 96, TextBytes("Applications"))
+    left_plugins[0].menu_id = 1
+    DefaultPlugin(*left_plugins[1], RILL_PANEL_SEPARATOR, "sep-tasks", 0, 6)
+    DefaultPlugin(*left_plugins[2], RILL_PANEL_TASK_LIST, "task-list", 0, 0)
+    DefaultPlugin(*right_plugins[0], RILL_PANEL_WORKSPACES, "workspaces", 42, 42)
+    DefaultPlugin(*right_plugins[1], RILL_PANEL_SEPARATOR, "sep-status", 0, 8)
+    DefaultPlugin(*right_plugins[2], RILL_PANEL_TRAY, "tray", 72, 80)
+    DefaultPlugin(*right_plugins[3], RILL_PANEL_SHOW_DESKTOP, "show-desktop", 26, 28)
+    DefaultPlugin(*right_plugins[4], RILL_PANEL_CLOCK, "clock", 60, 64)
+    DefaultPlugin(*right_plugins[5], RILL_PANEL_VOLUME, "volume", 58, 60)
+    DefaultPlugin(*right_plugins[6], RILL_PANEL_CLIPBOARD, "clipboard", 26, 28)
+    DefaultPlugin(*right_plugins[7], RILL_PANEL_ACTIONS, "actions", 26, 28)
+    defaults_ready = true
+}
+
+#scope_export
+#program_export
+RillPanelDefaultLeft :: (count: *s32) -> *RillPanelPlugin {
+    InitializeDefaults()
+    if count != null { count.* = 3 }
+    return *left_plugins[0]
+}
+
+#program_export
+RillPanelDefaultRight :: (count: *s32) -> *RillPanelPlugin {
+    InitializeDefaults()
+    if count != null { count.* = 8 }
+    return *right_plugins[0]
+}
+
+#program_export
+RillPanelPluginKindName :: (kind: s32) -> *s8 {
+    if kind == RILL_PANEL_SEPARATOR { return TextBytes("separator") }
+    if kind == RILL_PANEL_MENU { return TextBytes("menu") }
+    if kind == RILL_PANEL_LAUNCHER { return TextBytes("launcher") }
+    if kind == RILL_PANEL_TASK_LIST { return TextBytes("task-list") }
+    if kind == RILL_PANEL_WORKSPACES { return TextBytes("workspaces") }
+    if kind == RILL_PANEL_TRAY { return TextBytes("tray") }
+    if kind == RILL_PANEL_LANGUAGE { return TextBytes("language") }
+    if kind == RILL_PANEL_CLOCK { return TextBytes("clock") }
+    if kind == RILL_PANEL_RESOURCE { return TextBytes("resource") }
+    if kind == RILL_PANEL_SHOW_DESKTOP { return TextBytes("show-desktop") }
+    if kind == RILL_PANEL_ACTIONS { return TextBytes("actions") }
+    if kind == RILL_PANEL_VOLUME { return TextBytes("volume") }
+    if kind == RILL_PANEL_CLIPBOARD { return TextBytes("clipboard") }
+    return TextBytes("unknown")
+}
+
+#program_export
+RillPanelPluginKindFromName :: (name: *s8, out: *s32) -> s32 {
+    if name == null { return 0 }
+    kind: s32 = 0
+    while kind <= RILL_PANEL_CLIPBOARD {
+        if TextEquals(name, RillPanelPluginKindName(kind)) {
+            if out != null { out.* = kind }
+            return 1
+        }
+        kind += 1
+    }
+    return 0
+}
+
+#scope_file
+ValidPlugin :: (plugin: *RillPanelPlugin) -> bool {
+    return plugin.kind >= RILL_PANEL_SEPARATOR && plugin.kind <= RILL_PANEL_CLIPBOARD &&
+        plugin.width >= 0 && plugin.width <= 4096 &&
+        plugin.advance >= 0 && plugin.advance <= 4096 &&
+        plugin.menu_id >= 0 && plugin.menu_id <= 3 &&
+        plugin.variant >= 0 && plugin.variant <= 32
+}
+
+WriteString :: (writer: *Writer, value: *s8) -> bool {
+    return WriteInteger(writer, TextLength(value)) && WriteByte(writer, 58) &&
+        WriteText(writer, value) && WriteByte(writer, 10)
+}
+
+ReadString :: (reader: *Reader, value: *s8, capacity: s32) -> bool {
+    length: s32
+    if !ReadInteger(reader, *length) || length < 0 || length >= capacity ||
+        ReadByte(reader) != 58 { return false }
+    index: s32 = 0
+    while index < length {
+        byte := ReadByte(reader)
+        if byte <= 0 { return false }
+        value[index] = cast(s8)byte
+        index += 1
+    }
+    value[length] = 0
+    return ReadByte(reader) == 10
+}
+
+ReadLayout :: (reader: *Reader, items: *RillPanelPlugin, counts: *s32,
+    capacity: s32) -> bool {
+    magic: [32]s8
+    if !ReadLine(reader, *magic[0], 32) ||
+        !TextEquals(*magic[0], TextBytes("Rill panel 1\n")) { return false }
+    if !ReadInteger(reader, *counts[0]) || !ReadInteger(reader, *counts[1]) ||
+        ReadByte(reader) != 10 || counts[0] < 0 || counts[1] < 0 ||
+        counts[0] > capacity || counts[1] > capacity { return false }
+    side: s32 = 0
+    while side < 2 {
+        index: s32 = 0
+        while index < counts[side] {
+            plugin := *items[side * capacity + index]
+            kind: [32]s8
+            if !ReadWord(reader, *kind[0], 32) ||
+                !ReadInteger(reader, *plugin.menu_id) ||
+                !ReadInteger(reader, *plugin.width) ||
+                !ReadInteger(reader, *plugin.advance) ||
+                !ReadInteger(reader, *plugin.variant) || ReadByte(reader) != 10 ||
+                RillPanelPluginKindFromName(*kind[0], *plugin.kind) == 0 ||
+                !ValidPlugin(plugin) ||
+                !ReadString(reader, *plugin.id[0], 64) ||
+                !ReadString(reader, *plugin.label[0], 96) ||
+                !ReadString(reader, *plugin.launcher_id[0], 64) { return false }
+            index += 1
+        }
+        side += 1
+    }
+    return ReadByte(reader) < 0 && !reader.failed
+}
+
+#scope_export
+#program_export
+RillPanelLoad :: (path: *s8, left: *RillPanelPlugin, left_count: *s32,
+    right: *RillPanelPlugin, right_count: *s32, capacity: s32) -> s32 {
+    if capacity <= 0 || capacity > 1024 || left == null || right == null ||
+        left_count == null || right_count == null { return 0 }
+    reader := OpenReader(path)
+    if reader == null { return 0 }
+    items := cast(*RillPanelPlugin)AllocateZeroed(cast(usize)(2 * capacity), size_of(RillPanelPlugin))
+    if items == null { CloseReader(reader); return 0 }
+    counts: [2]s32
+    ok := ReadLayout(reader, items, *counts[0], capacity)
+    if !CloseReader(reader) { ok = false }
+    if ok {
+        MoveBytes(cast(*void)left, cast(*void)items,
+            cast(usize)counts[0] * size_of(RillPanelPlugin))
+        MoveBytes(cast(*void)right, cast(*void)(*items[capacity]),
+            cast(usize)counts[1] * size_of(RillPanelPlugin))
+        left_count.* = counts[0]
+        right_count.* = counts[1]
+    }
+    ReleaseAllocation(cast(*void)items)
+    return cast(s32)ok
+}
+
+#program_export
+RillPanelSave :: (path: *s8, left: *RillPanelPlugin, left_count: s32,
+    right: *RillPanelPlugin, right_count: s32) -> s32 {
+    if left_count < 0 || right_count < 0 || left_count > 1024 || right_count > 1024 ||
+        (left_count > 0 && left == null) || (right_count > 0 && right == null) { return 0 }
+    writer := OpenWriter(path)
+    if writer == null { return 0 }
+    ok := WriteText(writer, TextBytes("Rill panel 1\n")) &&
+        WriteInteger(writer, left_count) && WriteByte(writer, 32) &&
+        WriteInteger(writer, right_count) && WriteByte(writer, 10)
+    side: s32 = 0
+    while side < 2 && ok {
+        items := left
+        count := left_count
+        if side == 1 { items = right; count = right_count }
+        index: s32 = 0
+        while index < count && ok {
+            plugin := *items[index]
+            ok = ValidPlugin(plugin) &&
+                WriteText(writer, RillPanelPluginKindName(plugin.kind)) && WriteByte(writer, 32) &&
+                WriteInteger(writer, plugin.menu_id) && WriteByte(writer, 32) &&
+                WriteInteger(writer, plugin.width) && WriteByte(writer, 32) &&
+                WriteInteger(writer, plugin.advance) && WriteByte(writer, 32) &&
+                WriteInteger(writer, plugin.variant) && WriteByte(writer, 10) &&
+                WriteString(writer, *plugin.id[0]) && WriteString(writer, *plugin.label[0]) &&
+                WriteString(writer, *plugin.launcher_id[0])
+            index += 1
+        }
+        side += 1
+    }
+    return cast(s32)CommitWriter(writer, path, ok)
+}

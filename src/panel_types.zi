@@ -1,0 +1,25 @@
+RILL_PANEL_SEPARATOR :: 0;
+RILL_PANEL_MENU :: 1;
+RILL_PANEL_LAUNCHER :: 2;
+RILL_PANEL_TASK_LIST :: 3;
+RILL_PANEL_WORKSPACES :: 4;
+RILL_PANEL_TRAY :: 5;
+RILL_PANEL_LANGUAGE :: 6;
+RILL_PANEL_CLOCK :: 7;
+RILL_PANEL_RESOURCE :: 8;
+RILL_PANEL_SHOW_DESKTOP :: 9;
+RILL_PANEL_ACTIONS :: 10;
+RILL_PANEL_VOLUME :: 11;
+RILL_PANEL_CLIPBOARD :: 12;
+
+RillPanelPlugin :: struct {
+    #abi_incomplete
+    kind: s32
+    id: [64]s8
+    label: [96]s8
+    launcher_id: [64]s8
+    menu_id: s32
+    width: s32
+    advance: s32
+    variant: s32
+}
