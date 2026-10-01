@@ -2,11 +2,14 @@ File :: #import "file_plan9";
 Paths :: #import "path";
 #import "native_memory"
 #import "file_transfer_plan9"
+#import "platform_types"
 
 #scope_file
 Capacity :: 1048576;
-ClipboardText :: struct { bytes: [1048576]u8; count: s64; }
-ClipboardFiles :: struct { names: [256][1024]s8; pointers: [256]*s8; count: s32; }
+ClipboardText :: struct { bytes: [1048576]u8; count: s64; info: File.FileInfo; }
+ClipboardFiles :: struct { names: [256][1024]s8; pointers: [256]*s8; count: s32; cut: bool; }
+cut_snapshot: *ClipboardText;
+cut_job: u32;
 
 DevicePath :: (output: *s8) -> bool {
     value := EnvironmentValue(TextBytes("RILL_SNARF_PATH"))
@@ -97,6 +100,7 @@ Read :: (text: *ClipboardText) -> bool {
     closed := File.CloseFile(file)
     stable := before.valid && after.valid && before.type == after.type && before.device == after.device &&
         before.identity == after.identity && before.version == after.version && before.length == after.length
+    text.info = after
     return closed && ok && stable && text.count > 0 && text.count < Capacity
 }
 
@@ -108,8 +112,8 @@ Parse :: (text: *ClipboardText, files: *ClipboardFiles) -> bool {
         next := end + 1
         if end > start && text.bytes[end - 1] == cast(u8)13 { end -= 1 }
         line := TextView(text.bytes[start:end])
-        if start == 0 && line == "cut" { return false }
-        if !(start == 0 && line == "copy") && line.count > 0 && line[0] != cast(u8)35 {
+        if start == 0 && line == "cut" { files.cut = true }
+        if !(start == 0 && (line == "copy" || line == "cut")) && line.count > 0 && line[0] != cast(u8)35 {
             if files.count >= 256 || !Decode(line, *files.names[files.count][0]) { return false }
             files.pointers[files.count] = *files.names[files.count][0]
             files.count += 1
@@ -119,40 +123,51 @@ Parse :: (text: *ClipboardText, files: *ClipboardFiles) -> bool {
     return files.count > 0
 }
 
+Write :: (text: *ClipboardText) -> bool {
+    name: [1024]s8
+    overridden := DevicePath(*name[0])
+    file: File.FileHandle
+    if name[0] != 0 {
+        if overridden { file = File.OpenPrivateReplace(CString(*name[0])) }
+        else { file = File.OpenWrite(CString(*name[0])) }
+    }
+    if !file.valid { return false }
+    ok := true
+    offset: s64 = 0
+    while offset < text.count {
+        written := File.Write(file, text.bytes[offset:text.count])
+        if written <= 0 { ok = false; break }
+        offset += written
+    }
+    return File.CloseFile(file) && ok
+}
+
+SameSelection :: (left: *ClipboardText, right: *ClipboardText) -> bool {
+    if left.count != right.count || left.info.type != right.info.type || left.info.device != right.info.device ||
+        left.info.identity != right.info.identity || left.info.version != right.info.version { return false }
+    index: s64 = 0
+    while index < left.count { if left.bytes[index] != right.bytes[index] { return false }; index += 1 }
+    return true
+}
+
 #scope_export
 NativeFileClipboardCopy :: (paths: **s8, count: s32, cut: s32) -> s32 {
-    if paths == null || count <= 0 || count > 256 || cut != 0 { return 0 }
+    if paths == null || count <= 0 || count > 256 { return 0 }
     text := cast(*ClipboardText)AllocateZeroed(1, size_of(ClipboardText))
     if text == null { return 0 }
-    ok := Add(text, "copy\n")
+    header := "copy\n"
+    if cut != 0 { header = "cut\n" }
+    ok := Add(text, header)
     index: s32 = 0
     while ok && index < count {
         name: [1024]u8
         path := Paths.CleanAbsolute(CString(paths[index]), name[:])
         info := File.PathInfo(path)
         ok = path.count > 1 && info.valid && info.type == cast(u16)77 && info.length >= 0 &&
-            (info.mode & cast(u32)0xfffffe00) == 0 && Encode(text, path)
+            (info.mode & cast(u32)0x7ffffe00) == 0 && Encode(text, path)
         index += 1
     }
-    if ok {
-        name: [1024]s8
-        overridden := DevicePath(*name[0])
-        file: File.FileHandle
-        if name[0] != 0 {
-            if overridden { file = File.OpenPrivateReplace(CString(*name[0])) }
-            else { file = File.OpenWrite(CString(*name[0])) }
-        }
-        ok = file.valid
-        if file.valid {
-            offset: s64 = 0
-            while offset < text.count {
-                written := File.Write(file, text.bytes[offset:text.count])
-                if written <= 0 { ok = false; break }
-                offset += written
-            }
-            if !File.CloseFile(file) { ok = false }
-        }
-    }
+    if ok { ok = Write(text) }
     ReleaseAllocation(cast(*void)text)
     return cast(s32)ok
 }
@@ -163,8 +178,45 @@ NativeFileClipboardPaste :: (destination: *s8) -> s32 {
     files := cast(*ClipboardFiles)AllocateZeroed(1, size_of(ClipboardFiles))
     ok := text != null && files != null && Read(text) && Parse(text, files)
     result: s32 = 0
-    if ok { result = NativeCopyStart(TextBytes("copy"), *files.pointers[0], files.count, destination) }
+    if ok {
+        operation := TextBytes("copy")
+        if files.cut { operation = TextBytes("move") }
+        result = NativeCopyStart(operation, *files.pointers[0], files.count, destination)
+        if result != 0 {
+            ReleaseAllocation(cast(*void)cut_snapshot)
+            cut_snapshot = null
+            if files.cut {
+                status: FileTransferStatus
+                NativeCopyPoll(*status)
+                cut_job = status.id
+                cut_snapshot = text
+                text = null
+            }
+        }
+    }
     ReleaseAllocation(cast(*void)files)
     ReleaseAllocation(cast(*void)text)
     return result
+}
+
+NativeFileTransferPoll :: (status: *FileTransferStatus) -> s32 {
+    result := NativeCopyPoll(status)
+    if result == 0 || cut_snapshot == null { return result }
+    if status.id == cut_job && status.running != 0 { return result }
+    if status.id == cut_job && status.cancelled == 0 && status.skipped == 0 && status.error[0] == 0 && status.completed == status.total {
+        current := cast(*ClipboardText)AllocateZeroed(1, size_of(ClipboardText))
+        if current != null {
+            if Read(current) && SameSelection(cut_snapshot, current) { current.count = 0; Write(current) }
+            ReleaseAllocation(cast(*void)current)
+        }
+    }
+    ReleaseAllocation(cast(*void)cut_snapshot)
+    cut_snapshot = null
+    return result
+}
+
+NativeFileTransferFinish :: () {
+    NativeCopyFinish()
+    ReleaseAllocation(cast(*void)cut_snapshot)
+    cut_snapshot = null
 }

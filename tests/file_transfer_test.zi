@@ -1,4 +1,5 @@
 #import "file_transfer_plan9"
+#import "file_clipboard_plan9"
 #import "platform_plan9"
 #import "platform_types"
 #import "native_memory"
@@ -66,9 +67,19 @@ Choose :: (suffix: string, at: s32) {
 
 Drain :: (platform: *RillPlatformServices, status: *FileTransferStatus) -> bool {
     polls: s32 = 0
-    while polls < 64 {
+    while polls < 4096 {
         if platform.file_transfer_poll(status) == 0 { return false }
         if status.running == 0 || status.conflict != 0 { return true }
+        polls += 1
+    }
+    return false
+}
+
+WaitBytes :: (platform: *RillPlatformServices, status: *FileTransferStatus, minimum: u64) -> bool {
+    polls: s32 = 0
+    while polls < 4096 {
+        if platform.file_transfer_poll(status) == 0 || status.running == 0 || status.conflict != 0 { return false }
+        if status.bytes >= minimum { return true }
         polls += 1
     }
     return false
@@ -95,6 +106,98 @@ PutText :: (suffix: string, value: string) -> bool {
     return File.CloseFile(file) && ok
 }
 
+TextContent :: (suffix: string, value: string) -> bool {
+    file := File.OpenRead(Path(suffix))
+    if !file.valid { return false }
+    count := File.Read(file, buffer[:])
+    closed := File.CloseFile(file)
+    return closed && count == value.count && TextView(buffer[0:count]) == value
+}
+
+WaitPublished :: (platform: *RillPlatformServices, status: *FileTransferStatus, suffix: string) -> bool {
+    polls: s32 = 0
+    while polls < 4096 {
+        if platform.file_transfer_poll(status) == 0 || status.running == 0 || status.conflict != 0 { return false }
+        if File.PathExists(Path(suffix)) { return true }
+        polls += 1
+    }
+    return false
+}
+
+Move :: (platform: *RillPlatformServices) -> s32 {
+    CopyText(*destination[0], 1024, TextBytes(Path("/destination")))
+    if !Put("/source/move.bin", 100003) { return 28 }
+    Choose("/source/move.bin", 0)
+    status: FileTransferStatus
+    if platform.file_transfer_start(TextBytes("move"), *sources[0], 1, *destination[0]) == 0 ||
+        !WaitBytes(platform, *status, cast(u64)32768) || !Content("/source/move.bin", 100003) ||
+        File.PathExists(Path("/destination/move.bin")) || !Drain(platform, *status) || status.error[0] != 0 ||
+        status.completed != 1 || File.PathExists(Path("/source/move.bin")) || !Content("/destination/move.bin", 100003) ||
+        !NoStaging() { return 29 }
+
+    if !Put("/source/move-changed.bin", 100003) { return 30 }
+    Choose("/source/move-changed.bin", 0)
+    if platform.file_transfer_start(TextBytes("move"), *sources[0], 1, *destination[0]) == 0 ||
+        !WaitPublished(platform, *status, "/destination/move-changed.bin") || !Put("/source/move-changed.bin", 3) ||
+        !Drain(platform, *status) || status.error[0] == 0 || status.completed != 0 ||
+        !Content("/source/move-changed.bin", 3) || !Content("/destination/move-changed.bin", 100003) || !NoStaging() { return 31 }
+
+    if !Put("/source/move-target.bin", 100003) { return 32 }
+    Choose("/source/move-target.bin", 0)
+    if platform.file_transfer_start(TextBytes("move"), *sources[0], 1, *destination[0]) == 0 ||
+        !WaitPublished(platform, *status, "/destination/move-target.bin") || !Put("/destination/move-target.bin", 7) ||
+        !Drain(platform, *status) || status.error[0] == 0 || !Content("/source/move-target.bin", 100003) ||
+        !Content("/destination/move-target.bin", 7) || !NoStaging() { return 33 }
+
+    if !Put("/source/move-cancel.bin", 100003) { return 34 }
+    Choose("/source/move-cancel.bin", 0)
+    if platform.file_transfer_start(TextBytes("move"), *sources[0], 1, *destination[0]) == 0 ||
+        !WaitPublished(platform, *status, "/destination/move-cancel.bin") { return 35 }
+    platform.file_transfer_cancel()
+    if !Drain(platform, *status) || status.cancelled != 1 || status.running != 0 || status.completed != 0 ||
+        !Content("/source/move-cancel.bin", 100003) || !Content("/destination/move-cancel.bin", 100003) || !NoStaging() { return 36 }
+    return 0
+}
+
+Cut :: (platform: *RillPlatformServices) -> s32 {
+    if !File.CreateDirectory(Path("/cut-destination")) || !Put("/source/cut.bin", 100003) { return 37 }
+    CopyText(*destination[0], 1024, TextBytes(Path("/cut-destination")))
+    Choose("/source/cut.bin", 0)
+    status: FileTransferStatus
+    if platform.file_clipboard_copy(*sources[0], 1, 1) == 0 || platform.file_clipboard_paste(*destination[0]) == 0 ||
+        !Drain(platform, *status) || status.error[0] != 0 || status.completed != 1 ||
+        File.PathExists(Path("/source/cut.bin")) || !Content("/cut-destination/cut.bin", 100003) || !TextContent("/snarf", "") { return 38 }
+
+    if !Put("/source/cut-newer.bin", 100003) { return 39 }
+    Choose("/source/cut-newer.bin", 0)
+    if platform.file_clipboard_copy(*sources[0], 1, 1) == 0 || platform.file_clipboard_paste(*destination[0]) == 0 ||
+        !WaitBytes(platform, *status, cast(u64)32768) || !PutText("/snarf", "new clipboard text") ||
+        !Drain(platform, *status) || status.error[0] != 0 || File.PathExists(Path("/source/cut-newer.bin")) ||
+        !Content("/cut-destination/cut-newer.bin", 100003) || !TextContent("/snarf", "new clipboard text") { return 40 }
+
+    if !Put("/source/cut-cancel.bin", 100003) { return 41 }
+    Choose("/source/cut-cancel.bin", 0)
+    if platform.file_clipboard_copy(*sources[0], 1, 1) == 0 || platform.file_clipboard_paste(*destination[0]) == 0 ||
+        !WaitBytes(platform, *status, cast(u64)32768) { return 42 }
+    platform.file_transfer_cancel()
+    if !Drain(platform, *status) || status.cancelled != 1 || !Content("/source/cut-cancel.bin", 100003) ||
+        File.PathExists(Path("/cut-destination/cut-cancel.bin")) || !NoStaging() { return 43 }
+    file := File.OpenRead(Path("/snarf"))
+    count := File.Read(file, buffer[:])
+    closed := File.CloseFile(file)
+    if !closed || count < 4 || TextView(buffer[0:4]) != "cut\n" { return 44 }
+    // Retry the retained selection, skip its conflict, and retain it again.
+    if !Put("/cut-destination/cut-cancel.bin", 7) || platform.file_clipboard_paste(*destination[0]) == 0 ||
+        !Drain(platform, *status) || status.conflict != 1 || platform.file_transfer_resolve(1, 0) == 0 ||
+        !Drain(platform, *status) || status.skipped != 1 || !Content("/source/cut-cancel.bin", 100003) ||
+        !Content("/cut-destination/cut-cancel.bin", 7) { return 45 }
+    file = File.OpenRead(Path("/snarf"))
+    count = File.Read(file, buffer[:])
+    closed = File.CloseFile(file)
+    if !closed || count < 4 || TextView(buffer[0:4]) != "cut\n" { return 46 }
+    return 0
+}
+
 Clipboard :: (platform: *RillPlatformServices) -> s32 {
     if platform.file_clipboard_copy == null || platform.file_clipboard_paste == null ||
         !File.CreateDirectory(Path("/clipboard-destination")) ||
@@ -113,7 +216,7 @@ Clipboard :: (platform: *RillPlatformServices) -> s32 {
         if TextStartsWith(cast(*s8)(*buffer[index]), "Space%27s%20%24x%3B%20%E6%96%87%E6%A1%A3.txt") { found = true; break }
         index += 1
     }
-    if !found || platform.file_clipboard_copy(*sources[0], 1, 1) != 0 { return 25 }
+    if !found { return 25 }
     CopyText(*destination[0], 1024, TextBytes(Path("/clipboard-destination")))
     status: FileTransferStatus
     if platform.file_clipboard_paste(*destination[0]) == 0 || !Drain(platform, *status) ||
@@ -124,7 +227,7 @@ Clipboard :: (platform: *RillPlatformServices) -> s32 {
         !PutText("/snarf", "copy\nfile://remote/secret\n") || platform.file_clipboard_paste(*destination[0]) != 0 ||
         !PutText("/snarf", "cut\nfile:///tmp/example\n") || platform.file_clipboard_paste(*destination[0]) != 0 ||
         !PutText("/snarf", "copy\nfile:///bad%ZZpath\n") || platform.file_clipboard_paste(*destination[0]) != 0 { return 27 }
-    return 0
+    return Cut(platform)
 }
 
 Run :: () -> s32 {
@@ -144,7 +247,7 @@ Run :: () -> s32 {
     if platform.file_transfer_poll(*status) == 0 || status.running != 1 || status.bytes != 0 ||
         File.PathExists(Path("/destination/Space's $x; 文档.txt")) ||
         platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, *destination[0]) != 0 { return 4 }
-    if platform.file_transfer_poll(*status) == 0 || status.bytes != cast(u64)32768 ||
+    if !WaitBytes(platform, *status, cast(u64)32768) || status.bytes != cast(u64)32768 ||
         File.PathExists(Path("/destination/Space's $x; 文档.txt")) { return 5 }
     if !Drain(platform, *status) || status.error[0] != 0 || status.completed != 1 || status.bytes != cast(u64)100003 ||
         !Content("/destination/Space's $x; 文档.txt", 100003) || !Content("/source/Space's $x; 文档.txt", 100003) ||
@@ -167,8 +270,7 @@ Run :: () -> s32 {
     if !Put("/source/cancel.bin", 100003) { return 10 }
     Choose("/source/cancel.bin", 0)
     if platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, *destination[0]) == 0 ||
-        platform.file_transfer_poll(*status) == 0 || platform.file_transfer_poll(*status) == 0 ||
-        status.bytes != cast(u64)32768 { return 11 }
+        !WaitBytes(platform, *status, cast(u64)32768) || status.bytes != cast(u64)32768 { return 11 }
     platform.file_transfer_cancel()
     if platform.file_transfer_poll(*status) == 0 || status.running != 0 || status.cancelled != 1 || status.completed != 0 ||
         File.PathExists(Path("/destination/cancel.bin")) || !Content("/source/cancel.bin", 100003) || !NoStaging() { return 12 }
@@ -176,7 +278,7 @@ Run :: () -> s32 {
     if !Put("/source/changed.bin", 100003) { return 13 }
     Choose("/source/changed.bin", 0)
     if platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, *destination[0]) == 0 ||
-        platform.file_transfer_poll(*status) == 0 || platform.file_transfer_poll(*status) == 0 ||
+        !WaitBytes(platform, *status, cast(u64)32768) ||
         !Put("/source/changed.bin", 3) || !Drain(platform, *status) || status.error[0] == 0 ||
         File.PathExists(Path("/destination/changed.bin")) || !Content("/source/changed.bin", 3) || !NoStaging() { return 14 }
 
@@ -195,15 +297,14 @@ Run :: () -> s32 {
     if platform.file_transfer_start(TextBytes("copy"), *sources[0], 2, *destination[0]) == 0 ||
         !Drain(platform, *status) || status.conflict != 1 || platform.file_transfer_resolve(1, 1) == 0 ||
         !Drain(platform, *status) || status.running != 0 || status.completed != 0 || status.skipped != 2 { return 19 }
-    Choose("/source/folder", 1)
-    if platform.file_transfer_start(TextBytes("copy"), *sources[0], 2, *destination[0]) != 0 ||
-        platform.file_transfer_start(TextBytes("move"), *sources[0], 1, *destination[0]) != 0 ||
-        platform.file_transfer_start(TextBytes("trash"), *sources[0], 1, *destination[0]) != 0 ||
+    if platform.file_transfer_start(TextBytes("trash"), *sources[0], 1, *destination[0]) != 0 ||
         platform.file_transfer_start(TextBytes("copy"), null, 1, *destination[0]) != 0 ||
         platform.file_transfer_start(TextBytes("copy"), *sources[0], 257, *destination[0]) != 0 ||
         platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, TextBytes("relative")) != 0 { return 20 }
     platform.file_transfer_finish()
     if platform.file_transfer_poll(*status) != 0 { return 21 }
+    moved := Move(platform)
+    if moved != 0 { return moved }
     return Clipboard(platform)
 }
 
@@ -215,7 +316,7 @@ main :: () -> s32 {
     CopyText(*root[0], 1024, value)
     ReleaseAllocation(cast(*void)value)
     result := Run()
-    NativeCopyFinish()
+    NativeFileTransferFinish()
     if result != 0 { print("rill-file-transfer-test-failed: %\n", result) }
     else { print("rill-file-transfer-test-ok\n") }
     return result

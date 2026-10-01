@@ -90,16 +90,24 @@ boxes, group dragging, folder drops, context menus, rename, New Folder, and
 file transfer progress and conflict choices. Layout saves merge with other
 desktop changes. Native Plan 9 services enumerate the desktop directory,
 create private folders exclusively, and rename without replacing existing
-files. Native regular-file Copy/Paste and Duplicate now use Ziran services
-with literal file URIs on `/dev/snarf`, bounded progress updates, cancellation,
-Skip, and Keep Both. Copies retain permissions and modification times, check
-that the source stayed unchanged, and publish a private sibling only after
-the complete copy succeeds. Native folder transfers, Cut/Move, Trash, Replace,
-retry, and undo remain pending; unsupported operations refuse to start.
+files. Native file and folder Copy/Paste, Duplicate, Move, and Cut/Paste now
+use Ziran services with literal file URIs on `/dev/snarf`, incremental data
+copying, cancellation, Skip, and Keep Both. Copies retain permissions and
+modification times, check that the source stayed unchanged, and publish a
+private sibling only after the complete copy succeeds. Folder snapshots
+include hidden entries and empty directories and reject recursive bindings
+and destinations inside the source. Cleanup removes only recorded creations;
+foreign staging entries are preserved and reported. Moves publish the copy
+before removing source entries and stop with an explicit error if an entry
+changes or cannot be removed, leaving the published copy in place. Cut/Paste
+clears an unchanged clipboard selection only after every selected item moves
+successfully. Native Trash, Replace, retry, and undo remain pending;
+unsupported operations refuse to start.
 The Linux transfer implementation remains C. Native file icons also need PNG
-asset support. The Taiji native gate's `file_transfer` suite checks actual
-file contents, metadata, clipboard filenames, cancellation, and collisions
-from both source and saved IR.
+asset support. The Taiji native gate's `file_transfer` and `folder_transfer`
+suites check actual contents, metadata, clipboard filenames, cancellation,
+collisions, source and destination changes, and preservation of foreign
+staging entries from both source and saved IR.
 `make desktop-files-ui-test` checks the file controls from source and saved IR.
 
 Native document opening now uses `src/document_open.zi` and

@@ -514,9 +514,9 @@ RillPlatformCurrent :: () -> *RillPlatformServices {
     services.file_operation = FileOperation
     #if PLAN9 {
         services.file_transfer_start = NativeCopyStart
-        services.file_transfer_poll = NativeCopyPoll
+        services.file_transfer_poll = NativeFileTransferPoll
         services.file_transfer_cancel = NativeCopyCancel
-        services.file_transfer_finish = NativeCopyFinish
+        services.file_transfer_finish = NativeFileTransferFinish
         services.file_transfer_conflicts = NativeCopyConflicts
         services.file_transfer_resolve = NativeCopyResolve
         services.file_clipboard_copy = NativeFileClipboardCopy

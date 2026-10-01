@@ -9,6 +9,14 @@ Paths :: #import "path";
 #scope_file
 ItemLimit :: 256;
 CopyItem :: struct { source: [1024]s8; info: File.FileInfo; }
+CopyNode :: struct {
+    source: [1024]s8
+    info: File.FileInfo
+    owned: File.FileInfo
+    directory: File.FileHandle
+    parent: s32
+    created: bool
+}
 CopyJob :: struct {
     items: [256]CopyItem
     directory: [1024]s8
@@ -20,8 +28,15 @@ CopyJob :: struct {
     buffer: [32768]u8
     status: FileTransferStatus
     index: s32
-    phase: s32 // 0 choose target, 1 copy bytes
+    phase: s32 // 0 target, 1 bytes, 2 plan, 3 nodes, 4 verify, 5 attributes, 6 publish, 7 move check, 8 remove
     sticky: s32 // 0 ask, 1 skip, 3 keep both
+    nodes: *CopyNode
+    node_count: s32
+    node_capacity: s32
+    plan_index: s32
+    node_index: s32
+    check_index: s32
+    cursor: File.DirectoryCursor
 }
 job: *CopyJob;
 sequence: u32;
@@ -33,10 +48,17 @@ Same :: (left: File.FileInfo, right: File.FileInfo) -> bool {
         left.mode == right.mode && left.modified == right.modified && left.length == right.length
 }
 
-Regular :: (info: File.FileInfo) -> bool {
+Directory :: (info: File.FileInfo) -> bool { return (info.mode & cast(u32)0x80000000) != 0 }
+
+Supported :: (info: File.FileInfo) -> bool {
     // Mounted files have a server-provided length and do not expose devices
     // such as console, snarf, or process control streams as ordinary files.
-    return info.valid && info.type == cast(u16)77 && info.length >= 0 && (info.mode & cast(u32)0xfffffe00) == 0
+    return info.valid && info.type == cast(u16)77 && info.length >= 0 && (info.mode & cast(u32)0x7ffffe00) == 0
+}
+
+Identity :: (left: File.FileInfo, right: File.FileInfo) -> bool {
+    return left.valid && right.valid && left.type == right.type && left.device == right.device &&
+        left.identity == right.identity && left.identity_type == right.identity_type
 }
 
 Join :: (directory: *s8, name: *s8, output: *s8) -> bool {
@@ -57,14 +79,81 @@ Base :: (path: *s8) -> *s8 {
     return *path[start]
 }
 
+NodePath :: (index: s32, output: *s8) -> bool {
+    root_length := TextLength(*job.items[job.index].source[0])
+    suffix := *job.nodes[index].source[root_length]
+    length := TextLength(*job.staging[0])
+    if length == 0 || length + TextLength(suffix) >= 1024 { return false }
+    CopyText(output, 1024, *job.staging[0])
+    CopyText(*output[length], 1024 - length, suffix)
+    return true
+}
+
+PublishedPath :: (index: s32, output: *s8) -> bool {
+    root_length := TextLength(*job.items[job.index].source[0])
+    suffix := *job.nodes[index].source[root_length]
+    length := TextLength(*job.target[0])
+    if length == 0 || length + TextLength(suffix) >= 1024 { return false }
+    CopyText(output, 1024, *job.target[0])
+    CopyText(*output[length], 1024 - length, suffix)
+    return true
+}
+
+OwnedParents :: (index: s32) -> bool {
+    parent := job.nodes[index].parent
+    while parent >= 0 {
+        path: [1024]s8
+        if !job.nodes[parent].created || !NodePath(parent, *path[0]) ||
+            !Identity(job.nodes[parent].owned, File.PathInfo(CString(*path[0]))) { return false }
+        parent = job.nodes[parent].parent
+    }
+    return true
+}
+
+ClearNodes :: () {
+    if job.cursor.valid { File.CloseDirectory(*job.cursor) }
+    ReleaseAllocation(cast(*void)job.nodes)
+    job.nodes = null
+    job.node_count = 0
+    job.node_capacity = 0
+    job.plan_index = 0
+    job.node_index = 0
+    job.check_index = 0
+}
+
 Cleanup :: () -> bool {
     ok := true
+    if job.cursor.valid { if !File.CloseDirectory(*job.cursor) { ok = false } }
     if job.input.valid { if !File.CloseFile(job.input) { ok = false }; job.input.valid = false }
     if job.output.valid { if !File.CloseFile(job.output) { ok = false }; job.output.valid = false }
-    if job.staging[0] != 0 {
-        if !File.RemoveFile(CString(*job.staging[0])) { ok = false }
-        else { job.staging[0] = 0 }
+    // Restore traversal rights from the top down using our retained fids.
+    // Remove only recorded creations, never a recursive rescan of the stage.
+    index: s32 = 0
+    while index < job.node_count {
+        node := *job.nodes[index]
+        if node.directory.valid {
+            path: [1024]s8
+            if node.created && OwnedParents(index) && NodePath(index, *path[0]) &&
+                Identity(node.owned, File.PathInfo(CString(*path[0]))) {
+                if !File.SetFileAttributes(node.directory, cast(u32)448, node.owned.modified) { ok = false }
+            } else if node.created { ok = false }
+            if !File.CloseFile(node.directory) { ok = false }
+            node.directory.valid = false
+        }
+        index += 1
     }
+    index = job.node_count
+    while index > 0 {
+        index -= 1
+        node := *job.nodes[index]
+        if !node.created { continue }
+        path: [1024]s8
+        if OwnedParents(index) && NodePath(index, *path[0]) &&
+            Identity(node.owned, File.PathInfo(CString(*path[0]))) && File.RemoveFile(CString(*path[0])) {
+            node.created = false
+        } else { ok = false }
+    }
+    if job.node_count == 0 || !job.nodes[0].created { job.staging[0] = 0 }
     return ok
 }
 
@@ -73,14 +162,14 @@ Fail :: (message: string) {
     job.status.running = 0
     job.status.conflict = 0
     CopyText(*job.status.error[0], 256, TextBytes(message))
-    if !cleaned { CopyText(*job.status.error[0], 256, TextBytes("The copy failed and its staging file could not be removed")) }
+    if !cleaned { CopyText(*job.status.error[0], 256, TextBytes("The copy failed and some staging entries could not be removed")) }
 }
 
 UniqueTarget :: () -> bool {
     name := Base(*job.items[job.index].source[0])
     split := TextLength(name)
     index: s32 = 1
-    while name[index] != 0 { if name[index] == 46 { split = index }; index += 1 }
+    while name[index] != 0 { if name[index] == 46 && !Directory(job.items[job.index].info) { split = index }; index += 1 }
     attempt: s32 = 1
     while attempt <= 999 {
         candidate: [1024]s8
@@ -99,6 +188,7 @@ UniqueTarget :: () -> bool {
 }
 
 Next :: (skipped: bool) {
+    ClearNodes()
     if skipped { job.status.skipped += 1 }
     else { job.status.completed += 1 }
     job.index += 1
@@ -122,15 +212,119 @@ OpenStaging :: () -> bool {
         FormatInteger(*name[used], 96 - used, attempt)
         candidate: [1024]s8
         if !Join(*job.directory[0], *name[0], *candidate[0]) { return false }
-        created := File.CreatePrivateExclusive(CString(*candidate[0]), false)
+        created: File.FileHandle
+        directory := Directory(job.nodes[0].info)
+        if directory { created = File.CreatePrivateDirectoryHandle(CString(*candidate[0])) }
+        else { created = File.CreatePrivateExclusive(CString(*candidate[0]), false) }
         if created.valid {
-            job.output = created
             CopyText(*job.staging[0], 1024, *candidate[0])
-            return true
+            job.nodes[0].created = true
+            job.nodes[0].owned = File.HandleInfo(created)
+            if directory { job.nodes[0].directory = created } else { job.output = created }
+            return job.nodes[0].owned.valid
         }
         attempt += 1
     }
     return false
+}
+
+AddNode :: (source: *s8, info: File.FileInfo, parent: s32) -> bool {
+    if job.node_count == job.node_capacity {
+        capacity: s32 = 32
+        if job.node_capacity > 0 {
+            if job.node_capacity > 1073741823 { return false }
+            capacity = job.node_capacity * 2
+        }
+        if cast(usize)capacity > cast(usize)-1 / size_of(CopyNode) { return false }
+        memory := cast(*CopyNode)ResizeAllocation(cast(*void)job.nodes, cast(usize)capacity * size_of(CopyNode))
+        if memory == null { return false }
+        job.nodes = memory
+        job.node_capacity = capacity
+    }
+    node := *job.nodes[job.node_count]
+    node.* = .{}
+    CopyText(*node.source[0], 1024, source)
+    node.info = info
+    node.parent = parent
+    job.node_count += 1
+    return true
+}
+
+PlanStart :: () {
+    item := *job.items[job.index]
+    if !Same(item.info, File.PathInfo(CString(*item.source[0]))) || !AddNode(*item.source[0], item.info, -1) {
+        Fail("The source changed or its snapshot could not be allocated"); return
+    }
+    job.phase = 2
+}
+
+PlanStep :: () {
+    if job.plan_index >= job.node_count {
+        if !OpenStaging() { Fail("Could not create the private staging entry"); return }
+        job.node_index = 0
+        job.phase = 3
+        return
+    }
+    node := *job.nodes[job.plan_index]
+    if !Directory(node.info) { job.plan_index += 1; return }
+    CopyText(*job.status.current[0], 1024, *node.source[0])
+    if !job.cursor.valid {
+        if !Same(node.info, File.PathInfo(CString(*node.source[0]))) { Fail("The source folder changed while planning the copy"); return }
+        job.cursor = File.OpenDirectory(CString(*node.source[0]))
+        if !job.cursor.valid { Fail("Could not list the complete source folder"); return }
+    }
+    entry := File.NextDirectoryEntry(*job.cursor)
+    if !entry.valid {
+        failed := job.cursor.failed
+        File.CloseDirectory(*job.cursor)
+        if failed || !Same(node.info, File.PathInfo(CString(*node.source[0]))) { Fail("The source folder changed or contains an invalid entry"); return }
+        job.plan_index += 1
+        return
+    }
+    source: [1024]s8
+    if !Join(*node.source[0], cast(*s8)(*entry.name[0]), *source[0]) { Fail("A source path is too long"); return }
+    info := File.PathInfo(CString(*source[0]))
+    if !Supported(info) { Fail("The folder contains an unsupported file or device"); return }
+    if Directory(info) {
+        parent := job.plan_index
+        while parent >= 0 {
+            if Identity(info, job.nodes[parent].info) { Fail("A bound source folder refers to one of its ancestors"); return }
+            parent = job.nodes[parent].parent
+        }
+    }
+    // AddNode may resize storage; do not use the borrowed node afterward.
+    if !AddNode(*source[0], info, job.plan_index) { Fail("Could not allocate the complete folder snapshot") }
+}
+
+BeginNode :: () {
+    if job.node_index >= job.node_count { job.check_index = 0; job.phase = 4; return }
+    node := *job.nodes[job.node_index]
+    CopyText(*job.status.current[0], 1024, *node.source[0])
+    if !Same(node.info, File.PathInfo(CString(*node.source[0]))) { Fail("A source entry changed before it could be copied"); return }
+    target: [1024]s8
+    if !NodePath(job.node_index, *target[0]) { Fail("A destination path is too long"); return }
+    if Directory(node.info) {
+        if !node.created {
+            node.directory = File.CreatePrivateDirectoryHandle(CString(*target[0]))
+            if !node.directory.valid { Fail("Could not create a private staging folder"); return }
+            node.created = true
+            node.owned = File.HandleInfo(node.directory)
+            if !node.owned.valid { Fail("Could not identify the staging folder"); return }
+        }
+        job.node_index += 1
+        return
+    }
+    job.input = File.OpenRead(CString(*node.source[0]))
+    if !Same(node.info, File.HandleInfo(job.input)) { Fail("The source changed before it could be copied"); return }
+    if !node.created {
+        job.output = File.CreatePrivateExclusive(CString(*target[0]), false)
+        if !job.output.valid { Fail("Could not create a private staging file"); return }
+        node.created = true
+        node.owned = File.HandleInfo(job.output)
+        if !node.owned.valid { Fail("Could not identify the staging file"); return }
+    }
+    job.offset = 0
+    job.phase = 1
 }
 
 BeginItem :: () {
@@ -150,15 +344,11 @@ BeginItem :: () {
             return
         } else { Fail("The destination already exists"); return }
     }
-    job.input = File.OpenRead(CString(*item.source[0]))
-    if !Same(item.info, File.HandleInfo(job.input)) { Fail("The source changed before it could be copied"); return }
-    if !OpenStaging() { Fail("Could not create the private staging file"); return }
-    job.offset = 0
-    job.phase = 1
+    PlanStart()
 }
 
 CopyBlock :: () {
-    item := *job.items[job.index]
+    item := *job.nodes[job.node_index]
     remaining := item.info.length - job.offset
     if remaining > 0 {
         count := remaining
@@ -181,20 +371,154 @@ CopyBlock :: () {
     if !File.SetFileAttributes(job.output, item.info.mode & cast(u32)511, item.info.modified) {
         Fail("Could not preserve the file attributes"); return
     }
+    item.owned = File.HandleInfo(job.output)
+    if !item.owned.valid { Fail("Could not verify the complete staging file"); return }
     input_closed := File.CloseFile(job.input)
     job.input.valid = false
     output_closed := File.CloseFile(job.output)
     job.output.valid = false
     if !input_closed || !output_closed { Fail("Could not close the complete copy"); return }
-    if !File.RenameNoReplace(CString(*job.staging[0]), CString(*job.target[0])) { Fail("The copy could not be published without replacing another file"); return }
+    job.node_index += 1
+    job.phase = 3
+}
+
+VerifyStep :: () {
+    if job.check_index >= job.node_count {
+        job.check_index = job.node_count
+        job.phase = 5
+        return
+    }
+    node := *job.nodes[job.check_index]
+    if !Same(node.info, File.PathInfo(CString(*node.source[0]))) { Fail("The source tree changed before publication"); return }
+    job.check_index += 1
+}
+
+AttributeStep :: () {
+    if job.check_index == 0 { job.phase = 6; return }
+    job.check_index -= 1
+    node := *job.nodes[job.check_index]
+    if Directory(node.info) && !File.SetFileAttributes(node.directory, node.info.mode & cast(u32)511, node.info.modified) {
+        Fail("Could not preserve the folder attributes"); return
+    }
+    if Directory(node.info) {
+        node.owned = File.HandleInfo(node.directory)
+        if !node.owned.valid { Fail("Could not verify the complete staging folder") }
+    }
+}
+
+Publish :: () {
+    // Verify again after attribute writes; no planned source is removed.
+    index: s32 = 0
+    while index < job.node_count {
+        node := *job.nodes[index]
+        if !Same(node.info, File.PathInfo(CString(*node.source[0]))) { Fail("The source tree changed before publication"); return }
+        path: [1024]s8
+        if !NodePath(index, *path[0]) || !Same(node.owned, File.PathInfo(CString(*path[0]))) {
+            Fail("A staging entry changed before publication"); return
+        }
+        index += 1
+    }
+    if !File.RenameNoReplace(CString(*job.staging[0]), CString(*job.target[0])) { Fail("The copy could not be published without replacing another entry"); return }
     job.staging[0] = 0
-    Next(false)
+    index = 0
+    while index < job.node_count {
+        node := *job.nodes[index]
+        node.created = false
+        if node.directory.valid {
+            if !File.CloseFile(node.directory) { CopyText(*job.status.error[0], 256, TextBytes("The copy was published but a folder descriptor could not be closed")) }
+            node.directory.valid = false
+        }
+        index += 1
+    }
+    if job.status.error[0] != 0 { job.status.running = 0; return }
+    if TextEquals(*job.status.operation[0], TextBytes("move")) {
+        // Renaming the root can change its version on a native file server.
+        current := File.PathInfo(CString(*job.target[0]))
+        if !Identity(job.nodes[0].owned, current) || current.mode != job.nodes[0].info.mode ||
+            current.length != job.nodes[0].owned.length || current.modified != job.nodes[0].info.modified {
+            Fail("The copy is complete, but the destination changed before the source could be moved"); return
+        }
+        job.nodes[0].owned = current
+        job.check_index = 0
+        job.phase = 7
+    } else { Next(false) }
+}
+
+MoveCheck :: () {
+    if job.check_index >= job.node_count { job.check_index = job.node_count; job.phase = 8; return }
+    node := *job.nodes[job.check_index]
+    if !Same(node.info, File.PathInfo(CString(*node.source[0]))) {
+        Fail("The copy is complete, but the source changed before it could be moved"); return
+    }
+    path: [1024]s8
+    if !PublishedPath(job.check_index, *path[0]) || !Same(node.owned, File.PathInfo(CString(*path[0]))) {
+        Fail("The copy is complete, but the destination changed before the source could be moved"); return
+    }
+    job.check_index += 1
+}
+
+SourceParents :: (index: s32) -> bool {
+    parent := job.nodes[index].parent
+    while parent >= 0 {
+        node := *job.nodes[parent]
+        current := File.PathInfo(CString(*node.source[0]))
+        if !Identity(node.info, current) || node.info.mode != current.mode { return false }
+        parent = node.parent
+    }
+    return true
+}
+
+PublishedParents :: (index: s32) -> bool {
+    parent := job.nodes[index].parent
+    while parent >= 0 {
+        path: [1024]s8
+        if !PublishedPath(parent, *path[0]) || !Same(job.nodes[parent].owned, File.PathInfo(CString(*path[0]))) { return false }
+        parent = job.nodes[parent].parent
+    }
+    return true
+}
+
+RemoveSource :: () {
+    if job.check_index == 0 { Next(false); return }
+    job.check_index -= 1
+    node := *job.nodes[job.check_index]
+    CopyText(*job.status.current[0], 1024, *node.source[0])
+    current := File.PathInfo(CString(*node.source[0]))
+    unchanged := Same(node.info, current)
+    if Directory(node.info) {
+        // Our own child removals change directory versions and timestamps.
+        // An unplanned child makes remove fail rather than being deleted.
+        unchanged = Identity(node.info, current) && node.info.mode == current.mode
+    }
+    path: [1024]s8
+    if !PublishedPath(job.check_index, *path[0]) || !PublishedParents(job.check_index) ||
+        !Same(node.owned, File.PathInfo(CString(*path[0]))) {
+        Fail("The copy is complete, but the destination changed before the source could be removed"); return
+    }
+    if !SourceParents(job.check_index) || !unchanged || !File.RemoveFile(CString(*node.source[0])) {
+        Fail("The copy is complete, but a changed or protected source could not be removed"); return
+    }
+}
+
+InsideSource :: (source: string, info: File.FileInfo, destination: string) -> bool {
+    if Paths.WithinDirectory(destination, source) { return true }
+    path: [1024]s8
+    CopyText(*path[0], 1024, TextBytes(destination))
+    used := TextLength(*path[0])
+    while true {
+        if Identity(info, File.PathInfo(CString(*path[0]))) { return true }
+        if used <= 1 { return false }
+        while used > 1 && path[used - 1] != 47 { used -= 1 }
+        if used > 1 { used -= 1 }
+        path[used] = 0
+    }
 }
 
 #scope_export
 NativeCopyStart :: (operation: *s8, sources: **s8, count: s32, destination: *s8) -> s32 {
     if (job != null && job.status.running != 0) || sources == null || count <= 0 || count > ItemLimit ||
-        destination == null || (!TextEquals(operation, TextBytes("copy")) && !TextEquals(operation, TextBytes("duplicate"))) { return 0 }
+        destination == null || (!TextEquals(operation, TextBytes("copy")) && !TextEquals(operation, TextBytes("duplicate")) &&
+        !TextEquals(operation, TextBytes("move"))) { return 0 }
     next := cast(*CopyJob)AllocateZeroed(1, size_of(CopyJob))
     if next == null { return 0 }
     directory: [1024]u8
@@ -207,14 +531,25 @@ NativeCopyStart :: (operation: *s8, sources: **s8, count: s32, destination: *s8)
         value := Paths.CleanAbsolute(CString(sources[index]), source[:])
         if value.count <= 1 { ok = false; break }
         info := File.PathInfo(value)
-        if !Regular(info) { ok = false; break }
+        if !Supported(info) || (Directory(info) && InsideSource(value, info, canonical)) { ok = false; break }
         CopyText(*next.items[index].source[0], 1024, cast(*s8)(*source[0]))
         next.items[index].info = info
+        if TextEquals(operation, TextBytes("move")) {
+            previous: s32 = 0
+            while previous < index {
+                item := *next.items[previous]
+                if Identity(info, item.info) ||
+                    (Directory(item.info) && InsideSource(CString(*item.source[0]), item.info, value)) ||
+                    (Directory(info) && InsideSource(value, info, CString(*item.source[0]))) { ok = false; break }
+                previous += 1
+            }
+        }
         index += 1
     }
     if !ok { ReleaseAllocation(cast(*void)next); return 0 }
     if job != null {
         if !Cleanup() { ReleaseAllocation(cast(*void)next); return 0 }
+        ClearNodes()
         ReleaseAllocation(cast(*void)job)
     }
     sequence += 1
@@ -230,7 +565,15 @@ NativeCopyStart :: (operation: *s8, sources: **s8, count: s32, destination: *s8)
 NativeCopyPoll :: (status: *FileTransferStatus) -> s32 {
     if job == null || status == null { return 0 }
     if job.status.running != 0 && job.status.conflict == 0 {
-        if job.phase == 0 { BeginItem() } else { CopyBlock() }
+        if job.phase == 0 { BeginItem() }
+        else if job.phase == 1 { CopyBlock() }
+        else if job.phase == 2 { PlanStep() }
+        else if job.phase == 3 { BeginNode() }
+        else if job.phase == 4 { VerifyStep() }
+        else if job.phase == 5 { AttributeStep() }
+        else if job.phase == 6 { Publish() }
+        else if job.phase == 7 { MoveCheck() }
+        else if job.phase == 8 { RemoveSource() }
     }
     status.* = job.status
     return 1
@@ -239,12 +582,13 @@ NativeCopyPoll :: (status: *FileTransferStatus) -> s32 {
 NativeCopyCancel :: () {
     if job == null || job.status.running == 0 { return }
     job.status.cancelled = 1
-    Fail("The copy was cancelled")
+    Fail("The file transfer was cancelled")
 }
 
 NativeCopyFinish :: () {
     if job == null { return }
     Cleanup()
+    ClearNodes()
     ReleaseAllocation(cast(*void)job)
     job = null
 }
@@ -260,12 +604,9 @@ NativeCopyResolve :: (answer: s32, apply_to_all: s32) -> s32 {
     if answer != 3 { return 0 }
     if apply_to_all != 0 { job.sticky = 3 }
     if !UniqueTarget() { Fail("Could not find an unused copy name"); return 0 }
-    item := *job.items[job.index]
-    job.input = File.OpenRead(CString(*item.source[0]))
-    if !Same(item.info, File.HandleInfo(job.input)) || !OpenStaging() { Fail("The source or destination could not be opened"); return 0 }
-    job.offset = 0
-    job.phase = 1
     job.status.conflict = 0
     job.status.conflict_destination[0] = 0
+    PlanStart()
+    if job.status.running == 0 { return 0 }
     return 1
 }
