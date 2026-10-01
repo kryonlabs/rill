@@ -154,7 +154,11 @@ Child :: (platform: *RillPlatformServices) -> s32 {
 }
 Recover :: (platform: *RillPlatformServices, suffix: string, expected: s32, refused: bool) -> bool {
     CopyText(*directory[0], 1024, TextBytes(Path(suffix)))
-    return platform.file_recover_staging(*directory[0], *error[0], 256) == expected && (error[0] != 0) == refused
+    recovered := platform.file_recover_staging(*directory[0], *error[0], 256)
+    if recovered != expected || (error[0] != 0) != refused {
+        print("staging recovery %: count=% expected=% error=%\n", suffix, recovered, expected, CString(*error[0]))
+    }
+    return recovered == expected && (error[0] != 0) == refused
 }
 Remaining :: (suffix: string, expected: s32) -> bool {
     cursor := File.OpenDirectory(Path(suffix))
@@ -278,7 +282,10 @@ Cases :: () -> s32 {
     ownership: bool = false
     if live && BindRaw(*owner[0], TextBytes("/proc"), 0) >= 0 {
         refused := Recover(platform, "/destination", -1, true) && Remaining("/destination", 2)
-        ownership = UnmountRaw(null, TextBytes("/proc")) == 0 && refused
+        // MREPL replaced the original device binding too. Restore #p
+        // explicitly after removing the test's redirected mount.
+        ownership = UnmountRaw(null, TextBytes("/proc")) == 0 &&
+            BindRaw(TextBytes("#p"), TextBytes("/proc"), 0) >= 0 && refused
     }
     WriteRaw(resume[1], cast(*void)(*signal[0]), 1)
     CloseRaw(resume[1])
