@@ -29,7 +29,7 @@ DesktopFilesState :: struct {
     context_x: float32
     context_y: float32
     context_bounds: Rectangle
-    action: s32 // 1 rename, 2 new folder, 3 trash confirmation, 4 details
+    action: s32 // 1 rename, 2 new folder, 3 trash confirmation, 4 details, 5 Trash
     modal_bounds: Rectangle
     name: [256]s8
     source: [1024]s8
@@ -41,6 +41,13 @@ DesktopFilesState :: struct {
     transfer_text: [96]s8
     transfer_visible: bool
     transfer_bounds: Rectangle
+    trash_entries: *FileTrashEntry
+    trash_count: s32
+    trash_selected: s32
+    trash_scroll: s32
+    trash_reload: bool
+    trash_confirm: bool
+    trash_error: [256]s8
 }
 
 #scope_file
@@ -87,6 +94,12 @@ DropFolder :: (state: *DesktopFilesState, point: Vector2) -> s32 {
 Open :: (state: *DesktopFilesState, app: *DesktopApplication, platform: *RillPlatformServices) {
     index: s32 = 0
     while index < state.files.count {
+        if state.files.items[index].selected && TextEquals(*state.files.items[index].launcher.id[0], TextBytes("desktop-trash")) &&
+            platform != null && platform.file_trash_list != null {
+            state.action = 5; state.trash_reload = true; state.trash_confirm = false
+            state.trash_selected = -1; state.trash_error[0] = 0
+            return
+        }
         if state.files.items[index].selected && !DesktopFilesOpen(state.files, index, *app.shell,
             platform, *app.settings, *app.previous, *app.settings_path[0]) { Status(app, "Could not open the selected item") }
         index += 1
@@ -248,7 +261,7 @@ DesktopFileGrid :: (session: Session, work: Rectangle, state: *DesktopFilesState
     pointer := PointerSample(session)
     point := Vector2.{pointer.x, pointer.y}
     enabled = enabled && !state.context && state.action == 0 && state.transfer.conflict == 0 &&
-        !PointInBounds(point.x, point.y, state.transfer_bounds)
+        !(state.transfer_visible && PointInBounds(point.x, point.y, state.transfer_bounds))
     if state.press_index < 0 && !state.band_active && state.action == 0 && !state.context &&
         (state.refresh || now < state.refresh_at || now - state.refresh_at >= 2000) {
         if DesktopFilesRefresh(state.files, *app.shell, platform) { state.refresh = false }
@@ -467,18 +480,130 @@ DesktopFilesOverlay :: (session: Session, viewport: Rectangle, state: *DesktopFi
         if command == 11 && !DesktopFilesArrange(state.files) { Status(app, "Could not save the arranged desktop") }
         if command == 12 { state.refresh = true }
     }
-    if state.action != 0 { FileDialog(session, viewport, state, app, platform) }
+    if state.action == 5 { TrashDialog(session, viewport, state, app, platform) }
+    else if state.action != 0 { FileDialog(session, viewport, state, app, platform) }
     TransferStatus(session, viewport, state, app, platform)
 }
 
 DesktopFilesClose :: (state: *DesktopFilesState, platform: *RillPlatformServices) {
     if platform != null && platform.file_transfer_finish != null { platform.file_transfer_finish() }
     ReleaseAllocation(cast(*void)state.files)
+    ReleaseAllocation(cast(*void)state.trash_entries)
+    state.trash_entries = null
     state.files = null
     state.started = false
 }
 
 #scope_file
+TrashReload :: (state: *DesktopFilesState, platform: *RillPlatformServices) {
+    state.trash_reload = false
+    if platform == null || platform.file_trash_list == null { return }
+    if state.trash_entries == null { state.trash_entries = cast(*FileTrashEntry)AllocateZeroed(64, size_of(FileTrashEntry)) }
+    next := cast(*FileTrashEntry)AllocateZeroed(64, size_of(FileTrashEntry))
+    if state.trash_entries == null || next == null {
+        ReleaseAllocation(cast(*void)next)
+        CopyText(*state.trash_error[0], 256, TextBytes("Could not allocate the Trash list")); return
+    }
+    selected: [256]s8
+    if state.trash_selected >= 0 && state.trash_selected < state.trash_count {
+        CopyText(*selected[0], 256, *state.trash_entries[state.trash_selected].name[0])
+    }
+    count := platform.file_trash_list(next, 64)
+    if count < 0 || count > 64 { CopyText(*state.trash_error[0], 256, TextBytes("Could not read the complete Trash list")) }
+    else {
+        MoveBytes(cast(*void)state.trash_entries, cast(*void)next, cast(usize)count * size_of(FileTrashEntry))
+        state.trash_count = count
+        state.trash_selected = -1
+        for index: 0..count - 1 {
+            if selected[0] != 0 && TextEquals(*next[index].name[0], *selected[0]) { state.trash_selected = index }
+        }
+    }
+    ReleaseAllocation(cast(*void)next)
+}
+
+TrashDialog :: (session: Session, viewport: Rectangle, state: *DesktopFilesState,
+    app: *DesktopApplication, platform: *RillPlatformServices) {
+    bounds := Rectangle.{viewport.x + 16.0, viewport.y + 12.0, viewport.width - 32.0, viewport.height - 24.0}
+    state.modal_bounds = bounds
+    props: DismissibleOverlayProps
+    props.key = cast(u64)220300; props.bounds = bounds
+    props.scrim = Color.{0, 0, 0, 96}
+    overlay := DismissibleOverlay(session, props)
+    if overlay.closed { state.action = 0; return }
+    TreePushScope(session, overlay.panel_node)
+    background: BoxProps
+    background.key = cast(u64)220314; background.bounds = bounds
+    background.fill = Color.{248, 249, 252, 255}; background.radius = 8.0
+    Box(session, background)
+    key := KeyboardTake(session)
+    if state.trash_reload { TrashReload(state, platform) }
+    Label(session, cast(u64)220301, Rectangle.{bounds.x + 12.0, bounds.y + 8.0, bounds.width - 124.0, 24.0}, "Trash")
+    busy := state.transfer.running != 0
+    if state.trash_confirm {
+        Label(session, cast(u64)220302, Rectangle.{bounds.x + 12.0, bounds.y + 52.0, bounds.width - 24.0, 56.0}, "Permanently remove the items in Trash?")
+        confirm := Button(session, cast(u64)220310, Rectangle.{bounds.x + 12.0, bounds.y + bounds.height - 44.0, bounds.width / 2.0 - 18.0, 32.0}, "Empty Trash", busy)
+        if !busy && (confirm || key == KeyEnter) {
+            if platform.file_trash_empty != null && platform.file_trash_empty(*state.trash_error[0], 256) != 0 {
+                Status(app, "Trash emptied")
+            } else { Status(app, CString(*state.trash_error[0])) }
+            state.trash_confirm = false; state.trash_reload = true; state.refresh = true
+        }
+        if Button(session, cast(u64)220311, Rectangle.{bounds.x + bounds.width / 2.0, bounds.y + bounds.height - 44.0, bounds.width / 2.0 - 12.0, 32.0}, "Cancel", false) || key == KeyEscape {
+            state.trash_confirm = false
+        }
+    } else {
+        if Button(session, cast(u64)220303, Rectangle.{bounds.x + bounds.width - 96.0, bounds.y + 8.0, 84.0, 28.0}, "Refresh", false) { state.trash_reload = true }
+        content := Rectangle.{bounds.x + 12.0, bounds.y + 64.0, bounds.width - 24.0, bounds.height - 176.0}
+        if key == KeyDown && state.trash_selected + 1 < state.trash_count { state.trash_selected += 1 }
+        if key == KeyUp && state.trash_selected > 0 { state.trash_selected -= 1 }
+        if key == KeyHome && state.trash_count > 0 { state.trash_selected = 0 }
+        if key == KeyEnd && state.trash_count > 0 { state.trash_selected = state.trash_count - 1 }
+        if key == KeyDown || key == KeyUp || key == KeyHome || key == KeyEnd {
+            top := state.trash_selected * 32
+            if top < state.trash_scroll { state.trash_scroll = top }
+            if top + 32 > state.trash_scroll + cast(s32)content.height { state.trash_scroll = top + 32 - cast(s32)content.height }
+        }
+        pointer := PointerSample(session)
+        scroll: ScrollProps
+        scroll.key = cast(u64)220304; scroll.bounds = content
+        scroll.content_height = state.trash_count * 32
+        scroll.scroll_offset = state.trash_scroll
+        scroll.input.mouse = Vector2.{pointer.x, pointer.y}
+        scroll.input.down = pointer.down; scroll.input.pressed = pointer.pressed; scroll.input.released = pointer.released
+        scroll.input.wheel = PointerWheelTake(session, content)
+        view := Scroll(session, scroll)
+        state.trash_scroll = view.scroll_offset
+        if view.frame.cancel_press { TreePointerCancel(session) }
+        if state.trash_count == 0 { Label(session, cast(u64)220305, view.content, "Trash is empty") }
+        for index: 0..state.trash_count - 1 {
+            original := *state.trash_entries[index].original[0]
+            start: s32 = 0; at: s32 = 0
+            while original[at] != 0 { if original[at] == 47 { start = at + 1 }; at += 1 }
+            row := Rectangle.{view.content.x, view.content.y + cast(float32)index * 32.0, content.width, 30.0}
+            item: ButtonProps
+            item.key = cast(u64)(220400 + index); item.bounds = row
+            item.label = CString(*original[start]); item.selected = state.trash_selected == index
+            if UI.Button(session, item) > 0 { state.trash_selected = index }
+        }
+        End(session)
+        selected := state.trash_selected >= 0 && state.trash_selected < state.trash_count
+        if selected {
+            Label(session, cast(u64)220313, Rectangle.{bounds.x + 12.0, bounds.y + bounds.height - 108.0, bounds.width - 24.0, 20.0}, CString(*state.trash_entries[state.trash_selected].deleted[0]))
+            Label(session, cast(u64)220306, Rectangle.{bounds.x + 12.0, bounds.y + bounds.height - 80.0, bounds.width - 24.0, 28.0}, CString(*state.trash_entries[state.trash_selected].original[0]))
+        }
+        restore := Button(session, cast(u64)220307, Rectangle.{bounds.x + 12.0, bounds.y + bounds.height - 44.0, bounds.width / 3.0 - 16.0, 32.0}, "Restore", busy || !selected || platform.file_trash_restore == null)
+        if !busy && selected && platform.file_trash_restore != null && (restore || key == KeyEnter) {
+            if platform.file_trash_restore(*state.trash_entries[state.trash_selected].name[0], *state.trash_error[0], 256) != 0 { Status(app, "Item restored") }
+            else { Status(app, CString(*state.trash_error[0])) }
+            state.trash_reload = true; state.refresh = true
+        }
+        if Button(session, cast(u64)220308, Rectangle.{bounds.x + bounds.width / 3.0 + 4.0, bounds.y + bounds.height - 44.0, bounds.width / 3.0 - 8.0, 32.0}, "Empty Trash", busy || state.trash_count == 0 || platform.file_trash_empty == null) { state.trash_confirm = true }
+        if Button(session, cast(u64)220309, Rectangle.{bounds.x + bounds.width * 2.0 / 3.0 + 8.0, bounds.y + bounds.height - 44.0, bounds.width / 3.0 - 20.0, 32.0}, "Close", false) || key == KeyEscape { state.action = 0 }
+    }
+    if state.trash_error[0] != 0 { Label(session, cast(u64)220312, Rectangle.{bounds.x + 12.0, bounds.y + 32.0, bounds.width - 24.0, 24.0}, CString(*state.trash_error[0])) }
+    End(session)
+}
+
 FileDialog :: (session: Session, viewport: Rectangle, state: *DesktopFilesState,
     app: *DesktopApplication, platform: *RillPlatformServices) {
     bounds := Rectangle.{viewport.x + 16.0, viewport.y + 68.0, viewport.width - 32.0, 170.0}
@@ -552,8 +677,8 @@ TransferStatus :: (session: Session, viewport: Rectangle, state: *DesktopFilesSt
     was_running := state.transfer.running
     if platform.file_transfer_poll(*state.transfer) == 0 { return }
     if state.transfer.running != 0 || state.transfer.id != old { state.transfer_visible = true }
-    if was_running != 0 && state.transfer.running == 0 { state.refresh = true }
-    if !state.transfer_visible || state.action != 0 { return }
+    if was_running != 0 && state.transfer.running == 0 { state.refresh = true; state.trash_reload = true }
+    if !state.transfer_visible || state.action != 0 { state.transfer_bounds = .{}; return }
     width := viewport.width - 32.0
     if width > 420.0 { width = 420.0 }
     bounds := Rectangle.{viewport.x + viewport.width - width - 16.0,

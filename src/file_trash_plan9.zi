@@ -1,0 +1,456 @@
+// Each private entry keeps an immutable recovery record beside its payload.
+// Payload identities prevent namespace bindings from redirecting a restore.
+File :: #import "std/file_plan9";
+Paths :: #import "std/path";
+Clock :: #import "std/date_time_plan9";
+CRC :: #import "std/zip";
+#import "std/byte_text_linux"
+#import "native_memory"
+#import "native_files"
+#import "platform_types"
+
+#scope_export
+Owned :: struct { offset: s64; count: s32; info: File.FileInfo; used: bool; }
+Entry :: struct {
+    name: [256]s8
+    path: [1024]s8
+    data: [1024]s8
+    info: [1024]s8
+    original: [1024]s8
+    deleted: u32
+    directory: File.FileHandle
+    directory_info: File.FileInfo
+    record_info: File.FileInfo
+    data_info: File.FileInfo
+    reserved: bool
+    recorded: bool
+    published: bool
+    nodes: s32
+    ledger_offset: s64
+    ledger: *u8
+    ledger_count: s64
+    owned: *Owned
+    capacity: s32
+    checksum: u32
+}
+
+Identity :: (left: File.FileInfo, right: File.FileInfo) -> bool {
+    return left.valid && right.valid && left.type == right.type && left.device == right.device &&
+        left.identity == right.identity && left.identity_type == right.identity_type
+}
+
+Same :: (left: File.FileInfo, right: File.FileInfo) -> bool {
+    return Identity(left, right) && left.version == right.version && left.mode == right.mode &&
+        left.modified == right.modified && left.length == right.length
+}
+
+Physical :: (path: string, info: File.FileInfo) -> bool {
+    parent: [1024]s8
+    if path.count <= 1 || path.count >= 1024 { return false }
+    CopyText(*parent[0], 1024, TextBytes(path))
+    split := TextLength(*parent[0])
+    while split > 0 && parent[split - 1] != 47 { split -= 1 }
+    name := *parent[split]
+    // Keep the basename separate before truncating the parent.
+    child_name: [1024]s8
+    CopyText(*child_name[0], 1024, name)
+    if split > 1 { parent[split - 1] = 0 } else { parent[1] = 0 }
+    cursor := File.OpenDirectory(CString(*parent[0]))
+    if !cursor.valid { return false }
+    found := false
+    while true {
+        child := File.NextDirectoryEntry(*cursor)
+        if !child.valid { break }
+        if TextEquals(cast(*s8)(*child.name[0]), *child_name[0]) { found = Identity(child.info, info); break }
+    }
+    failed := cursor.failed
+    return File.CloseDirectory(*cursor) && !failed && found
+}
+
+Join :: (directory: *s8, name: *s8, output: *s8) -> bool {
+    length := TextLength(directory)
+    slash: s32 = 1
+    if length == 1 { slash = 0 }
+    if length == 0 || name == null || name[0] == 0 || length + slash + TextLength(name) >= 1024 { return false }
+    CopyText(output, 1024, directory)
+    if slash != 0 { output[length] = 47; length += 1 }
+    CopyText(*output[length], 1024 - length, name)
+    return true
+}
+
+Root :: (output: *s8, create: bool) -> bool {
+    value := EnvironmentValue(TextBytes("RILL_TRASH_DIR"))
+    overridden := value != null
+    if value == null { value = EnvironmentValue(TextBytes("home")) }
+    if value == null { value = EnvironmentValue(TextBytes("HOME")) }
+    if value == null { return false }
+    bytes: [1024]u8
+    path := Paths.CleanAbsolute(CString(value), bytes[:])
+    ReleaseAllocation(cast(*void)value)
+    if path.count <= 1 || path.count > 850 { return false }
+    used := CopyText(output, 1024, cast(*s8)(*bytes[0]))
+    if !overridden { CopyText(*output[used], 1024 - used, TextBytes("/lib/rill/trash")) }
+    if create && !EnsureDirectory(output) { return false }
+    info := File.PathInfo(CString(output))
+    return info.valid && info.type == cast(u16)77 && (info.mode & cast(u32)0x8000003f) == cast(u32)0x80000000
+}
+
+#scope_file
+NameValid :: (name: *s8) -> bool {
+    if !TextStartsWith(name, "item-") || TextLength(name) >= 256 { return false }
+    at: s32 = 5
+    digits := false
+    while name[at] != 0 {
+        if name[at] >= 48 && name[at] <= 57 { digits = true }
+        else if name[at] != 45 { return false }
+        at += 1
+    }
+    return digits
+}
+
+PathsFor :: (root: *s8, name: *s8, entry: *Entry) -> bool {
+    CopyText(*entry.name[0], 256, name)
+    return NameValid(name) && Join(root, name, *entry.path[0]) &&
+        Join(*entry.path[0], TextBytes("data"), *entry.data[0]) &&
+        Join(*entry.path[0], TextBytes("info"), *entry.info[0])
+}
+
+Put :: (bytes: []u8, at: s32, count: s32, value: u64) {
+    index := count
+    number := value
+    while index > 0 { index -= 1; bytes[at + index] = cast(u8)number; number >>= cast(u64)8 }
+}
+
+Get :: (bytes: []u8, at: s32, count: s32) -> u64 {
+    value: u64 = 0
+    index: s32 = 0
+    while index < count { value = (value << cast(u64)8) | cast(u64)bytes[at + index]; index += 1 }
+    return value
+}
+
+WriteIdentity :: (bytes: []u8, at: s32, info: File.FileInfo) {
+    Put(bytes, at, 2, cast(u64)info.type)
+    Put(bytes, at + 2, 4, cast(u64)info.device)
+    Put(bytes, at + 6, 8, info.identity)
+    bytes[at + 14] = info.identity_type
+}
+
+ReadIdentity :: (bytes: []u8, at: s32) -> File.FileInfo {
+    info: File.FileInfo = .{valid = true}
+    info.type = cast(u16)Get(bytes, at, 2)
+    info.device = cast(u32)Get(bytes, at + 2, 4)
+    info.identity = Get(bytes, at + 6, 8)
+    info.identity_type = bytes[at + 14]
+    return info
+}
+
+Listed :: (root: *s8, entry: *Entry) -> bool {
+    cursor := File.OpenDirectory(CString(root))
+    if !cursor.valid { return false }
+    found := false
+    while true {
+        child := File.NextDirectoryEntry(*cursor)
+        if !child.valid { break }
+        if TextEquals(cast(*s8)(*child.name[0]), *entry.name[0]) {
+            found = Identity(child.info, File.PathInfo(CString(*entry.path[0])))
+            break
+        }
+    }
+    failed := cursor.failed
+    return File.CloseDirectory(*cursor) && !failed && found
+}
+
+#scope_export
+Reserve :: (root: *s8, original: *s8, id: u32, index: s32, pid: s32, entry: *Entry) -> bool {
+    entry.* = .{}
+    CopyText(*entry.original[0], 1024, original)
+    now := Clock.UnixNow()
+    if now < 0 || now > 4294967295 { return false }
+    entry.deleted = cast(u32)now
+    attempt: s32 = 0
+    while attempt < 64 {
+        name: [96]s8
+        used := CopyText(*name[0], 96, TextBytes("item-"))
+        used += FormatInteger(*name[used], 96 - used, pid)
+        used += CopyText(*name[used], 96 - used, TextBytes("-"))
+        used += FormatInteger(*name[used], 96 - used, cast(s32)(id & cast(u32)2147483647))
+        used += CopyText(*name[used], 96 - used, TextBytes("-"))
+        used += FormatInteger(*name[used], 96 - used, index)
+        used += CopyText(*name[used], 96 - used, TextBytes("-"))
+        FormatInteger(*name[used], 96 - used, attempt)
+        if !PathsFor(root, *name[0], entry) { return false }
+        entry.directory = File.CreatePrivateDirectoryHandle(CString(*entry.path[0]))
+        if entry.directory.valid {
+            entry.reserved = true
+            entry.directory_info = File.HandleInfo(entry.directory)
+            return entry.directory_info.valid
+        }
+        attempt += 1
+    }
+    return false
+}
+
+NodeRecord :: (bytes: []u8, at: s64, path: string, info: File.FileInfo) -> s64 {
+    if path.count > 1023 || at < 0 || at + path.count + 17 > bytes.count { return -1 }
+    Put(bytes, cast(s32)at, 2, cast(u64)path.count)
+    WriteIdentity(bytes, cast(s32)at + 2, info)
+    index: s64 = 0
+    while index < path.count { bytes[at + 17 + index] = path[index]; index += 1 }
+    return at + 17 + path.count
+}
+
+Record :: (entry: *Entry, data: File.FileInfo, ledger: []u8, nodes: s32) -> bool {
+    if !entry.reserved || entry.recorded || !Identity(entry.directory_info, File.PathInfo(CString(*entry.path[0]))) { return false }
+    bytes: [1080]u8
+    magic := "TRASH01\n"
+    for at: 0..7 { bytes[at] = magic[at] }
+    length := TextLength(*entry.original[0])
+    if length <= 1 || length >= 1024 || !data.valid { return false }
+    Put(bytes[:], 8, 4, cast(u64)entry.deleted)
+    Put(bytes[:], 12, 2, cast(u64)length)
+    WriteIdentity(bytes[:], 14, entry.directory_info)
+    WriteIdentity(bytes[:], 29, data)
+    for at: 0..length - 1 { bytes[44 + at] = cast(u8)entry.original[at] }
+    if nodes <= 0 || ledger.count < cast(s64)nodes * 17 || ledger.count > 67108864 - 56 - length { return false }
+    Put(bytes[:], 44 + length, 4, cast(u64)nodes)
+    Put(bytes[:], 48 + length, 4, cast(u64)CRC.ZipCRC32(ledger))
+    Put(bytes[:], 52 + length, 4, cast(u64)CRC.ZipCRC32(bytes[0:52 + length]))
+    header := 56 + length
+    file := File.CreatePrivateExclusive(CString(*entry.info[0]), false)
+    if !file.valid { return false }
+    entry.recorded = true
+    entry.record_info = File.HandleInfo(file)
+    offset: s64 = 0
+    while offset < header {
+        written := File.WriteAt(file, bytes[offset:header], offset)
+        if written <= 0 { break }
+        offset += written
+    }
+    copied: s64 = 0
+    while offset == header && copied < ledger.count {
+        end := copied + 32768
+        if end > ledger.count { end = ledger.count }
+        written := File.WriteAt(file, ledger[copied:end], header + copied)
+        if written <= 0 { break }
+        copied += written
+    }
+    entry.record_info = File.HandleInfo(file)
+    entry.data_info = data
+    return File.CloseFile(file) && entry.record_info.valid && offset == header && copied == ledger.count
+}
+
+Valid :: (entry: *Entry) -> bool {
+    directory := File.PathInfo(CString(*entry.path[0]))
+    return Identity(entry.directory_info, directory) && (directory.mode & cast(u32)511) == cast(u32)448 &&
+        entry.recorded && Same(entry.record_info, File.PathInfo(CString(*entry.info[0])))
+}
+
+Close :: (entry: *Entry) -> bool {
+    if !entry.directory.valid { return true }
+    ok := File.CloseFile(entry.directory)
+    entry.directory.valid = false
+    return ok
+}
+
+Release :: (entry: *Entry) {
+    Close(entry)
+    ReleaseAllocation(cast(*void)entry.owned)
+    ReleaseAllocation(cast(*void)entry.ledger)
+    entry.owned = null; entry.ledger = null; entry.capacity = 0; entry.ledger_count = 0
+}
+
+// Never rescan and recursively delete a reservation. Only our known record
+// and directory can be removed; remove refuses a directory with foreign data.
+Forget :: (entry: *Entry) -> bool {
+    if !entry.reserved { return Close(entry) }
+    ok := Identity(entry.directory_info, File.PathInfo(CString(*entry.path[0])))
+    cursor := File.OpenDirectory(CString(*entry.path[0]))
+    if !cursor.valid { ok = false }
+    while ok {
+        child := File.NextDirectoryEntry(*cursor)
+        if !child.valid { break }
+        if !entry.recorded || !TextEquals(cast(*s8)(*child.name[0]), TextBytes("info")) ||
+            !Identity(child.info, entry.record_info) { ok = false }
+    }
+    if cursor.valid { if cursor.failed || !File.CloseDirectory(*cursor) { ok = false } }
+    if ok && entry.recorded {
+        ok = Same(entry.record_info, File.PathInfo(CString(*entry.info[0]))) && File.RemoveFile(CString(*entry.info[0]))
+        if ok { entry.recorded = false }
+    }
+    if ok { ok = File.RemoveFile(CString(*entry.path[0])) }
+    closed := Close(entry)
+    if ok { entry.reserved = false }
+    return ok && closed
+}
+
+Read :: (root: *s8, name: *s8, entry: *Entry) -> bool {
+    entry.* = .{}
+    if !PathsFor(root, name, entry) || !Listed(root, entry) { return false }
+    directory := File.PathInfo(CString(*entry.path[0]))
+    file := File.OpenRead(CString(*entry.info[0]))
+    if !file.valid { return false }
+    before := File.HandleInfo(file)
+    bytes: [1080]u8
+    ok := before.valid && before.length >= 75 && before.length <= 67108864 && (before.mode & cast(u32)0x80000000) == 0
+    needed := before.length
+    if needed > 1080 { needed = 1080 }
+    offset: s64 = 0
+    while ok && offset < needed {
+        count := File.ReadAt(file, bytes[offset:needed], offset)
+        if count <= 0 { ok = false; break }
+        offset += count
+    }
+    after := File.HandleInfo(file)
+    closed := File.CloseFile(file)
+    if !ok || !closed || !Same(before, after) || !Physical(CString(*entry.info[0]), after) ||
+        !Same(after, File.PathInfo(CString(*entry.info[0]))) ||
+        TextView(bytes[0:8]) != "TRASH01\n" { return false }
+    length := cast(s32)Get(bytes[:], 12, 2)
+    if length <= 1 || length >= 1024 || before.length < 56 + length + 17 ||
+        CRC.ZipCRC32(bytes[0:52 + length]) != cast(u32)Get(bytes[:], 52 + length, 4) { return false }
+    for at: 0..length - 1 {
+        if bytes[44 + at] == cast(u8)0 { return false }
+        entry.original[at] = cast(s8)bytes[44 + at]
+    }
+    entry.original[length] = 0
+    canonical: [1024]u8
+    original := CString(*entry.original[0])
+    if Paths.CleanAbsolute(original, canonical[:]) != original { return false }
+    entry.directory_info = ReadIdentity(bytes[:], 14)
+    entry.data_info = ReadIdentity(bytes[:], 29)
+    entry.record_info = after
+    entry.deleted = cast(u32)Get(bytes[:], 8, 4)
+    entry.nodes = cast(s32)Get(bytes[:], 44 + length, 4)
+    entry.ledger_offset = 56 + length
+    entry.checksum = cast(u32)Get(bytes[:], 48 + length, 4)
+    if entry.nodes <= 0 || cast(s64)entry.nodes * 17 > before.length - entry.ledger_offset { return false }
+    entry.reserved = true
+    entry.recorded = true
+    entry.published = true
+    return Identity(entry.directory_info, directory) && Valid(entry) &&
+        Identity(entry.data_info, File.PathInfo(CString(*entry.data[0])))
+}
+
+#scope_file
+Hash :: (path: []u8) -> u32 {
+    value: u32 = 2166136261
+    index: s64 = 0
+    while index < path.count { value = (value ^ cast(u32)path[index]) * cast(u32)16777619; index += 1 }
+    return value
+}
+
+Equal :: (left: []u8, right: []u8) -> bool {
+    if left.count != right.count { return false }
+    index: s64 = 0
+    while index < left.count { if left[index] != right[index] { return false }; index += 1 }
+    return true
+}
+
+#scope_export
+Load :: (entry: *Entry) -> bool {
+    if !Valid(entry) { return false }
+    count := entry.record_info.length - entry.ledger_offset
+    if count <= 0 || count > 67108864 { return false }
+    entry.ledger = cast(*u8)AllocateZeroed(1, cast(usize)count)
+    entry.capacity = 2
+    while entry.capacity < entry.nodes * 2 { entry.capacity *= 2 }
+    entry.owned = cast(*Owned)AllocateZeroed(cast(usize)entry.capacity, size_of(Owned))
+    if entry.ledger == null || entry.owned == null { Release(entry); return false }
+    entry.ledger_count = count
+    bytes := BytesFromPointer(entry.ledger, cast(u64)count)
+    file := File.OpenRead(CString(*entry.info[0]))
+    if !Same(entry.record_info, File.HandleInfo(file)) { if file.valid { File.CloseFile(file) }; Release(entry); return false }
+    offset: s64 = 0
+    while offset < count {
+        read := File.ReadAt(file, bytes[offset:], entry.ledger_offset + offset)
+        if read <= 0 { break }
+        offset += read
+    }
+    stable := Same(entry.record_info, File.HandleInfo(file))
+    closed := File.CloseFile(file)
+    if offset != count || !stable || !closed || !Valid(entry) || CRC.ZipCRC32(bytes) != entry.checksum { Release(entry); return false }
+    at: s64 = 0
+    node: s32 = 0
+    while node < entry.nodes {
+        if count - at < 17 { Release(entry); return false }
+        length := cast(s32)Get(bytes, cast(s32)at, 2)
+        if length > 1023 || length > count - at - 17 { Release(entry); return false }
+        path := bytes[at + 17:at + 17 + length]
+        info := ReadIdentity(bytes, cast(s32)at + 2)
+        // The root comes first. Child paths must be normalized suffixes.
+        if node == 0 {
+            if length != 0 || !Identity(info, entry.data_info) { Release(entry); return false }
+        } else {
+            canonical: [1024]u8
+            text := TextView(path)
+            if length == 0 || Paths.CleanAbsolute(text, canonical[:]) != text || text[text.count - 1] == cast(u8)47 {
+                Release(entry); return false
+            }
+        }
+        index: s64 = 0
+        while index < path.count { if path[index] == cast(u8)0 { Release(entry); return false }; index += 1 }
+        slot := cast(s32)(Hash(path) & cast(u32)(entry.capacity - 1))
+        while entry.owned[slot].used {
+            existing := *entry.owned[slot]
+            if Equal(path, bytes[existing.offset:existing.offset + existing.count]) { Release(entry); return false }
+            slot = (slot + 1) & (entry.capacity - 1)
+        }
+        entry.owned[slot] = .{offset = at + 17, count = length, info = info, used = true}
+        at += 17 + length
+        node += 1
+    }
+    if at != count { Release(entry); return false }
+    return true
+}
+
+Owns :: (entry: *Entry, path: string, info: File.FileInfo) -> bool {
+    if entry.owned == null || entry.ledger == null || entry.capacity < 2 { return false }
+    bytes := BytesFromPointer(entry.ledger, cast(u64)entry.ledger_count)
+    key := BytesFromPointer(cast(*u8)TextBytes(path), cast(u64)path.count)
+    slot := cast(s32)(Hash(key) & cast(u32)(entry.capacity - 1))
+    while entry.owned[slot].used {
+        owned := *entry.owned[slot]
+        if Equal(key, bytes[owned.offset:owned.offset + owned.count]) { return Identity(owned.info, info) }
+        slot = (slot + 1) & (entry.capacity - 1)
+    }
+    return false
+}
+
+#scope_file
+DatePart :: (output: *s8, value: s32, width: s32) {
+    index := width
+    number := value
+    while index > 0 { index -= 1; output[index] = cast(s8)(48 + number % 10); number /= 10 }
+}
+
+#scope_export
+List :: (out: *FileTrashEntry, cap: s32) -> s32 {
+    if out == null || cap <= 0 { return 0 }
+    root: [1024]s8
+    if !Root(*root[0], false) { return 0 }
+    cursor := File.OpenDirectory(CString(*root[0]))
+    if !cursor.valid { return -1 }
+    entry := cast(*Entry)AllocateZeroed(1, size_of(Entry))
+    if entry == null { File.CloseDirectory(*cursor); return -1 }
+    count: s32 = 0
+    while count < cap {
+        child := File.NextDirectoryEntry(*cursor)
+        if !child.valid { break }
+        if !Read(*root[0], cast(*s8)(*child.name[0]), entry) { continue }
+        out[count] = .{}
+        CopyText(*out[count].name[0], 256, *entry.name[0])
+        CopyText(*out[count].original[0], 1024, *entry.original[0])
+        out[count].is_directory = cast(s32)((File.PathInfo(CString(*entry.data[0])).mode & cast(u32)0x80000000) != 0)
+        date := Clock.UtcAt(cast(s64)entry.deleted)
+        CopyText(*out[count].deleted[0], 40, TextBytes("0000-00-00T00:00:00Z"))
+        DatePart(*out[count].deleted[0], date.year, 4); DatePart(*out[count].deleted[5], date.month, 2)
+        DatePart(*out[count].deleted[8], date.day, 2); DatePart(*out[count].deleted[11], date.hour, 2)
+        DatePart(*out[count].deleted[14], date.minute, 2); DatePart(*out[count].deleted[17], date.second, 2)
+        count += 1
+    }
+    failed := cursor.failed
+    closed := File.CloseDirectory(*cursor)
+    ReleaseAllocation(cast(*void)entry)
+    if failed || !closed { return -1 }
+    return count
+}

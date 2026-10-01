@@ -101,8 +101,20 @@ foreign staging entries are preserved and reported. Moves publish the copy
 before removing source entries and stop with an explicit error if an entry
 changes or cannot be removed, leaving the published copy in place. Cut/Paste
 clears an unchanged clipboard selection only after every selected item moves
-successfully. Native Trash, Replace, retry, and undo remain pending;
-unsupported operations refuse to start.
+successfully. Native Move to Trash uses the same staged copying and verifies
+its recovery record before removing any source. The desktop Trash icon opens
+a current Kryon list with original paths, deletion times, Restore, Refresh,
+and confirmation before Empty Trash. Restore recreates missing parent folders
+and keeps both files when the original name is occupied.
+Native recovery storage defaults to `$home/lib/rill/trash`; an absolute
+`RILL_TRASH_DIR` overrides it. Private entries keep the payload and a
+checksummed record of every copied node's identity. Restore and Empty refuse
+changed identities, redirected payloads, damaged records, and unknown contents
+with an explicit error. Cancellation after publication keeps the complete
+recoverable copy. The list displays up to 64 entries at a time; restore and
+empty currently run synchronously. Replace, retry, undo, and recovery of
+interrupted unpublished staging entries remain pending; unsupported operations
+refuse to start.
 Native desktop icons now load PNG through the same Kryon `Image` surface.
 Kryon's native provider supports grayscale, palette, RGB, and alpha PNGs,
 including Adam7 interlace, and evicts older cached assets as needed. The
@@ -111,10 +123,11 @@ streams, native image compatibility, and rendered pixels from source and
 saved IR. PNGs are limited to 64 MiB and 4096 pixels per axis; color profiles
 and gamma are ignored, and 16-bit samples are reduced to their high byte.
 The Linux transfer implementation remains C. The Taiji native gate's
-`file_transfer` and `folder_transfer`
-suites check actual contents, metadata, clipboard filenames, cancellation,
-collisions, source and destination changes, and preservation of foreign
-staging entries from both source and saved IR.
+`file_transfer`, `folder_transfer`, and `trash` suites check actual contents,
+metadata, clipboard filenames, cancellation, collisions, source and
+destination changes, recovery after releasing the transfer, damaged headers
+and inventories, and preservation of foreign staging entries and bound Trash
+payloads from both source and saved IR.
 `make desktop-files-ui-test` checks the file controls from source and saved IR.
 
 Native document opening now uses `src/document_open.zi` and

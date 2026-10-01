@@ -11,6 +11,7 @@ PLAN9 :: #defined(NATIVE_PLAN9);
     #import "document_native"
     #import "file_transfer_plan9"
     #import "file_clipboard_plan9"
+    Trash :: #import "file_trash_plan9";
 } else {
     File :: #import "file_linux"
 }
@@ -521,6 +522,9 @@ RillPlatformCurrent :: () -> *RillPlatformServices {
         services.file_transfer_resolve = NativeCopyResolve
         services.file_clipboard_copy = NativeFileClipboardCopy
         services.file_clipboard_paste = NativeFileClipboardPaste
+        services.file_trash_list = Trash.List
+        services.file_trash_restore = NativeTrashRestore
+        services.file_trash_empty = NativeTrashEmpty
     }
     return *services
 }

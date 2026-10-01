@@ -297,7 +297,7 @@ Run :: () -> s32 {
     if platform.file_transfer_start(TextBytes("copy"), *sources[0], 2, *destination[0]) == 0 ||
         !Drain(platform, *status) || status.conflict != 1 || platform.file_transfer_resolve(1, 1) == 0 ||
         !Drain(platform, *status) || status.running != 0 || status.completed != 0 || status.skipped != 2 { return 19 }
-    if platform.file_transfer_start(TextBytes("trash"), *sources[0], 1, *destination[0]) != 0 ||
+    if platform.file_transfer_start(TextBytes("invalid"), *sources[0], 1, *destination[0]) != 0 ||
         platform.file_transfer_start(TextBytes("copy"), null, 1, *destination[0]) != 0 ||
         platform.file_transfer_start(TextBytes("copy"), *sources[0], 257, *destination[0]) != 0 ||
         platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, TextBytes("relative")) != 0 { return 20 }

@@ -3,12 +3,15 @@
 File :: #import "file_plan9";
 Process :: #import "process_plan9";
 Paths :: #import "path";
+Trash :: #import "file_trash_plan9";
+NativeFiles :: #import "native_files";
+#import "std/byte_text_linux"
 #import "platform_types"
 #import "native_memory"
 
 #scope_file
 ItemLimit :: 256;
-CopyItem :: struct { source: [1024]s8; info: File.FileInfo; }
+CopyItem :: struct { source: [1024]s8; target: [1024]s8; info: File.FileInfo; }
 CopyNode :: struct {
     source: [1024]s8
     info: File.FileInfo
@@ -37,10 +40,17 @@ CopyJob :: struct {
     node_index: s32
     check_index: s32
     cursor: File.DirectoryCursor
+    kind: s32 // 0 ordinary transfer, 1 trash, 2 restore, 3 empty
+    trash_root: [1024]s8
+    trash: Trash.Entry
 }
 job: *CopyJob;
 sequence: u32;
 conflicts: bool;
+
+Destructive :: () -> bool {
+    return job.kind != 0 || TextEquals(*job.status.operation[0], TextBytes("move"))
+}
 
 Same :: (left: File.FileInfo, right: File.FileInfo) -> bool {
     return left.valid && right.valid && left.type == right.type && left.device == right.device &&
@@ -154,6 +164,13 @@ Cleanup :: () -> bool {
         } else { ok = false }
     }
     if job.node_count == 0 || !job.nodes[0].created { job.staging[0] = 0 }
+    if job.kind == 1 && job.trash.reserved && !job.trash.published {
+        if ok { if !Trash.Forget(*job.trash) { ok = false } }
+        else { Trash.Close(*job.trash) }
+    } else {
+        if !Trash.Close(*job.trash) { ok = false }
+        Trash.Release(*job.trash)
+    }
     return ok
 }
 
@@ -167,6 +184,7 @@ Fail :: (message: string) {
 
 UniqueTarget :: () -> bool {
     name := Base(*job.items[job.index].source[0])
+    if job.kind == 2 { name = Base(*job.items[job.index].target[0]) }
     split := TextLength(name)
     index: s32 = 1
     while name[index] != 0 { if name[index] == 46 && !Directory(job.items[job.index].info) { split = index }; index += 1 }
@@ -176,7 +194,9 @@ UniqueTarget :: () -> bool {
         if split + 32 + TextLength(*name[split]) >= 1024 { return false }
         index = 0
         while index < split { candidate[index] = name[index]; index += 1 }
-        used := split + CopyText(*candidate[split], 1024 - split, TextBytes(" (copy "))
+        suffix := TextBytes(" (copy ")
+        if job.kind == 2 { suffix = TextBytes(" (restored ") }
+        used := split + CopyText(*candidate[split], 1024 - split, suffix)
         used += FormatInteger(*candidate[used], 1024 - used, attempt)
         used += CopyText(*candidate[used], 1024 - used, TextBytes(")"))
         CopyText(*candidate[used], 1024 - used, *name[split])
@@ -188,6 +208,11 @@ UniqueTarget :: () -> bool {
 }
 
 Next :: (skipped: bool) {
+    if !skipped && (job.kind == 2 || job.kind == 3) && !Trash.Forget(*job.trash) {
+        Fail("The operation finished, but the recovery record could not be removed"); return
+    }
+    Trash.Release(*job.trash)
+    job.trash = .{}
     ClearNodes()
     if skipped { job.status.skipped += 1 }
     else { job.status.completed += 1 }
@@ -252,6 +277,9 @@ AddNode :: (source: *s8, info: File.FileInfo, parent: s32) -> bool {
 
 PlanStart :: () {
     item := *job.items[job.index]
+    if (job.kind == 2 || job.kind == 3) && !Trash.Owns(*job.trash, "", item.info) {
+        Fail("The payload is not owned by this Trash record"); return
+    }
     if !Same(item.info, File.PathInfo(CString(*item.source[0]))) || !AddNode(*item.source[0], item.info, -1) {
         Fail("The source changed or its snapshot could not be allocated"); return
     }
@@ -260,6 +288,7 @@ PlanStart :: () {
 
 PlanStep :: () {
     if job.plan_index >= job.node_count {
+        if job.kind == 3 { job.check_index = job.node_count; job.phase = 8; return }
         if !OpenStaging() { Fail("Could not create the private staging entry"); return }
         job.node_index = 0
         job.phase = 3
@@ -285,6 +314,13 @@ PlanStep :: () {
     if !Join(*node.source[0], cast(*s8)(*entry.name[0]), *source[0]) { Fail("A source path is too long"); return }
     info := File.PathInfo(CString(*source[0]))
     if !Supported(info) { Fail("The folder contains an unsupported file or device"); return }
+    if job.kind != 0 && !Identity(entry.info, info) { Fail("The source entry changed during enumeration"); return }
+    if job.kind == 2 || job.kind == 3 {
+        root_length := TextLength(*job.items[job.index].source[0])
+        if !Trash.Owns(*job.trash, CString(*source[root_length]), info) {
+            Fail("A source entry is not owned by this Trash record"); return
+        }
+    }
     if Directory(info) {
         parent := job.plan_index
         while parent >= 0 {
@@ -330,11 +366,25 @@ BeginNode :: () {
 BeginItem :: () {
     item := *job.items[job.index]
     CopyText(*job.status.current[0], 1024, *item.source[0])
-    if !Join(*job.directory[0], Base(*item.source[0]), *job.target[0]) { Fail("The destination name is too long"); return }
+    if job.kind == 1 {
+        if !Trash.Reserve(*job.trash_root[0], *item.source[0], job.status.id, job.index, Process.CurrentProcessId(), *job.trash) {
+            Fail("Could not reserve a private Trash entry"); return
+        }
+        CopyText(*job.directory[0], 1024, *job.trash.path[0])
+        CopyText(*job.target[0], 1024, *job.trash.data[0])
+        PlanStart(); return
+    }
+    if job.kind == 3 { PlanStart(); return }
+    if job.kind == 2 { CopyText(*job.target[0], 1024, *item.target[0]) }
+    else if !Join(*job.directory[0], Base(*item.source[0]), *job.target[0]) { Fail("The destination name is too long"); return }
     duplicate := TextEquals(*job.status.operation[0], TextBytes("duplicate"))
     if duplicate {
         if !UniqueTarget() { Fail("Could not find an unused copy name"); return }
     } else if File.PathExists(CString(*job.target[0])) {
+        if job.kind == 2 {
+            if !UniqueTarget() { Fail("Could not find an unused restored name"); return }
+            PlanStart(); return
+        }
         if job.sticky == 1 { Next(true); return }
         if job.sticky == 3 {
             if !UniqueTarget() { Fail("Could not find an unused copy name"); return }
@@ -406,6 +456,31 @@ AttributeStep :: () {
     }
 }
 
+RecordTrash :: () -> bool {
+    root_length := TextLength(*job.items[job.index].source[0])
+    count: s64 = 0
+    index: s32 = 0
+    while index < job.node_count {
+        count += 17 + TextLength(*job.nodes[index].source[root_length])
+        if count > 67108864 - 1080 { return false }
+        index += 1
+    }
+    memory := cast(*u8)AllocateZeroed(1, cast(usize)count)
+    if memory == null { return false }
+    bytes := BytesFromPointer(memory, cast(u64)count)
+    offset: s64 = 0
+    index = 0
+    while index < job.node_count {
+        node := *job.nodes[index]
+        offset = Trash.NodeRecord(bytes, offset, CString(*node.source[root_length]), node.owned)
+        if offset < 0 { break }
+        index += 1
+    }
+    ok := offset == count && Trash.Record(*job.trash, job.nodes[0].owned, bytes, job.node_count)
+    ReleaseAllocation(cast(*void)memory)
+    return ok
+}
+
 Publish :: () {
     // Verify again after attribute writes; no planned source is removed.
     index: s32 = 0
@@ -418,7 +493,12 @@ Publish :: () {
         }
         index += 1
     }
+    if job.kind == 1 && !RecordTrash() {
+        Fail("Could not save the recovery record before publication"); return
+    }
+    if job.kind != 0 && !Trash.Valid(*job.trash) { Fail("The Trash recovery record changed before publication"); return }
     if !File.RenameNoReplace(CString(*job.staging[0]), CString(*job.target[0])) { Fail("The copy could not be published without replacing another entry"); return }
+    if job.kind == 1 { job.trash.published = true }
     job.staging[0] = 0
     index = 0
     while index < job.node_count {
@@ -431,7 +511,7 @@ Publish :: () {
         index += 1
     }
     if job.status.error[0] != 0 { job.status.running = 0; return }
-    if TextEquals(*job.status.operation[0], TextBytes("move")) {
+    if Destructive() {
         // Renaming the root can change its version on a native file server.
         current := File.PathInfo(CString(*job.target[0]))
         if !Identity(job.nodes[0].owned, current) || current.mode != job.nodes[0].info.mode ||
@@ -445,6 +525,7 @@ Publish :: () {
 }
 
 MoveCheck :: () {
+    if job.kind != 0 && !Trash.Valid(*job.trash) { Fail("The copy is complete, but the recovery record changed"); return }
     if job.check_index >= job.node_count { job.check_index = job.node_count; job.phase = 8; return }
     node := *job.nodes[job.check_index]
     if !Same(node.info, File.PathInfo(CString(*node.source[0]))) {
@@ -480,6 +561,7 @@ PublishedParents :: (index: s32) -> bool {
 
 RemoveSource :: () {
     if job.check_index == 0 { Next(false); return }
+    if job.kind != 0 && !Trash.Valid(*job.trash) { Fail("The recovery record changed before source removal"); return }
     job.check_index -= 1
     node := *job.nodes[job.check_index]
     CopyText(*job.status.current[0], 1024, *node.source[0])
@@ -491,8 +573,8 @@ RemoveSource :: () {
         unchanged = Identity(node.info, current) && node.info.mode == current.mode
     }
     path: [1024]s8
-    if !PublishedPath(job.check_index, *path[0]) || !PublishedParents(job.check_index) ||
-        !Same(node.owned, File.PathInfo(CString(*path[0]))) {
+    if job.kind != 3 && (!PublishedPath(job.check_index, *path[0]) || !PublishedParents(job.check_index) ||
+        !Same(node.owned, File.PathInfo(CString(*path[0])))) {
         Fail("The copy is complete, but the destination changed before the source could be removed"); return
     }
     if !SourceParents(job.check_index) || !unchanged || !File.RemoveFile(CString(*node.source[0])) {
@@ -514,27 +596,34 @@ InsideSource :: (source: string, info: File.FileInfo, destination: string) -> bo
     }
 }
 
-#scope_export
-NativeCopyStart :: (operation: *s8, sources: **s8, count: s32, destination: *s8) -> s32 {
+Start :: (operation: *s8, sources: **s8, count: s32, destination: *s8, recovery: *Trash.Entry, kind: s32) -> s32 {
     if (job != null && job.status.running != 0) || sources == null || count <= 0 || count > ItemLimit ||
         destination == null || (!TextEquals(operation, TextBytes("copy")) && !TextEquals(operation, TextBytes("duplicate")) &&
-        !TextEquals(operation, TextBytes("move"))) { return 0 }
+        !TextEquals(operation, TextBytes("move")) && !TextEquals(operation, TextBytes("trash")) && kind == 0) { return 0 }
     next := cast(*CopyJob)AllocateZeroed(1, size_of(CopyJob))
     if next == null { return 0 }
+    next.kind = kind
+    if recovery != null { next.trash = recovery.* }
     directory: [1024]u8
     canonical := Paths.CleanAbsolute(CString(destination), directory[:])
     ok := canonical.count > 0 && File.DirectoryExists(canonical)
     if ok { CopyText(*next.directory[0], 1024, cast(*s8)(*directory[0])) }
+    if kind == 1 { CopyText(*next.trash_root[0], 1024, *next.directory[0]) }
     index: s32 = 0
     while ok && index < count {
         source: [1024]u8
         value := Paths.CleanAbsolute(CString(sources[index]), source[:])
         if value.count <= 1 { ok = false; break }
+        if kind == 1 && Paths.WithinDirectory(value, canonical) { ok = false; break }
         info := File.PathInfo(value)
-        if !Supported(info) || (Directory(info) && InsideSource(value, info, canonical)) { ok = false; break }
+        if (kind == 2 || kind == 3) && (recovery == null || !Trash.Valid(recovery) || !Trash.Identity(info, recovery.data_info)) {
+            ok = false; break
+        }
+        if !Supported(info) || (kind != 3 && Directory(info) && InsideSource(value, info, canonical)) ||
+            (kind != 0 && !Trash.Physical(value, info)) { ok = false; break }
         CopyText(*next.items[index].source[0], 1024, cast(*s8)(*source[0]))
         next.items[index].info = info
-        if TextEquals(operation, TextBytes("move")) {
+        if kind != 0 || TextEquals(operation, TextBytes("move")) {
             previous: s32 = 0
             while previous < index {
                 item := *next.items[previous]
@@ -560,6 +649,14 @@ NativeCopyStart :: (operation: *s8, sources: **s8, count: s32, destination: *s8)
     CopyText(*next.status.operation[0], 16, operation)
     job = next
     return 1
+}
+
+#scope_export
+NativeCopyStart :: (operation: *s8, sources: **s8, count: s32, destination: *s8) -> s32 {
+    if !TextEquals(operation, TextBytes("trash")) { return Start(operation, sources, count, destination, null, 0) }
+    root: [1024]s8
+    if !Trash.Root(*root[0], true) { return 0 }
+    return Start(operation, sources, count, *root[0], null, 1)
 }
 
 NativeCopyPoll :: (status: *FileTransferStatus) -> s32 {
@@ -588,6 +685,7 @@ NativeCopyCancel :: () {
 NativeCopyFinish :: () {
     if job == null { return }
     Cleanup()
+    Trash.Release(*job.trash)
     ClearNodes()
     ReleaseAllocation(cast(*void)job)
     job = null
@@ -609,4 +707,76 @@ NativeCopyResolve :: (answer: s32, apply_to_all: s32) -> s32 {
     PlanStart()
     if job.status.running == 0 { return 0 }
     return 1
+}
+
+#scope_file
+Drain :: (error: *s8, capacity: s32) -> s32 {
+    status: FileTransferStatus
+    while true {
+        if NativeCopyPoll(*status) == 0 { CopyText(error, capacity, TextBytes("The operation could not be started")); return 0 }
+        if status.running == 0 || status.conflict != 0 { break }
+    }
+    CopyText(error, capacity, *status.error[0])
+    return cast(s32)(status.running == 0 && status.error[0] == 0 && status.completed == status.total)
+}
+
+#scope_export
+NativeTrashRestore :: (name: *s8, error: *s8, capacity: s32) -> s32 {
+    CopyText(error, capacity, TextBytes(""))
+    if job != null && job.status.running != 0 { CopyText(error, capacity, TextBytes("Another file operation is still running")); return 0 }
+    root: [1024]s8
+    entry := cast(*Trash.Entry)AllocateZeroed(1, size_of(Trash.Entry))
+    ok := entry != null && Trash.Root(*root[0], false) && Trash.Read(*root[0], name, entry) && Trash.Load(entry)
+    parent: [1024]s8
+    if ok {
+        CopyText(*parent[0], 1024, *entry.original[0])
+        split := TextLength(*parent[0])
+        while split > 0 && parent[split - 1] != 47 { split -= 1 }
+        if split > 1 { parent[split - 1] = 0 } else { parent[1] = 0 }
+        ok = NativeFiles.EnsureDirectory(*parent[0])
+    }
+    source: [1]*s8
+    if ok {
+        source[0] = *entry.data[0]
+        ok = Start(TextBytes("restore"), *source[0], 1, *parent[0], entry, 2) != 0
+        if ok { CopyText(*job.items[0].target[0], 1024, *entry.original[0]) }
+    }
+    if !ok && entry != null { Trash.Release(entry) }
+    ReleaseAllocation(cast(*void)entry)
+    if !ok { CopyText(error, capacity, TextBytes("The Trash entry or its original directory could not be verified")); return 0 }
+    return Drain(error, capacity)
+}
+
+NativeTrashEmpty :: (error: *s8, capacity: s32) -> s32 {
+    CopyText(error, capacity, TextBytes(""))
+    if job != null && job.status.running != 0 { CopyText(error, capacity, TextBytes("Another file operation is still running")); return 0 }
+    root: [1024]s8
+    if !Trash.Root(*root[0], true) { CopyText(error, capacity, TextBytes("The Trash directory could not be verified")); return 0 }
+    cursor := File.OpenDirectory(CString(*root[0]))
+    if !cursor.valid { CopyText(error, capacity, TextBytes("Could not list Trash")); return 0 }
+    entry := cast(*Trash.Entry)AllocateZeroed(1, size_of(Trash.Entry))
+    if entry == null { File.CloseDirectory(*cursor); CopyText(error, capacity, TextBytes("Could not allocate the Trash snapshot")); return 0 }
+    ok := true
+    source: [1]*s8
+    while true {
+        child := File.NextDirectoryEntry(*cursor)
+        if !child.valid { break }
+        if !Trash.Read(*root[0], cast(*s8)(*child.name[0]), entry) || !Trash.Load(entry) {
+            ok = false
+            CopyText(error, capacity, TextBytes("Unverified or incomplete Trash entries were preserved"))
+            continue
+        }
+        source[0] = *entry.data[0]
+        if Start(TextBytes("empty"), *source[0], 1, *root[0], entry, 3) == 0 {
+            Trash.Release(entry)
+            CopyText(error, capacity, TextBytes("The Trash entry could not be verified")); ok = false; break
+        }
+        if Drain(error, capacity) == 0 { ok = false; break }
+    }
+    failed := cursor.failed
+    closed := File.CloseDirectory(*cursor)
+    ReleaseAllocation(cast(*void)entry)
+    if failed || !closed { CopyText(error, capacity, TextBytes("Could not read the complete Trash directory")); return 0 }
+    if !ok && (error == null || capacity <= 0 || error[0] == 0) { CopyText(error, capacity, TextBytes("Some Trash entries were preserved")) }
+    return cast(s32)ok
 }

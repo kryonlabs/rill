@@ -5,6 +5,7 @@
 #import "shell"
 #import "settings"
 #import "native_memory"
+Memory :: #import "native_memory";
 #import "tree_draw"
 using UI :: #import "Widgets";
 using FrameStatus;
@@ -39,6 +40,12 @@ last_name: [256]s8;
 transfer: FileTransferStatus;
 resolution: s32;
 finished: s32;
+trash_count: s32 = 40;
+trash_scan_fail: bool;
+trash_restore_fail: bool;
+trash_restored: s32;
+trash_emptied: s32;
+last_trash_name: [256]s8;
 
 Root :: () -> *s8 { return root }
 Files :: (out: *RillLauncher, capacity: s32) -> s32 {
@@ -78,6 +85,27 @@ Start :: (operation: *s8, paths: **s8, count: s32, destination: *s8) -> s32 {
 Poll :: (out: *FileTransferStatus) -> s32 { out.* = transfer; return cast(s32)(transfer.id != cast(u32)0) }
 Resolve :: (answer: s32, all: s32) -> s32 { unused all; resolution = answer; transfer.conflict = 0; return 1 }
 Finish :: () { finished += 1 }
+TrashList :: (out: *FileTrashEntry, capacity: s32) -> s32 {
+    if trash_scan_fail { return -1 }
+    count := trash_count
+    if count > capacity { count = capacity }
+    for index: 0..count - 1 {
+        out[index] = .{}
+        used := CopyText(*out[index].name[0], 256, TextBytes("item-"))
+        Memory.FormatInteger(*out[index].name[used], 256 - used, index)
+        used = CopyText(*out[index].original[0], 1024, TextBytes("/fixture/Deleted "))
+        used += Memory.FormatInteger(*out[index].original[used], 1024 - used, index)
+        CopyText(*out[index].original[used], 1024 - used, TextBytes(".txt"))
+        CopyText(*out[index].deleted[0], 40, TextBytes("2026-10-01T00:00:00Z"))
+    }
+    return count
+}
+TrashRestore :: (name: *s8, error: *s8, size: s32) -> s32 {
+    CopyText(*last_trash_name[0], 256, name)
+    if trash_restore_fail { CopyText(error, size, TextBytes("Restore failed")); return 0 }
+    error[0] = 0; trash_restored += 1; trash_count -= 1; return 1
+}
+TrashEmpty :: (error: *s8, size: s32) -> s32 { unused size; error[0] = 0; trash_emptied += 1; trash_count = 0; return 1 }
 Operation :: (operation: *s8, source: *s8, name: *s8, error: *s8, size: s32) -> s32 {
     unused source; unused error; unused size
     if !DesktopNameValid(name) { return 0 }
@@ -142,6 +170,9 @@ Cases :: () -> s32 {
     platform.file_transfer_resolve = Resolve
     platform.file_transfer_finish = Finish
     platform.file_operation = Operation
+    platform.file_trash_list = TrashList
+    platform.file_trash_restore = TrashRestore
+    platform.file_trash_empty = TrashEmpty
     if !OpenRaster(480, 300) { return 2 }
     session = SessionOpen()
     if !Idle(1000) || state.files == null || state.files.count != 5 || !CaptureConfigured() { return 3 }
@@ -215,8 +246,28 @@ Cases :: () -> s32 {
     transfer.conflict = 1
     CopyText(*transfer.conflict_destination[0], 512, TextBytes("/fixture/conflict"))
     if !Idle(4300) || !ClickKey(cast(u64)220213, 4400) || resolution != 3 { return 21 }
+    transfer.running = 0; transfer.conflict = 0; state.transfer_visible = false
+    // Poll the completed conflict before sending the next desktop gesture.
+    if !Idle(4800) || !ClickItem(2, 0, 5000) || !ClickItem(2, 0, 5200) || !Idle(5400) ||
+        state.action != 5 || state.trash_count != 40 || open_count != 1 { return 28 }
+    if !Draw(Vector2.{}, false, false, false, false, KeyEnd, 0, 5500) ||
+        state.trash_selected != 39 || state.trash_scroll <= 0 || !CaptureConfigured() { return 29 }
+    trash_restore_fail = true
+    if !ClickKey(cast(u64)220307, 5600) || state.action != 5 || state.trash_count != 40 ||
+        state.trash_error[0] == 0 || trash_restored != 0 { return 30 }
+    trash_restore_fail = false
+    if !ClickKey(cast(u64)220307, 5800) || !Idle(6000) || trash_restored != 1 || state.trash_count != 39 ||
+        !TextEquals(*last_trash_name[0], TextBytes("item-39")) { return 31 }
+    trash_scan_fail = true
+    if !ClickKey(cast(u64)220303, 6100) || !Idle(6300) || state.trash_count != 39 || state.trash_error[0] == 0 { return 32 }
+    trash_scan_fail = false
+    if !ClickKey(cast(u64)220308, 6400) || !Idle(6600) || !state.trash_confirm || trash_emptied != 0 ||
+        !ClickKey(cast(u64)220311, 6700) || state.trash_confirm || trash_emptied != 0 { return 33 }
+    if !Idle(6850) || !ClickKey(cast(u64)220308, 6900) || !Idle(7100) || !ClickKey(cast(u64)220310, 7200) ||
+        !Idle(7400) || trash_emptied != 1 || state.trash_count != 0 { return 34 }
+    if !Draw(Vector2.{}, false, false, false, false, KeyEscape, 0, 7500) || state.action != 0 { return 35 }
     DesktopFilesClose(*state, *platform)
-    if state.files != null || finished != 1 { return 22 }
+    if state.files != null || state.trash_entries != null || finished != 1 { return 22 }
     CloseSession(session)
     CloseRaster()
     RillShellDispose(*app.shell)
