@@ -22,11 +22,15 @@ record_bytes: [1068]u8;
 record_count: s64;
 foreign: [1024]s8;
 bound: [1024]s8;
+mount_path: [1024]s8;
+mounted_trash: [1024]s8;
 libc :: #system_library "libc";
 SetEnvironment :: (name: *s8, value: *s8) -> s32 #foreign libc "putenv";
 PrivateNamespace :: (flags: s32) -> s32 #foreign libc "rfork";
 BindRaw :: (source: *s8, destination: *s8, flags: s32) -> s32 #foreign libc "bind";
 UnmountRaw :: (source: *s8, destination: *s8) -> s32 #foreign libc "unmount";
+MountRaw :: (fd: s32, auth: s32, destination: *s8, flags: s32, specification: *s8) -> s32 #foreign libc "mount";
+OpenRaw :: (path: *s8, flags: s32) -> s32 #foreign libc "open";
 
 Path :: (suffix: string) -> string {
     used := CopyText(*path[0], 1024, *root[0])
@@ -247,6 +251,44 @@ ForeignEntries :: (platform: *RillPlatformServices) -> s32 {
     return 0
 }
 
+Remount :: (platform: *RillPlatformServices) -> s32 {
+    if !File.CreatePrivateDirectory(Path("/source/Remount")) ||
+        !File.CreatePrivateDirectory(Path("/source/Remount/empty")) ||
+        !Put("/source/Remount/data.bin", 100003) || !Start(platform, "/source/Remount") ||
+        !Drain(platform) || !One(platform, "/source/Remount") { return 32 }
+    platform.file_transfer_finish()
+    before := File.PathInfo(CString(*trash_root[0]))
+    CopyText(*mount_path[0], 1024, TextBytes(Path("/remount")))
+    if !File.CreatePrivateDirectory(CString(*mount_path[0])) ||
+        !Trash.Join(*mount_path[0], *trash_root[1], *mounted_trash[0]) {
+        print("Trash remount directory: %\n", File.LastError(buffer[0:256])); return 33
+    }
+    server := File.FileHandle.{fd = OpenRaw(TextBytes("/srv/boot"), 2)}
+    server.valid = server.fd >= 0
+    if !server.valid { print("Trash remount service: %\n", File.LastError(buffer[0:256])); return 33 }
+    mounted := MountRaw(server.fd, -1, *mount_path[0], 0, TextBytes("")) >= 0
+    if !mounted {
+        print("Trash remount attach: %\n", File.LastError(buffer[0:256]))
+        File.CloseFile(server); return 33
+    }
+    // A successful native mount consumes its service descriptor.
+    server.valid = false
+    after := File.PathInfo(CString(*mounted_trash[0]))
+    if !after.valid || after.device == before.device || after.type != before.type || after.identity != before.identity { return 34 }
+    // Matching qids through a foreign attachment do not confer ownership.
+    if !Trash.Join(*mount_path[0], *entry.data[1], *bound[0]) || BindRaw(*bound[0], *entry.data[0], 0) < 0 { return 37 }
+    refused := platform.file_trash_restore(*name[0], *error[0], 256) == 0 &&
+        platform.file_trash_empty(*error[0], 256) == 0
+    if UnmountRaw(*bound[0], *entry.data[0]) != 0 || !refused ||
+        !One(platform, "/source/Remount") || SetEnvironment(TextBytes("RILL_TRASH_DIR"), *mounted_trash[0]) != 0 { return 38 }
+    if platform.file_trash_list(*records[0], 16) != 1 ||
+        platform.file_trash_restore(*name[0], *error[0], 256) == 0 || CountRoot() != 0 ||
+        !Content("/source/Remount/data.bin", 100003) || !File.DirectoryExists(Path("/source/Remount/empty")) { return 35 }
+    if UnmountRaw(null, *mount_path[0]) != 0 ||
+        SetEnvironment(TextBytes("RILL_TRASH_DIR"), *trash_root[0]) != 0 { return 36 }
+    return 0
+}
+
 Arguments :: (platform: *RillPlatformServices) -> s32 {
     Choose("/source/cancel.bin", 0)
     Choose("/source/cancel.bin", 1)
@@ -283,6 +325,7 @@ Cases :: () -> s32 {
     if result == 0 { result = Integrity(platform) }
     if result == 0 { result = Tree(platform) }
     if result == 0 { result = ForeignEntries(platform) }
+    if result == 0 { result = Remount(platform) }
     if result == 0 { result = Arguments(platform) }
     return result
 }

@@ -472,6 +472,9 @@ RecordTrash :: () -> bool {
     index = 0
     while index < job.node_count {
         node := *job.nodes[index]
+        if node.owned.type != job.trash.directory_info.type || node.owned.device != job.trash.directory_info.device {
+            offset = -1; break
+        }
         offset = Trash.NodeRecord(bytes, offset, CString(*node.source[root_length]), node.owned)
         if offset < 0 { break }
         index += 1

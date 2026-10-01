@@ -110,7 +110,8 @@ Native recovery storage defaults to `$home/lib/rill/trash`; an absolute
 `RILL_TRASH_DIR` overrides it. Private entries keep the payload and a
 checksummed record of every copied node's identity. Restore and Empty refuse
 changed identities, redirected payloads, damaged records, and unknown contents
-with an explicit error. Cancellation after publication keeps the complete
+with an explicit error. Recovery reanchors saved identities when the same
+filesystem is mounted again. Cancellation after publication keeps the complete
 recoverable copy. The list displays up to 64 entries at a time; restore and
 empty currently run synchronously. Replace, retry, undo, and recovery of
 interrupted unpublished staging entries remain pending; unsupported operations
@@ -126,7 +127,7 @@ The Linux transfer implementation remains C. The Taiji native gate's
 `file_transfer`, `folder_transfer`, and `trash` suites check actual contents,
 metadata, clipboard filenames, cancellation, collisions, source and
 destination changes, recovery after releasing the transfer, damaged headers
-and inventories, and preservation of foreign staging entries and bound Trash
+and inventories, a fresh native filesystem mount, and preservation of foreign staging entries and bound Trash
 payloads from both source and saved IR.
 `make desktop-files-ui-test` checks the file controls from source and saved IR.
 

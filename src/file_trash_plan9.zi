@@ -32,6 +32,7 @@ Entry :: struct {
     owned: *Owned
     capacity: s32
     checksum: u32
+    recorded_device: u32
 }
 
 Identity :: (left: File.FileInfo, right: File.FileInfo) -> bool {
@@ -205,7 +206,8 @@ Record :: (entry: *Entry, data: File.FileInfo, ledger: []u8, nodes: s32) -> bool
     magic := "TRASH01\n"
     for at: 0..7 { bytes[at] = magic[at] }
     length := TextLength(*entry.original[0])
-    if length <= 1 || length >= 1024 || !data.valid { return false }
+    if length <= 1 || length >= 1024 || !data.valid || data.type != entry.directory_info.type ||
+        data.device != entry.directory_info.device { return false }
     Put(bytes[:], 8, 4, cast(u64)entry.deleted)
     Put(bytes[:], 12, 2, cast(u64)length)
     WriteIdentity(bytes[:], 14, entry.directory_info)
@@ -287,11 +289,16 @@ Read :: (root: *s8, name: *s8, entry: *Entry) -> bool {
     entry.* = .{}
     if !PathsFor(root, name, entry) || !Listed(root, entry) { return false }
     directory := File.PathInfo(CString(*entry.path[0]))
+    store := File.PathInfo(CString(root))
+    // Native mount numbers belong to one attachment, not to persistent files.
+    // Anchor the entry to the current store before rebasing saved identities.
+    if !store.valid || !directory.valid || directory.type != store.type || directory.device != store.device { return false }
     file := File.OpenRead(CString(*entry.info[0]))
     if !file.valid { return false }
     before := File.HandleInfo(file)
     bytes: [1080]u8
-    ok := before.valid && before.length >= 75 && before.length <= 67108864 && (before.mode & cast(u32)0x80000000) == 0
+    ok := before.valid && before.type == directory.type && before.device == directory.device &&
+        before.length >= 75 && before.length <= 67108864 && (before.mode & cast(u32)0x80000000) == 0
     needed := before.length
     if needed > 1080 { needed = 1080 }
     offset: s64 = 0
@@ -318,6 +325,11 @@ Read :: (root: *s8, name: *s8, entry: *Entry) -> bool {
     if Paths.CleanAbsolute(original, canonical[:]) != original { return false }
     entry.directory_info = ReadIdentity(bytes[:], 14)
     entry.data_info = ReadIdentity(bytes[:], 29)
+    entry.recorded_device = entry.directory_info.device
+    if entry.directory_info.type != directory.type || entry.data_info.type != directory.type ||
+        entry.data_info.device != entry.recorded_device { return false }
+    entry.directory_info.device = directory.device
+    entry.data_info.device = directory.device
     entry.record_info = after
     entry.deleted = cast(u32)Get(bytes[:], 8, 4)
     entry.nodes = cast(s32)Get(bytes[:], 44 + length, 4)
@@ -377,6 +389,8 @@ Load :: (entry: *Entry) -> bool {
         if length > 1023 || length > count - at - 17 { Release(entry); return false }
         path := bytes[at + 17:at + 17 + length]
         info := ReadIdentity(bytes, cast(s32)at + 2)
+        if info.type != entry.directory_info.type || info.device != entry.recorded_device { Release(entry); return false }
+        info.device = entry.directory_info.device
         // The root comes first. Child paths must be normalized suffixes.
         if node == 0 {
             if length != 0 || !Identity(info, entry.data_info) { Release(entry); return false }
