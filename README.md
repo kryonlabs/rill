@@ -119,9 +119,17 @@ and applying the choice to remaining conflicts. Changed destinations and
 overlap with selected sources refuse replacement. Archiving advances with the
 normal transfer polls; cancellation or later failure keeps any published
 backup recoverable in Trash. The list displays up to 64 entries at a time;
-restore and empty currently run synchronously. Retry, undo, and recovery of
-interrupted unpublished staging entries remain pending; unsupported operations
-refuse to start.
+restore and empty currently run synchronously. Retry retains completed and
+skipped batch items and restarts an unpublished copy with a fresh source
+snapshot. Published moves resume removing only unchanged, still-owned source
+entries after verifying the complete destination; folder permissions can be
+repaired before retrying. A replacement reuses its published Trash archive,
+including after partial removal of the old destination. Changed copies and
+recreated source entries are preserved and reported. Failed cleanup must
+succeed before another attempt starts. Cut/Paste retains its original
+clipboard snapshot across retry and clears it only after complete success.
+Undo and recovery of interrupted unpublished staging entries remain pending;
+unsupported operations refuse to start.
 Native desktop icons now load PNG through the same Kryon `Image` surface.
 Kryon's native provider supports grayscale, palette, RGB, and alpha PNGs,
 including Adam7 interlace, and evicts older cached assets as needed. The
@@ -130,7 +138,7 @@ streams, native image compatibility, and rendered pixels from source and
 saved IR. PNGs are limited to 64 MiB and 4096 pixels per axis; color profiles
 and gamma are ignored, and 16-bit samples are reduced to their high byte.
 The Linux transfer implementation remains C. The Taiji native gate's
-`file_transfer`, `folder_transfer`, `trash`, and `replacement` suites check actual contents,
+`file_transfer`, `folder_transfer`, `trash`, `replacement`, and `retry` suites check actual contents,
 metadata, clipboard filenames, cancellation, collisions, source and
 destination changes, recovery after releasing the transfer, damaged headers
 and inventories, a fresh native filesystem mount, and preservation of foreign

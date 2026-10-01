@@ -40,6 +40,7 @@ last_name: [256]s8;
 transfer: FileTransferStatus;
 resolution: s32;
 finished: s32;
+retried: s32;
 trash_count: s32 = 40;
 trash_scan_fail: bool;
 trash_restore_fail: bool;
@@ -85,6 +86,7 @@ Start :: (operation: *s8, paths: **s8, count: s32, destination: *s8) -> s32 {
 Poll :: (out: *FileTransferStatus) -> s32 { out.* = transfer; return cast(s32)(transfer.id != cast(u32)0) }
 Resolve :: (answer: s32, all: s32) -> s32 { unused all; resolution = answer; transfer.conflict = 0; return 1 }
 Finish :: () { finished += 1 }
+Retry :: () -> s32 { retried += 1; transfer.running = 1; transfer.cancelled = 0; transfer.error[0] = 0; return 1 }
 TrashList :: (out: *FileTrashEntry, capacity: s32) -> s32 {
     if trash_scan_fail { return -1 }
     count := trash_count
@@ -169,6 +171,7 @@ Cases :: () -> s32 {
     platform.file_transfer_poll = Poll
     platform.file_transfer_resolve = Resolve
     platform.file_transfer_finish = Finish
+    platform.file_transfer_retry = Retry
     platform.file_operation = Operation
     platform.file_trash_list = TrashList
     platform.file_trash_restore = TrashRestore
@@ -248,7 +251,10 @@ Cases :: () -> s32 {
     if !Idle(4300) || !ClickKey(cast(u64)220213, 4400) || resolution != 3 { return 21 }
     transfer.conflict = 1
     if !Idle(4600) || !ClickKey(cast(u64)220212, 4700) || resolution != 2 { return 37 }
-    transfer.running = 0; transfer.conflict = 0; state.transfer_visible = false
+    transfer.running = 0; transfer.conflict = 0; transfer.cancelled = 1
+    CopyText(*transfer.error[0], 256, TextBytes("The file transfer was cancelled"))
+    if !Idle(4770) || !ClickKey(cast(u64)220210, 4800) || retried != 1 || transfer.running != 1 || transfer.error[0] != 0 { return 38 }
+    transfer.running = 0; state.transfer_visible = false
     // Poll the completed conflict before sending the next desktop gesture.
     if !Idle(4900) || !ClickItem(2, 0, 5000) || !ClickItem(2, 0, 5200) || !Idle(5400) ||
         state.action != 5 || state.trash_count != 40 || open_count != 1 { return 28 }

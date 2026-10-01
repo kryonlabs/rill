@@ -19,10 +19,14 @@ CopyNode :: struct {
     directory: File.FileHandle
     parent: s32
     created: bool
+    removed: bool
+    children_removed: bool
 }
 CopyJob :: struct {
     items: [256]CopyItem
     directory: [1024]s8
+    destination: [1024]s8
+    destination_info: File.FileInfo
     target: [1024]s8
     staging: [1024]s8
     input: File.FileHandle
@@ -47,6 +51,8 @@ CopyJob :: struct {
     replacing: bool
     replacement_done: bool
     replacement: *CopyJob
+    published: bool
+    retrying: bool
 }
 job: *CopyJob;
 sequence: u32;
@@ -150,7 +156,17 @@ DisposeReplacement :: () -> bool {
 }
 
 Cleanup :: () -> bool {
-    ok := DisposeReplacement()
+    // Keep a published replacement archive's snapshot for retry. It may
+    // already have removed some of the old destination's source entries.
+    ok := true
+    if job.replacement != null {
+        parent := job
+        child := parent.replacement
+        job = child
+        child.status.running = 0
+        ok = Cleanup()
+        job = parent
+    }
     if job.cursor.valid { if !File.CloseDirectory(*job.cursor) { ok = false } }
     if job.input.valid { if !File.CloseFile(job.input) { ok = false }; job.input.valid = false }
     if job.output.valid { if !File.CloseFile(job.output) { ok = false }; job.output.valid = false }
@@ -234,6 +250,8 @@ Next :: (skipped: bool) {
     job.conflict_info = .{}
     job.replacing = false
     job.replacement_done = false
+    job.published = false
+    job.retrying = false
     ClearNodes()
     if skipped { job.status.skipped += 1 }
     else { job.status.completed += 1 }
@@ -529,8 +547,15 @@ Publish :: () {
     if job.replacing && !job.replacement_done { BeginReplacement(); return }
     if job.kind != 0 && !Trash.Valid(*job.trash) { Fail("The Trash recovery record changed before publication"); return }
     if !File.RenameNoReplace(CString(*job.staging[0]), CString(*job.target[0])) { Fail("The copy could not be published without replacing another entry"); return }
+    job.published = true
     if job.kind == 1 { job.trash.published = true }
     job.staging[0] = 0
+    // Retain the post-rename root snapshot even if closing a descriptor or
+    // removing a source later fails. Retry must verify this complete copy.
+    current := File.PathInfo(CString(*job.target[0]))
+    valid := Identity(job.nodes[0].owned, current) && current.mode == job.nodes[0].info.mode &&
+        current.length == job.nodes[0].owned.length && current.modified == job.nodes[0].info.modified
+    if valid { job.nodes[0].owned = current }
     index = 0
     while index < job.node_count {
         node := *job.nodes[index]
@@ -542,14 +567,8 @@ Publish :: () {
         index += 1
     }
     if job.status.error[0] != 0 { job.status.running = 0; return }
+    if !valid { Fail("The copy is complete, but the destination changed before the source could be moved"); return }
     if Destructive() {
-        // Renaming the root can change its version on a native file server.
-        current := File.PathInfo(CString(*job.target[0]))
-        if !Identity(job.nodes[0].owned, current) || current.mode != job.nodes[0].info.mode ||
-            current.length != job.nodes[0].owned.length || current.modified != job.nodes[0].info.modified {
-            Fail("The copy is complete, but the destination changed before the source could be moved"); return
-        }
-        job.nodes[0].owned = current
         job.check_index = 0
         job.phase = 7
     } else { Next(false) }
@@ -557,13 +576,25 @@ Publish :: () {
 
 MoveCheck :: () {
     if job.kind != 0 && !Trash.Valid(*job.trash) { Fail("The copy is complete, but the recovery record changed"); return }
-    if job.check_index >= job.node_count { job.check_index = job.node_count; job.phase = 8; return }
+    if job.check_index >= job.node_count {
+        if !Destructive() { Next(false); return }
+        job.check_index = job.node_count; job.phase = 8; return
+    }
     node := *job.nodes[job.check_index]
-    if !Same(node.info, File.PathInfo(CString(*node.source[0]))) {
-        Fail("The copy is complete, but the source changed before it could be moved"); return
+    if Destructive() {
+        current := File.PathInfo(CString(*node.source[0]))
+        unchanged := Same(node.info, current)
+        if Directory(node.info) && job.retrying && Identity(node.info, current) && Supported(current) {
+            // Permission repair is allowed for surviving folders. Child
+            // snapshots still match, and remove refuses unknown contents.
+            node.info.mode = current.mode
+            unchanged = true
+        } else if Directory(node.info) && node.children_removed { unchanged = Identity(node.info, current) && node.info.mode == current.mode }
+        if node.removed { unchanged = !File.PathExists(CString(*node.source[0])) }
+        if !unchanged { Fail("The copy is complete, but the source changed before it could be moved"); return }
     }
     path: [1024]s8
-    if !PublishedPath(job.check_index, *path[0]) || !Same(node.owned, File.PathInfo(CString(*path[0]))) {
+    if job.kind != 3 && (!PublishedPath(job.check_index, *path[0]) || !Same(node.owned, File.PathInfo(CString(*path[0])))) {
         Fail("The copy is complete, but the destination changed before the source could be moved"); return
     }
     job.check_index += 1
@@ -593,8 +624,9 @@ PublishedParents :: (index: s32) -> bool {
 RemoveSource :: () {
     if job.check_index == 0 { Next(false); return }
     if job.kind != 0 && !Trash.Valid(*job.trash) { Fail("The recovery record changed before source removal"); return }
-    job.check_index -= 1
-    node := *job.nodes[job.check_index]
+    index := job.check_index - 1
+    node := *job.nodes[index]
+    if node.removed { job.check_index -= 1; return }
     CopyText(*job.status.current[0], 1024, *node.source[0])
     current := File.PathInfo(CString(*node.source[0]))
     unchanged := Same(node.info, current)
@@ -604,13 +636,16 @@ RemoveSource :: () {
         unchanged = Identity(node.info, current) && node.info.mode == current.mode
     }
     path: [1024]s8
-    if job.kind != 3 && (!PublishedPath(job.check_index, *path[0]) || !PublishedParents(job.check_index) ||
+    if job.kind != 3 && (!PublishedPath(index, *path[0]) || !PublishedParents(index) ||
         !Same(node.owned, File.PathInfo(CString(*path[0])))) {
         Fail("The copy is complete, but the destination changed before the source could be removed"); return
     }
-    if !SourceParents(job.check_index) || !unchanged || !File.RemoveFile(CString(*node.source[0])) {
+    if !SourceParents(index) || !unchanged || !File.RemoveFile(CString(*node.source[0])) {
         Fail("The copy is complete, but a changed or protected source could not be removed"); return
     }
+    node.removed = true
+    if node.parent >= 0 { job.nodes[node.parent].children_removed = true }
+    job.check_index -= 1
 }
 
 InsideSource :: (source: string, info: File.FileInfo, destination: string) -> bool {
@@ -654,7 +689,11 @@ Prepare :: (operation: *s8, sources: **s8, count: s32, destination: *s8, recover
     directory: [1024]u8
     canonical := Paths.CleanAbsolute(CString(destination), directory[:])
     ok := canonical.count > 0 && File.DirectoryExists(canonical)
-    if ok { CopyText(*next.directory[0], 1024, cast(*s8)(*directory[0])) }
+    if ok {
+        CopyText(*next.directory[0], 1024, cast(*s8)(*directory[0]))
+        CopyText(*next.destination[0], 1024, *next.directory[0])
+        next.destination_info = File.PathInfo(canonical)
+    }
     if kind == 1 { CopyText(*next.trash_root[0], 1024, *next.directory[0]) }
     index: s32 = 0
     while ok && index < count {
@@ -698,6 +737,7 @@ Start :: (operation: *s8, sources: **s8, count: s32, destination: *s8, recovery:
     if next == null { return 0 }
     if job != null {
         if !Cleanup() { ReleaseAllocation(cast(*void)next); return 0 }
+        if !DisposeReplacement() { ReleaseAllocation(cast(*void)next); return 0 }
         ClearNodes()
         ReleaseAllocation(cast(*void)job)
     }
@@ -706,6 +746,14 @@ Start :: (operation: *s8, sources: **s8, count: s32, destination: *s8, recovery:
 }
 
 BeginReplacement :: () {
+    if job.replacement != null {
+        parent := job
+        job = parent.replacement
+        ResumePublished()
+        job = parent
+        parent.phase = 9
+        return
+    }
     if !CanReplace() { Fail("The destination changed, is unsupported, or overlaps a selected source"); return }
     root: [1024]s8
     source: [1]*s8
@@ -735,11 +783,11 @@ ArchiveStep :: () {
     ok := child.status.error[0] == 0 && child.status.completed == 1
     error: [256]s8
     CopyText(*error[0], 256, *child.status.error[0])
-    cleaned := DisposeReplacement()
     if !ok {
         if error[0] == 0 { CopyText(*error[0], 256, TextBytes("The old destination could not be preserved in Trash")) }
         Fail(CString(*error[0])); return
     }
+    cleaned := DisposeReplacement()
     if !cleaned { Fail("The old destination is in Trash, but its transfer could not be closed"); return }
     parent.replacement_done = true
     parent.phase = 6
@@ -783,6 +831,7 @@ NativeCopyCancel :: () {
 NativeCopyFinish :: () {
     if job == null { return }
     Cleanup()
+    DisposeReplacement()
     Trash.Release(*job.trash)
     ClearNodes()
     ReleaseAllocation(cast(*void)job)
@@ -790,6 +839,61 @@ NativeCopyFinish :: () {
 }
 
 NativeCopyConflicts :: () -> s32 { conflicts = true; return 1 }
+
+#scope_file
+ResumePublished :: () {
+    job.status.running = 1
+    job.status.cancelled = 0
+    job.status.conflict = 0
+    job.status.error[0] = 0
+    job.status.conflict_destination[0] = 0
+    job.check_index = 0
+    job.phase = 7
+    job.retrying = true
+}
+
+#scope_export
+NativeCopyRetry :: () -> s32 {
+    if job == null || job.status.running != 0 || job.status.error[0] == 0 || job.index >= job.status.total { return 0 }
+    // A failed cleanup may leave a foreign entry in the private stage. Do
+    // not discard the ownership snapshot or start another copy over it.
+    if !Cleanup() { return 0 }
+    if !Identity(job.destination_info, File.PathInfo(CString(*job.destination[0]))) { return 0 }
+    if job.kind == 2 || job.kind == 3 {
+        if !Trash.Load(*job.trash) { return 0 }
+    }
+    if job.published || (job.kind == 3 && job.node_count > 0) {
+        ResumePublished()
+        return 1
+    }
+    retained := job.replacement_done || (job.replacement != null && job.replacement.published)
+    if job.replacement != null && !retained {
+        if !DisposeReplacement() { return 0 }
+    }
+    pointers: [256]*s8
+    count := job.status.total - job.index
+    index: s32 = 0
+    while index < count { pointers[index] = *job.items[job.index + index].source[0]; index += 1 }
+    recovery: *Trash.Entry = null
+    if job.kind == 2 || job.kind == 3 { recovery = *job.trash }
+    next := Prepare(*job.status.operation[0], *pointers[0], count, *job.destination[0], recovery, job.kind)
+    if next == null { return 0 }
+    index = 0
+    while index < count { job.items[job.index + index].info = next.items[index].info; index += 1 }
+    CopyText(*job.directory[0], 1024, *next.directory[0])
+    ReleaseAllocation(cast(*void)next)
+    ClearNodes()
+    if job.kind == 1 { job.trash = .{} }
+    job.status.running = 1
+    job.status.cancelled = 0
+    job.status.conflict = 0
+    job.status.error[0] = 0
+    job.status.conflict_destination[0] = 0
+    job.phase = 0
+    if retained { job.replacing = true; PlanStart() }
+    else { job.replacing = false; job.replacement_done = false; job.conflict_info = .{} }
+    return cast(s32)(job.status.running != 0)
+}
 
 NativeCopyResolve :: (answer: s32, apply_to_all: s32) -> s32 {
     if job == null || job.status.running == 0 || job.status.conflict == 0 { return 0 }

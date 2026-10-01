@@ -203,6 +203,9 @@ NativeFileTransferPoll :: (status: *FileTransferStatus) -> s32 {
     result := NativeCopyPoll(status)
     if result == 0 || cut_snapshot == null { return result }
     if status.id == cut_job && status.running != 0 { return result }
+    // The same job id survives Retry. Keep its original clipboard snapshot
+    // until that job succeeds, is replaced, or the service is finished.
+    if status.id == cut_job && status.error[0] != 0 { return result }
     if status.id == cut_job && status.cancelled == 0 && status.skipped == 0 && status.error[0] == 0 && status.completed == status.total {
         current := cast(*ClipboardText)AllocateZeroed(1, size_of(ClipboardText))
         if current != null {
