@@ -140,6 +140,8 @@ folder contents, redirected paths, and changed backups are preserved and
 reported. Closing the desktop releases the journal; another completed Copy,
 Duplicate, or Move batch replaces it. Undo does not provide Redo.
 Native transfers now save a private receipt beside each staging copy. Desktop
+startup creates an owner-only Desktop folder for a fresh home, keeping existing
+folders and explicitly configured desktop paths intact. Desktop
 startup recovers verified copies whose owner has exited as visible
 `(partial copy 1)` files or folders, keeping their existing contents and choosing
 another name when occupied. Recovery never removes the original source or

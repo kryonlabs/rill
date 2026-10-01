@@ -385,6 +385,9 @@ DesktopDirectory :: () -> *s8 {
     if Environment("RILL_DESKTOP_DIR", *desktop_path[0], 1024) && desktop_path[0] == 47 { return *desktop_path[0] }
     if !Home(*desktop_path[0], 1024) || desktop_path[0] != 47 ||
         !Append(*desktop_path[0], 1024, TextBytes("/Desktop")) { return null }
+    // A fresh home has no desktop directory yet. Create only this leaf;
+    // existing folders, files, and explicitly configured paths are retained.
+    File.CreatePrivateDirectory(CString(*desktop_path[0]))
     return *desktop_path[0]
 }
 

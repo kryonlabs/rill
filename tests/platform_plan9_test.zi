@@ -65,9 +65,33 @@ Read :: (suffix: string, output: *s8, capacity: s32) -> bool {
 DesktopCases :: (platform: *RillPlatformServices) -> s32 {
     if platform.desktop_directory == null || platform.list_desktop_files == null ||
         platform.file_operation == null || platform.open_path == null { return 30 }
+    home: [1024]s8
+    CopyText(*home[0], 1024, TextBytes(Path("/Fresh home")))
+    if !File.CreatePrivateDirectory(CString(*home[0])) || !SetEnvironment("home", *home[0]) ||
+        !SetEnvironment("RILL_DESKTOP_DIR", TextBytes("")) || File.PathExists(Path("/Fresh home/Desktop")) ||
+        !TextEquals(platform.desktop_directory(), TextBytes(Path("/Fresh home/Desktop"))) ||
+        !File.DirectoryExists(Path("/Fresh home/Desktop")) || platform.list_desktop_files(*desktop_files[0], 8) != 0 { return 38 }
+    #if PLAN9 {
+        info := File.PathInfo(Path("/Fresh home/Desktop"))
+        if (info.mode & cast(u32)511) != cast(u32)448 { return 39 }
+        file := File.OpenRead(Path("/Fresh home/Desktop"))
+        if !file.valid || !File.SetFileAttributes(file, cast(u32)493, cast(u32)1700000000) || !File.CloseFile(file) { return 40 }
+        if !TextEquals(platform.desktop_directory(), TextBytes(Path("/Fresh home/Desktop"))) { return 41 }
+        after := File.PathInfo(Path("/Fresh home/Desktop"))
+        recovery_error: [256]s8
+        if after.identity != info.identity || (after.mode & cast(u32)511) != cast(u32)493 ||
+            after.modified != cast(u32)1700000000 || platform.file_recover_staging(platform.desktop_directory(), *recovery_error[0], 256) != 0 ||
+            recovery_error[0] != 0 { return 42 }
+    }
+    CopyText(*home[0], 1024, TextBytes(Path("/Blocked home")))
+    if !File.CreatePrivateDirectory(CString(*home[0])) || !Put("/Blocked home/Desktop", "owned") ||
+        !SetEnvironment("home", *home[0]) || !TextEquals(platform.desktop_directory(), TextBytes(Path("/Blocked home/Desktop"))) { return 43 }
+    original: [512]s8
+    if !Read("/Blocked home/Desktop", *original[0], 512) || !TextEquals(*original[0], TextBytes("owned")) ||
+        !SetEnvironment("home", *root[0]) { return 44 }
     if !SetEnvironment("RILL_DESKTOP_DIR", TextBytes(Path("/Desktop"))) ||
         !TextEquals(platform.desktop_directory(), TextBytes(Path("/Desktop"))) ||
-        platform.list_desktop_files(*desktop_files[0], 8) != 0 ||
+        platform.list_desktop_files(*desktop_files[0], 8) != 0 || File.PathExists(Path("/Desktop")) ||
         !File.CreateDirectory(Path("/Desktop")) || !File.CreateDirectory(Path("/Desktop/Folder")) ||
         !Put("/Desktop/Note.txt", "original") || !Put("/Desktop/é.txt", "unicode") ||
         !Put("/Desktop/.hidden", "hidden") { return 31 }
