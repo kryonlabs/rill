@@ -246,9 +246,11 @@ Cases :: () -> s32 {
     transfer.conflict = 1
     CopyText(*transfer.conflict_destination[0], 512, TextBytes("/fixture/conflict"))
     if !Idle(4300) || !ClickKey(cast(u64)220213, 4400) || resolution != 3 { return 21 }
+    transfer.conflict = 1
+    if !Idle(4600) || !ClickKey(cast(u64)220212, 4700) || resolution != 2 { return 37 }
     transfer.running = 0; transfer.conflict = 0; state.transfer_visible = false
     // Poll the completed conflict before sending the next desktop gesture.
-    if !Idle(4800) || !ClickItem(2, 0, 5000) || !ClickItem(2, 0, 5200) || !Idle(5400) ||
+    if !Idle(4900) || !ClickItem(2, 0, 5000) || !ClickItem(2, 0, 5200) || !Idle(5400) ||
         state.action != 5 || state.trash_count != 40 || open_count != 1 { return 28 }
     if !Draw(Vector2.{}, false, false, false, false, KeyEnd, 0, 5500) ||
         state.trash_selected != 39 || state.trash_scroll <= 0 || !CaptureConfigured() { return 29 }

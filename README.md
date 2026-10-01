@@ -92,7 +92,7 @@ desktop changes. Native Plan 9 services enumerate the desktop directory,
 create private folders exclusively, and rename without replacing existing
 files. Native file and folder Copy/Paste, Duplicate, Move, and Cut/Paste now
 use Ziran services with literal file URIs on `/dev/snarf`, incremental data
-copying, cancellation, Skip, and Keep Both. Copies retain permissions and
+copying, cancellation, Skip, Keep Both, and Replace. Copies retain permissions and
 modification times, check that the source stayed unchanged, and publish a
 private sibling only after the complete copy succeeds. Folder snapshots
 include hidden entries and empty directories and reject recursive bindings
@@ -112,8 +112,14 @@ checksummed record of every copied node's identity. Restore and Empty refuse
 changed identities, redirected payloads, damaged records, and unknown contents
 with an explicit error. Recovery reanchors saved identities when the same
 filesystem is mounted again. Cancellation after publication keeps the complete
-recoverable copy. The list displays up to 64 entries at a time; restore and
-empty currently run synchronously. Replace, retry, undo, and recovery of
+recoverable copy. Replace finishes staging the incoming entry, then preserves
+the old destination in Trash before publishing without overwriting a newly
+created entry. It supports whole files and folders, different entry types,
+and applying the choice to remaining conflicts. Changed destinations and
+overlap with selected sources refuse replacement. Archiving advances with the
+normal transfer polls; cancellation or later failure keeps any published
+backup recoverable in Trash. The list displays up to 64 entries at a time;
+restore and empty currently run synchronously. Retry, undo, and recovery of
 interrupted unpublished staging entries remain pending; unsupported operations
 refuse to start.
 Native desktop icons now load PNG through the same Kryon `Image` surface.
@@ -124,11 +130,14 @@ streams, native image compatibility, and rendered pixels from source and
 saved IR. PNGs are limited to 64 MiB and 4096 pixels per axis; color profiles
 and gamma are ignored, and 16-bit samples are reduced to their high byte.
 The Linux transfer implementation remains C. The Taiji native gate's
-`file_transfer`, `folder_transfer`, and `trash` suites check actual contents,
+`file_transfer`, `folder_transfer`, `trash`, and `replacement` suites check actual contents,
 metadata, clipboard filenames, cancellation, collisions, source and
 destination changes, recovery after releasing the transfer, damaged headers
-and inventories, a fresh native filesystem mount, and preservation of foreign staging entries and bound Trash
-payloads from both source and saved IR.
+and inventories, a fresh native filesystem mount, and preservation of foreign
+staging entries and bound Trash payloads from both source and saved IR.
+Replacement checks also cover batch choices, changes during archiving,
+cancellation around backup publication, recovery after a failed publication,
+and Cut/Paste clipboard completion.
 `make desktop-files-ui-test` checks the file controls from source and saved IR.
 
 Native document opening now uses `src/document_open.zi` and

@@ -260,7 +260,7 @@ Run :: () -> s32 {
     if platform.file_transfer_conflicts() == 0 ||
         platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, *destination[0]) == 0 ||
         !Drain(platform, *status) || status.conflict != 1 || status.running != 1 ||
-        platform.file_transfer_resolve(2, 0) != 0 || !Content("/destination/Space's $x; 文档.txt", 100003) ||
+        platform.file_transfer_resolve(4, 0) != 0 || !Content("/destination/Space's $x; 文档.txt", 100003) ||
         platform.file_transfer_resolve(3, 0) == 0 || !Drain(platform, *status) || status.error[0] != 0 ||
         status.completed != 1 || !Content("/destination/Space's $x; 文档 (copy 1).txt", 100003) || !NoStaging() { return 8 }
     if platform.file_transfer_start(TextBytes("duplicate"), *sources[0], 1, *destination[0]) == 0 ||

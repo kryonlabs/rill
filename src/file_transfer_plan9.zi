@@ -31,8 +31,8 @@ CopyJob :: struct {
     buffer: [32768]u8
     status: FileTransferStatus
     index: s32
-    phase: s32 // 0 target, 1 bytes, 2 plan, 3 nodes, 4 verify, 5 attributes, 6 publish, 7 move check, 8 remove
-    sticky: s32 // 0 ask, 1 skip, 3 keep both
+    phase: s32 // 0 target, 1 bytes, 2 plan, 3 nodes, 4 verify, 5 attributes, 6 publish, 7 move check, 8 remove, 9 archive destination
+    sticky: s32 // 0 ask, 1 skip, 2 replace, 3 keep both
     nodes: *CopyNode
     node_count: s32
     node_capacity: s32
@@ -43,6 +43,10 @@ CopyJob :: struct {
     kind: s32 // 0 ordinary transfer, 1 trash, 2 restore, 3 empty
     trash_root: [1024]s8
     trash: Trash.Entry
+    conflict_info: File.FileInfo
+    replacing: bool
+    replacement_done: bool
+    replacement: *CopyJob
 }
 job: *CopyJob;
 sequence: u32;
@@ -131,8 +135,22 @@ ClearNodes :: () {
     job.check_index = 0
 }
 
+DisposeReplacement :: () -> bool {
+    if job.replacement == null { return true }
+    parent := job
+    child := parent.replacement
+    parent.replacement = null
+    job = child
+    ok := Cleanup()
+    Trash.Release(*child.trash)
+    ClearNodes()
+    ReleaseAllocation(cast(*void)child)
+    job = parent
+    return ok
+}
+
 Cleanup :: () -> bool {
-    ok := true
+    ok := DisposeReplacement()
     if job.cursor.valid { if !File.CloseDirectory(*job.cursor) { ok = false } }
     if job.input.valid { if !File.CloseFile(job.input) { ok = false }; job.input.valid = false }
     if job.output.valid { if !File.CloseFile(job.output) { ok = false }; job.output.valid = false }
@@ -213,6 +231,9 @@ Next :: (skipped: bool) {
     }
     Trash.Release(*job.trash)
     job.trash = .{}
+    job.conflict_info = .{}
+    job.replacing = false
+    job.replacement_done = false
     ClearNodes()
     if skipped { job.status.skipped += 1 }
     else { job.status.completed += 1 }
@@ -385,7 +406,13 @@ BeginItem :: () {
             if !UniqueTarget() { Fail("Could not find an unused restored name"); return }
             PlanStart(); return
         }
+        job.conflict_info = File.PathInfo(CString(*job.target[0]))
         if job.sticky == 1 { Next(true); return }
+        if job.sticky == 2 {
+            if !CanReplace() { Fail("The destination changed, is unsupported, or overlaps a selected source"); return }
+            job.replacing = true
+            PlanStart(); return
+        }
         if job.sticky == 3 {
             if !UniqueTarget() { Fail("Could not find an unused copy name"); return }
         } else if conflicts {
@@ -499,6 +526,7 @@ Publish :: () {
     if job.kind == 1 && !RecordTrash() {
         Fail("Could not save the recovery record before publication"); return
     }
+    if job.replacing && !job.replacement_done { BeginReplacement(); return }
     if job.kind != 0 && !Trash.Valid(*job.trash) { Fail("The Trash recovery record changed before publication"); return }
     if !File.RenameNoReplace(CString(*job.staging[0]), CString(*job.target[0])) { Fail("The copy could not be published without replacing another entry"); return }
     if job.kind == 1 { job.trash.published = true }
@@ -599,12 +627,28 @@ InsideSource :: (source: string, info: File.FileInfo, destination: string) -> bo
     }
 }
 
-Start :: (operation: *s8, sources: **s8, count: s32, destination: *s8, recovery: *Trash.Entry, kind: s32) -> s32 {
-    if (job != null && job.status.running != 0) || sources == null || count <= 0 || count > ItemLimit ||
+CanReplace :: () -> bool {
+    if job.kind != 0 || !Supported(job.conflict_info) ||
+        !Same(job.conflict_info, File.PathInfo(CString(*job.target[0]))) { return false }
+    target := CString(*job.target[0])
+    index: s32 = 0
+    while index < job.status.total {
+        item := *job.items[index]
+        source := CString(*item.source[0])
+        if Identity(job.conflict_info, item.info) ||
+            (Directory(job.conflict_info) && InsideSource(target, job.conflict_info, source)) ||
+            (Directory(item.info) && InsideSource(source, item.info, target)) { return false }
+        index += 1
+    }
+    return true
+}
+
+Prepare :: (operation: *s8, sources: **s8, count: s32, destination: *s8, recovery: *Trash.Entry, kind: s32) -> *CopyJob {
+    if sources == null || count <= 0 || count > ItemLimit ||
         destination == null || (!TextEquals(operation, TextBytes("copy")) && !TextEquals(operation, TextBytes("duplicate")) &&
-        !TextEquals(operation, TextBytes("move")) && !TextEquals(operation, TextBytes("trash")) && kind == 0) { return 0 }
+        !TextEquals(operation, TextBytes("move")) && !TextEquals(operation, TextBytes("trash")) && kind == 0) { return null }
     next := cast(*CopyJob)AllocateZeroed(1, size_of(CopyJob))
-    if next == null { return 0 }
+    if next == null { return null }
     next.kind = kind
     if recovery != null { next.trash = recovery.* }
     directory: [1024]u8
@@ -638,20 +682,81 @@ Start :: (operation: *s8, sources: **s8, count: s32, destination: *s8, recovery:
         }
         index += 1
     }
-    if !ok { ReleaseAllocation(cast(*void)next); return 0 }
-    if job != null {
-        if !Cleanup() { ReleaseAllocation(cast(*void)next); return 0 }
-        ClearNodes()
-        ReleaseAllocation(cast(*void)job)
-    }
+    if !ok { ReleaseAllocation(cast(*void)next); return null }
     sequence += 1
     if sequence == 0 { sequence = 1 }
     next.status.id = sequence
     next.status.running = 1
     next.status.total = count
     CopyText(*next.status.operation[0], 16, operation)
+    return next
+}
+
+Start :: (operation: *s8, sources: **s8, count: s32, destination: *s8, recovery: *Trash.Entry, kind: s32) -> s32 {
+    if job != null && job.status.running != 0 { return 0 }
+    next := Prepare(operation, sources, count, destination, recovery, kind)
+    if next == null { return 0 }
+    if job != null {
+        if !Cleanup() { ReleaseAllocation(cast(*void)next); return 0 }
+        ClearNodes()
+        ReleaseAllocation(cast(*void)job)
+    }
     job = next
     return 1
+}
+
+BeginReplacement :: () {
+    if !CanReplace() { Fail("The destination changed, is unsupported, or overlaps a selected source"); return }
+    root: [1024]s8
+    source: [1]*s8
+    source[0] = *job.target[0]
+    if !Trash.Root(*root[0], true) { Fail("The old destination could not be preserved in Trash"); return }
+    child := Prepare(TextBytes("trash"), *source[0], 1, *root[0], null, 1)
+    if child == null { Fail("The old destination could not be preserved in Trash"); return }
+    if !Same(job.conflict_info, child.items[0].info) {
+        ReleaseAllocation(cast(*void)child)
+        Fail("The destination changed before it could be preserved in Trash"); return
+    }
+    job.replacement = child
+    job.phase = 9
+}
+
+ArchiveStep :: () {
+    parent := job
+    child := parent.replacement
+    if child == null { Fail("The destination recovery operation is missing"); return }
+    before := child.status.bytes
+    job = child
+    Advance()
+    job = parent
+    parent.status.bytes += child.status.bytes - before
+    CopyText(*parent.status.current[0], 1024, *child.status.current[0])
+    if child.status.running != 0 { return }
+    ok := child.status.error[0] == 0 && child.status.completed == 1
+    error: [256]s8
+    CopyText(*error[0], 256, *child.status.error[0])
+    cleaned := DisposeReplacement()
+    if !ok {
+        if error[0] == 0 { CopyText(*error[0], 256, TextBytes("The old destination could not be preserved in Trash")) }
+        Fail(CString(*error[0])); return
+    }
+    if !cleaned { Fail("The old destination is in Trash, but its transfer could not be closed"); return }
+    parent.replacement_done = true
+    parent.phase = 6
+}
+
+Advance :: () {
+    if job.status.running == 0 || job.status.conflict != 0 { return }
+    if job.phase == 0 { BeginItem() }
+    else if job.phase == 1 { CopyBlock() }
+    else if job.phase == 2 { PlanStep() }
+    else if job.phase == 3 { BeginNode() }
+    else if job.phase == 4 { VerifyStep() }
+    else if job.phase == 5 { AttributeStep() }
+    else if job.phase == 6 { Publish() }
+    else if job.phase == 7 { MoveCheck() }
+    else if job.phase == 8 { RemoveSource() }
+    else if job.phase == 9 { ArchiveStep() }
 }
 
 #scope_export
@@ -664,17 +769,7 @@ NativeCopyStart :: (operation: *s8, sources: **s8, count: s32, destination: *s8)
 
 NativeCopyPoll :: (status: *FileTransferStatus) -> s32 {
     if job == null || status == null { return 0 }
-    if job.status.running != 0 && job.status.conflict == 0 {
-        if job.phase == 0 { BeginItem() }
-        else if job.phase == 1 { CopyBlock() }
-        else if job.phase == 2 { PlanStep() }
-        else if job.phase == 3 { BeginNode() }
-        else if job.phase == 4 { VerifyStep() }
-        else if job.phase == 5 { AttributeStep() }
-        else if job.phase == 6 { Publish() }
-        else if job.phase == 7 { MoveCheck() }
-        else if job.phase == 8 { RemoveSource() }
-    }
+    Advance()
     status.* = job.status
     return 1
 }
@@ -700,8 +795,15 @@ NativeCopyResolve :: (answer: s32, apply_to_all: s32) -> s32 {
     if job == null || job.status.running == 0 || job.status.conflict == 0 { return 0 }
     if answer == 0 { NativeCopyCancel(); return 1 }
     if answer == 1 { if apply_to_all != 0 { job.sticky = 1 }; Next(true); return 1 }
-    // Replacement awaits recoverable native Trash support. Refuse it while
-    // keeping the conflict open so the user can skip or keep both instead.
+    if answer == 2 {
+        if !CanReplace() { Fail("The destination changed, is unsupported, or overlaps a selected source"); return 0 }
+        if apply_to_all != 0 { job.sticky = 2 }
+        job.replacing = true
+        job.status.conflict = 0
+        job.status.conflict_destination[0] = 0
+        PlanStart()
+        return cast(s32)(job.status.running != 0)
+    }
     if answer != 3 { return 0 }
     if apply_to_all != 0 { job.sticky = 3 }
     if !UniqueTarget() { Fail("Could not find an unused copy name"); return 0 }

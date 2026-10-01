@@ -1,0 +1,325 @@
+#import "file_transfer_plan9"
+#import "file_clipboard_plan9"
+#import "platform_plan9"
+#import "platform_types"
+#import "native_memory"
+File :: #import "std/file_plan9";
+Trash :: #import "file_trash_plan9";
+
+#scope_file
+root: [1024]s8;
+path: [1024]s8;
+destination: [1024]s8;
+trash_root: [1024]s8;
+sources: [2]*s8;
+source_names: [2][1024]s8;
+buffer: [32768]u8;
+records: [8]FileTrashEntry;
+entry: Trash.Entry;
+status: FileTransferStatus;
+error: [256]s8;
+name: [256]s8;
+record_bytes: [1080]u8;
+libc :: #system_library "libc";
+SetEnvironment :: (name: *s8, value: *s8) -> s32 #foreign libc "putenv";
+PrivateNamespace :: (flags: s32) -> s32 #foreign libc "rfork";
+
+Path :: (suffix: string) -> string {
+    used := CopyText(*path[0], 1024, *root[0])
+    CopyText(*path[used], 1024 - used, TextBytes(suffix))
+    return CString(*path[0])
+}
+
+Choose :: (suffix: string, index: s32) {
+    CopyText(*source_names[index][0], 1024, TextBytes(Path(suffix)))
+    sources[index] = *source_names[index][0]
+}
+
+PutPath :: (value: string, count: s64, seed: s32) -> bool {
+    file := File.OpenReplace(value)
+    if !file.valid { return false }
+    offset: s64 = 0
+    while offset < count {
+        amount := count - offset
+        if amount > 32768 { amount = 32768 }
+        for index: 0..amount - 1 { buffer[index] = cast(u8)((offset + index + seed) % 251) }
+        if File.WriteAt(file, buffer[0:amount], offset) != amount { File.CloseFile(file); return false }
+        offset += amount
+    }
+    ok := File.SetFileAttributes(file, cast(u32)416, cast(u32)1700000000)
+    return File.CloseFile(file) && ok
+}
+
+Put :: (suffix: string, count: s64, seed: s32) -> bool { return PutPath(Path(suffix), count, seed) }
+
+ContentPath :: (value: string, count: s64, seed: s32) -> bool {
+    file := File.OpenRead(value)
+    if !file.valid { return false }
+    info := File.HandleInfo(file)
+    if info.length != count || (info.mode & cast(u32)511) != cast(u32)416 || info.modified != cast(u32)1700000000 {
+        File.CloseFile(file); return false
+    }
+    offset: s64 = 0
+    while offset < count {
+        amount := count - offset
+        if amount > 32768 { amount = 32768 }
+        if File.ReadAt(file, buffer[0:amount], offset) != amount { File.CloseFile(file); return false }
+        for index: 0..amount - 1 {
+            if buffer[index] != cast(u8)((offset + index + seed) % 251) { File.CloseFile(file); return false }
+        }
+        offset += amount
+    }
+    return File.CloseFile(file)
+}
+
+Content :: (suffix: string, count: s64, seed: s32) -> bool { return ContentPath(Path(suffix), count, seed) }
+
+Drain :: (platform: *RillPlatformServices) -> bool {
+    polls: s32 = 0
+    while polls < 4096 {
+        if platform.file_transfer_poll(*status) == 0 { return false }
+        if status.running == 0 || status.conflict != 0 { return true }
+        polls += 1
+    }
+    return false
+}
+
+WaitBytes :: (platform: *RillPlatformServices, minimum: u64) -> bool {
+    polls: s32 = 0
+    while polls < 4096 {
+        if platform.file_transfer_poll(*status) == 0 || status.running == 0 || status.conflict != 0 { return false }
+        if status.bytes >= minimum { return true }
+        polls += 1
+    }
+    return false
+}
+
+NoStaging :: () -> bool {
+    cursor := File.OpenDirectory(CString(*destination[0]))
+    if !cursor.valid { return false }
+    clean := true
+    while true {
+        child := File.NextDirectoryEntry(*cursor)
+        if !child.valid { break }
+        if TextStartsWith(cast(*s8)(*child.name[0]), ".transfer-") { clean = false; break }
+    }
+    return File.CloseDirectory(*cursor) && !cursor.failed && clean
+}
+
+One :: (platform: *RillPlatformServices, original: string) -> bool {
+    expected: [1024]s8
+    CopyText(*expected[0], 1024, TextBytes(Path(original)))
+    if platform.file_trash_list(*records[0], 8) != 1 || !TextEquals(*records[0].original[0], *expected[0]) { return false }
+    CopyText(*name[0], 256, *records[0].name[0])
+    return Trash.Read(*trash_root[0], *name[0], *entry)
+}
+
+Conflict :: (platform: *RillPlatformServices, operation: string, source: string) -> bool {
+    Choose(source, 0)
+    return platform.file_transfer_start(TextBytes(operation), *sources[0], 1, *destination[0]) != 0 &&
+        Drain(platform) && status.conflict == 1 && status.running == 1 && status.bytes == cast(u64)0
+}
+
+Published :: (platform: *RillPlatformServices, original: string, removed: bool) -> bool {
+    polls: s32 = 0
+    while polls < 4096 {
+        if platform.file_transfer_poll(*status) == 0 || status.running == 0 || status.conflict != 0 { return false }
+        if One(platform, original) && File.PathExists(Path(original)) != removed { return true }
+        polls += 1
+    }
+    return false
+}
+
+Basic :: (platform: *RillPlatformServices) -> s32 {
+    if !Put("/source/Space's $x; 文档.txt", 100003, 11) || !Put("/destination/Space's $x; 文档.txt", 65539, 79) ||
+        !Conflict(platform, "copy", "/source/Space's $x; 文档.txt") { return 1 }
+    id := status.id
+    if platform.file_transfer_resolve(2, 0) == 0 || !WaitBytes(platform, cast(u64)32768) ||
+        !Content("/destination/Space's $x; 文档.txt", 65539, 79) || platform.file_trash_list(*records[0], 8) != 0 ||
+        !Drain(platform) || status.running != 0 || status.error[0] != 0 || status.completed != 1 || status.id != id ||
+        status.bytes != cast(u64)165542 || !Content("/source/Space's $x; 文档.txt", 100003, 11) ||
+        !Content("/destination/Space's $x; 文档.txt", 100003, 11) || !NoStaging() ||
+        !One(platform, "/destination/Space's $x; 文档.txt") || !ContentPath(CString(*entry.data[0]), 65539, 79) { return 2 }
+    platform.file_transfer_finish()
+    if platform.file_trash_restore(*name[0], *error[0], 256) == 0 ||
+        !Content("/destination/Space's $x; 文档.txt", 100003, 11) ||
+        !Content("/destination/Space's $x; 文档 (restored 1).txt", 65539, 79) ||
+        platform.file_trash_list(*records[0], 8) != 0 { return 3 }
+    return 0
+}
+
+Cancellation :: (platform: *RillPlatformServices) -> s32 {
+    if !Put("/source/cancel.bin", 100003, 11) || !Put("/destination/cancel.bin", 100003, 79) ||
+        !Conflict(platform, "copy", "/source/cancel.bin") || platform.file_transfer_resolve(2, 0) == 0 ||
+        !WaitBytes(platform, cast(u64)32768) { return 4 }
+    platform.file_transfer_cancel()
+    if !Drain(platform) || status.cancelled != 1 || !NoStaging() ||
+        !Content("/source/cancel.bin", 100003, 11) || !Content("/destination/cancel.bin", 100003, 79) ||
+        platform.file_trash_list(*records[0], 8) != 0 { return 5 }
+    // Cancellation while archiving also removes its unpublished reservation.
+    if !Conflict(platform, "copy", "/source/cancel.bin") || platform.file_transfer_resolve(2, 0) == 0 ||
+        !WaitBytes(platform, cast(u64)132771) { return 6 }
+    platform.file_transfer_cancel()
+    if !Drain(platform) || status.cancelled != 1 || !NoStaging() ||
+        !Content("/source/cancel.bin", 100003, 11) || !Content("/destination/cancel.bin", 100003, 79) ||
+        platform.file_trash_empty(*error[0], 256) == 0 { return 7 }
+    if !Conflict(platform, "copy", "/source/cancel.bin") || platform.file_transfer_resolve(2, 0) == 0 ||
+        !Published(platform, "/destination/cancel.bin", false) { return 8 }
+    platform.file_transfer_cancel()
+    if !Drain(platform) || status.cancelled != 1 || !NoStaging() ||
+        !Content("/source/cancel.bin", 100003, 11) || !Content("/destination/cancel.bin", 100003, 79) ||
+        !One(platform, "/destination/cancel.bin") || !ContentPath(CString(*entry.data[0]), 100003, 79) ||
+        platform.file_trash_empty(*error[0], 256) == 0 { return 9 }
+    if !Conflict(platform, "copy", "/source/cancel.bin") || platform.file_transfer_resolve(2, 0) == 0 ||
+        !Published(platform, "/destination/cancel.bin", true) { return 10 }
+    platform.file_transfer_cancel()
+    if !Drain(platform) || status.cancelled != 1 || !NoStaging() || File.PathExists(Path("/destination/cancel.bin")) ||
+        !Content("/source/cancel.bin", 100003, 11) || !One(platform, "/destination/cancel.bin") ||
+        !ContentPath(CString(*entry.data[0]), 100003, 79) || platform.file_trash_restore(*name[0], *error[0], 256) == 0 ||
+        !Content("/destination/cancel.bin", 100003, 79) { return 11 }
+    return 0
+}
+
+Changes :: (platform: *RillPlatformServices) -> s32 {
+    if !Put("/source/changed.bin", 100003, 11) || !Put("/destination/changed.bin", 100003, 79) ||
+        !Conflict(platform, "copy", "/source/changed.bin") || !Put("/destination/changed.bin", 3, 203) ||
+        platform.file_transfer_resolve(2, 0) != 0 || !Drain(platform) || status.error[0] == 0 || !NoStaging() ||
+        !Content("/destination/changed.bin", 3, 203) || !Content("/source/changed.bin", 100003, 11) { return 12 }
+    if !Conflict(platform, "copy", "/source/changed.bin") || platform.file_transfer_resolve(2, 0) == 0 ||
+        !WaitBytes(platform, cast(u64)32768) || !Put("/destination/changed.bin", 13, 203) || !Drain(platform) ||
+        status.error[0] == 0 || !NoStaging() || !Content("/destination/changed.bin", 13, 203) ||
+        platform.file_trash_list(*records[0], 8) != 0 { return 13 }
+    if !Put("/destination/changed.bin", 100003, 79) || !Conflict(platform, "copy", "/source/changed.bin") ||
+        platform.file_transfer_resolve(2, 0) == 0 || !WaitBytes(platform, cast(u64)132771) ||
+        !Put("/destination/changed.bin", 13, 203) || !Drain(platform) || status.error[0] == 0 ||
+        !NoStaging() || !Content("/destination/changed.bin", 13, 203) ||
+        !Content("/source/changed.bin", 100003, 11) || platform.file_trash_empty(*error[0], 256) == 0 { return 14 }
+    if !Put("/destination/changed.bin", 100003, 79) || !Conflict(platform, "copy", "/source/changed.bin") ||
+        platform.file_transfer_resolve(2, 0) == 0 || !Published(platform, "/destination/changed.bin", true) ||
+        !Put("/destination/changed.bin", 7, 203) || !Drain(platform) || status.error[0] == 0 || !NoStaging() ||
+        !Content("/destination/changed.bin", 7, 203) || !Content("/source/changed.bin", 100003, 11) ||
+        !One(platform, "/destination/changed.bin") || !ContentPath(CString(*entry.data[0]), 100003, 79) ||
+        platform.file_trash_restore(*name[0], *error[0], 256) == 0 ||
+        !Content("/destination/changed (restored 1).bin", 100003, 79) { return 15 }
+    return 0
+}
+
+Folder :: (platform: *RillPlatformServices) -> s32 {
+    if !File.CreatePrivateDirectory(Path("/source/Tree")) || !File.CreatePrivateDirectory(Path("/source/Tree/empty")) ||
+        !Put("/source/Tree/new.bin", 100003, 11) || !File.CreatePrivateDirectory(Path("/destination/Tree")) ||
+        !File.CreatePrivateDirectory(Path("/destination/Tree/old-empty")) || !Put("/destination/Tree/.hidden", 65539, 79) ||
+        !Conflict(platform, "copy", "/source/Tree") || platform.file_transfer_resolve(2, 0) == 0 || !Drain(platform) ||
+        status.error[0] != 0 || status.completed != 1 || !NoStaging() || !Content("/destination/Tree/new.bin", 100003, 11) ||
+        !File.DirectoryExists(Path("/destination/Tree/empty")) || File.PathExists(Path("/destination/Tree/.hidden")) ||
+        !One(platform, "/destination/Tree") || records[0].is_directory != 1 { return 16 }
+    hidden: [1024]s8
+    if !Trash.Join(*entry.data[0], TextBytes(".hidden"), *hidden[0]) ||
+        !ContentPath(CString(*hidden[0]), 65539, 79) || platform.file_trash_restore(*name[0], *error[0], 256) == 0 ||
+        !Content("/destination/Tree (restored 1)/.hidden", 65539, 79) ||
+        !File.DirectoryExists(Path("/destination/Tree (restored 1)/old-empty")) { return 17 }
+    // Whole entries are replaced even when their types differ.
+    if !Put("/source/type.bin", 37, 11) || !File.CreatePrivateDirectory(Path("/destination/type.bin")) ||
+        !Put("/destination/type.bin/old", 39, 79) || !Conflict(platform, "copy", "/source/type.bin") ||
+        platform.file_transfer_resolve(2, 0) == 0 || !Drain(platform) || status.error[0] != 0 ||
+        !Content("/destination/type.bin", 37, 11) || !One(platform, "/destination/type.bin") || records[0].is_directory != 1 ||
+        platform.file_trash_empty(*error[0], 256) == 0 { return 18 }
+    if !File.CreatePrivateDirectory(Path("/source/type-dir")) || !Put("/source/type-dir/new", 37, 11) ||
+        !Put("/destination/type-dir", 39, 79) || !Conflict(platform, "copy", "/source/type-dir") ||
+        platform.file_transfer_resolve(2, 0) == 0 || !Drain(platform) || status.error[0] != 0 ||
+        !Content("/destination/type-dir/new", 37, 11) || !One(platform, "/destination/type-dir") ||
+        records[0].is_directory != 0 || !ContentPath(CString(*entry.data[0]), 39, 79) ||
+        platform.file_trash_empty(*error[0], 256) == 0 { return 19 }
+    return 0
+}
+
+Selection :: (platform: *RillPlatformServices) -> s32 {
+    if !Put("/source/self.bin", 37, 11) { return 20 }
+    CopyText(*destination[0], 1024, TextBytes(Path("/source")))
+    if !Conflict(platform, "copy", "/source/self.bin") || platform.file_transfer_resolve(2, 0) != 0 ||
+        !Content("/source/self.bin", 37, 11) || !NoStaging() { return 21 }
+    CopyText(*destination[0], 1024, TextBytes(Path("/destination")))
+    if !File.CreatePrivateDirectory(Path("/destination/Parent")) ||
+        !File.CreatePrivateDirectory(Path("/destination/Parent/nested")) ||
+        !Put("/destination/Parent/nested/Parent", 37, 11) ||
+        !Conflict(platform, "copy", "/destination/Parent/nested/Parent") || platform.file_transfer_resolve(2, 0) != 0 ||
+        !Content("/destination/Parent/nested/Parent", 37, 11) || !NoStaging() ||
+        platform.file_trash_list(*records[0], 8) != 0 { return 22 }
+    return 0
+}
+
+All :: (platform: *RillPlatformServices) -> s32 {
+    if !Put("/source/all-a.bin", 37, 11) || !Put("/source/all-b.bin", 39, 11) ||
+        !Put("/destination/all-a.bin", 3, 79) || !Put("/destination/all-b.bin", 5, 79) { return 23 }
+    Choose("/source/all-a.bin", 0); Choose("/source/all-b.bin", 1)
+    if platform.file_transfer_start(TextBytes("copy"), *sources[0], 2, *destination[0]) == 0 ||
+        !Drain(platform) || status.conflict != 1 || platform.file_transfer_resolve(2, 1) == 0 || !Drain(platform) ||
+        status.running != 0 || status.completed != 2 || status.error[0] != 0 || !NoStaging() ||
+        !Content("/destination/all-a.bin", 37, 11) || !Content("/destination/all-b.bin", 39, 11) ||
+        platform.file_trash_list(*records[0], 8) != 2 || platform.file_trash_empty(*error[0], 256) == 0 { return 24 }
+    return 0
+}
+
+Cut :: (platform: *RillPlatformServices) -> s32 {
+    if !Put("/source/cut.bin", 100003, 11) || !Put("/destination/cut.bin", 39, 79) ||
+        SetEnvironment(TextBytes("RILL_SNARF_PATH"), TextBytes(Path("/snarf"))) != 0 { return 25 }
+    Choose("/source/cut.bin", 0)
+    if platform.file_clipboard_copy(*sources[0], 1, 1) == 0 || platform.file_clipboard_paste(*destination[0]) == 0 ||
+        !Drain(platform) || status.conflict != 1 || platform.file_transfer_resolve(2, 0) == 0 || !Drain(platform) ||
+        status.error[0] != 0 || status.completed != 1 || File.PathExists(Path("/source/cut.bin")) ||
+        !Content("/destination/cut.bin", 100003, 11) || !One(platform, "/destination/cut.bin") ||
+        !ContentPath(CString(*entry.data[0]), 39, 79) || !NoStaging() { return 26 }
+    file := File.OpenRead(Path("/snarf"))
+    if !file.valid || File.FileSize(file) != 0 || !File.CloseFile(file) ||
+        platform.file_trash_empty(*error[0], 256) == 0 { return 27 }
+    return 0
+}
+
+Metadata :: (platform: *RillPlatformServices) -> s32 {
+    if !Put("/source/metadata.bin", 100003, 11) || !Put("/destination/metadata.bin", 100003, 79) ||
+        !Conflict(platform, "copy", "/source/metadata.bin") || platform.file_transfer_resolve(2, 0) == 0 ||
+        !Published(platform, "/destination/metadata.bin", false) { return 28 }
+    file := File.OpenRead(CString(*entry.info[0]))
+    if !file.valid { return 29 }
+    count := File.Read(file, record_bytes[:])
+    complete := File.FileSize(file) == count && count > 75
+    if !File.CloseFile(file) || !complete || !PutPath(CString(*entry.info[0]), 3, 0) || !Drain(platform) ||
+        status.error[0] == 0 || !Content("/destination/metadata.bin", 100003, 79) ||
+        !Content("/source/metadata.bin", 100003, 11) || !ContentPath(CString(*entry.data[0]), 100003, 79) ||
+        !NoStaging() || platform.file_trash_empty(*error[0], 256) != 0 { return 30 }
+    file = File.OpenReplace(CString(*entry.info[0]))
+    if !file.valid || File.Write(file, record_bytes[0:count]) != count || !File.CloseFile(file) ||
+        platform.file_trash_empty(*error[0], 256) == 0 { return 31 }
+    return 0
+}
+
+Cases :: () -> s32 {
+    if PrivateNamespace(1) < 0 { return 98 }
+    value := EnvironmentValue(TextBytes("RILL_TEST_ROOT"))
+    if value == null || value[0] != 47 || TextLength(value) > 800 { return 99 }
+    CopyText(*root[0], 1024, value); ReleaseAllocation(cast(*void)value)
+    CopyText(*destination[0], 1024, TextBytes(Path("/destination")))
+    CopyText(*trash_root[0], 1024, TextBytes(Path("/trash")))
+    if !File.CreatePrivateDirectory(Path("/source")) || !File.CreatePrivateDirectory(Path("/destination")) ||
+        !File.CreatePrivateDirectory(Path("/trash")) || SetEnvironment(TextBytes("RILL_TRASH_DIR"), *trash_root[0]) != 0 { return 97 }
+    platform := RillPlatformCurrent()
+    if platform == null || platform.file_transfer_conflicts() == 0 { return 96 }
+    result := Basic(platform)
+    if result == 0 { result = Cancellation(platform) }
+    if result == 0 { result = Changes(platform) }
+    if result == 0 { result = Folder(platform) }
+    if result == 0 { result = Selection(platform) }
+    if result == 0 { result = All(platform) }
+    if result == 0 { result = Cut(platform) }
+    if result == 0 { result = Metadata(platform) }
+    return result
+}
+
+#scope_export
+#program_export
+main :: () -> s32 {
+    result := Cases()
+    NativeFileTransferFinish()
+    if result == 0 { print("rill-replacement-test-ok\n") }
+    else { print("rill-replacement-test-failed: %\n", result) }
+    return result
+}
