@@ -128,8 +128,18 @@ including after partial removal of the old destination. Changed copies and
 recreated source entries are preserved and reported. Failed cleanup must
 succeed before another attempt starts. Cut/Paste retains its original
 clipboard snapshot across retry and clears it only after complete success.
-Undo and recovery of interrupted unpublished staging entries remain pending;
-unsupported operations refuse to start.
+Undo retains one successful Copy, Duplicate, or Move batch in memory, including
+completed items from a batch with skipped conflicts. It checks every retained
+result and replacement backup before changing the batch, then checks each
+tree again while copying. Copied results go to Trash; moved results return to
+their original directory, recreating missing parents and keeping both entries
+if the original name is occupied. Replaced destinations return from their
+verified Trash backups. Undo advances through ordinary transfer polls and
+can be cancelled and retried after partial progress. Changed results, unknown
+folder contents, redirected paths, and changed backups are preserved and
+reported. Closing the desktop releases the journal; another completed Copy,
+Duplicate, or Move batch replaces it. Undo does not provide Redo. Recovery of interrupted unpublished
+staging entries remains pending; unsupported operations refuse to start.
 Native desktop icons now load PNG through the same Kryon `Image` surface.
 Kryon's native provider supports grayscale, palette, RGB, and alpha PNGs,
 including Adam7 interlace, and evicts older cached assets as needed. The
@@ -138,7 +148,7 @@ streams, native image compatibility, and rendered pixels from source and
 saved IR. PNGs are limited to 64 MiB and 4096 pixels per axis; color profiles
 and gamma are ignored, and 16-bit samples are reduced to their high byte.
 The Linux transfer implementation remains C. The Taiji native gate's
-`file_transfer`, `folder_transfer`, `trash`, `replacement`, and `retry` suites check actual contents,
+`file_transfer`, `folder_transfer`, `trash`, `replacement`, `retry`, and `undo` suites check actual contents,
 metadata, clipboard filenames, cancellation, collisions, source and
 destination changes, recovery after releasing the transfer, damaged headers
 and inventories, a fresh native filesystem mount, and preservation of foreign

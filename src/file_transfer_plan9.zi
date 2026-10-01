@@ -11,7 +11,7 @@ NativeFiles :: #import "native_files";
 
 #scope_file
 ItemLimit :: 256;
-CopyItem :: struct { source: [1024]s8; target: [1024]s8; info: File.FileInfo; }
+CopyItem :: struct { source: [1024]s8; target: [1024]s8; info: File.FileInfo; history: *History; }
 CopyNode :: struct {
     source: [1024]s8
     info: File.FileInfo
@@ -21,6 +21,16 @@ CopyNode :: struct {
     created: bool
     removed: bool
     children_removed: bool
+}
+History :: struct {
+    source: [1024]s8
+    result: [1024]s8
+    nodes: *CopyNode
+    count: s32
+    slots: *s32
+    capacity: s32
+    recovery: Trash.Entry
+    backup: *History
 }
 CopyJob :: struct {
     items: [256]CopyItem
@@ -35,7 +45,7 @@ CopyJob :: struct {
     buffer: [32768]u8
     status: FileTransferStatus
     index: s32
-    phase: s32 // 0 target, 1 bytes, 2 plan, 3 nodes, 4 verify, 5 attributes, 6 publish, 7 move check, 8 remove, 9 archive destination
+    phase: s32 // 0 target, 1 bytes, 2 plan, 3 nodes, 4 verify, 5 attributes, 6 publish, 7 move check, 8 remove, 9 archive destination, 10 undo
     sticky: s32 // 0 ask, 1 skip, 2 replace, 3 keep both
     nodes: *CopyNode
     node_count: s32
@@ -44,7 +54,7 @@ CopyJob :: struct {
     node_index: s32
     check_index: s32
     cursor: File.DirectoryCursor
-    kind: s32 // 0 ordinary transfer, 1 trash, 2 restore, 3 empty
+    kind: s32 // 0 ordinary transfer, 1 trash, 2 restore, 3 empty, 4 undo
     trash_root: [1024]s8
     trash: Trash.Entry
     conflict_info: File.FileInfo
@@ -53,10 +63,126 @@ CopyJob :: struct {
     replacement: *CopyJob
     published: bool
     retrying: bool
+    record_history: bool
+    suppress_history: bool
+    history_failed: bool
+    replacement_history: *History
+    expected: *History
+    exact_target: bool
+    undo_child: *CopyJob
+    undo_stage: s32 // 0 batch check, 1 result check, 2 reverse, 3 backup check, 4 restore
+    undo_part: s32
+    undo_move: bool
 }
 job: *CopyJob;
 sequence: u32;
 conflicts: bool;
+history: [256]*History;
+history_count: s32;
+history_move: bool;
+
+HistoryHash :: (path: string) -> u32 {
+    value: u32 = cast(u32)2166136261
+    index: s64 = 0
+    while index < path.count { value = (value ^ cast(u32)path[index]) * cast(u32)16777619; index += 1 }
+    return value
+}
+
+FreeHistory :: (record: *History) {
+    if record == null { return }
+    FreeHistory(record.backup)
+    ReleaseAllocation(cast(*void)record.nodes)
+    ReleaseAllocation(cast(*void)record.slots)
+    ReleaseAllocation(cast(*void)record)
+}
+
+FreeJobHistory :: () {
+    index: s32 = 0
+    while index < job.status.total {
+        FreeHistory(job.items[index].history)
+        job.items[index].history = null
+        index += 1
+    }
+    FreeHistory(job.replacement_history)
+    job.replacement_history = null
+}
+
+ClearHistory :: () {
+    index: s32 = 0
+    while index < history_count { FreeHistory(history[index]); history[index] = null; index += 1 }
+    history_count = 0
+}
+
+SaveHistory :: () -> *History {
+    if job.node_count <= 0 || job.node_count > 1073741823 { return null }
+    record := cast(*History)AllocateZeroed(1, size_of(History))
+    if record == null { return null }
+    record.capacity = 2
+    while record.capacity < job.node_count * 2 {
+        if record.capacity > 536870911 { ReleaseAllocation(cast(*void)record); return null }
+        record.capacity *= 2
+    }
+    record.slots = cast(*s32)AllocateZeroed(cast(usize)record.capacity, size_of(s32))
+    if record.slots == null { ReleaseAllocation(cast(*void)record); return null }
+    CopyText(*record.source[0], 1024, *job.items[job.index].source[0])
+    CopyText(*record.result[0], 1024, *job.target[0])
+    record.nodes = job.nodes
+    record.count = job.node_count
+    root_length := TextLength(*record.source[0])
+    index: s32 = 0
+    while index < record.count {
+        suffix := CString(*record.nodes[index].source[root_length])
+        slot := cast(s32)(HistoryHash(suffix) & cast(u32)(record.capacity - 1))
+        while record.slots[slot] != 0 { slot = (slot + 1) & (record.capacity - 1) }
+        record.slots[slot] = index + 1
+        index += 1
+    }
+    if job.kind == 1 {
+        record.recovery = job.trash
+        // The live transfer closes its fid; history owns only value metadata.
+        record.recovery.directory.valid = false
+        record.recovery.owned = null
+        record.recovery.ledger = null
+    }
+    record.backup = job.replacement_history
+    job.replacement_history = null
+    job.nodes = null
+    job.node_count = 0
+    job.node_capacity = 0
+    return record
+}
+
+PublishHistory :: () {
+    if job.kind != 0 || job.suppress_history || job.status.completed == 0 { return }
+    ClearHistory()
+    if job.history_failed { FreeJobHistory(); return }
+    history_move = TextEquals(*job.status.operation[0], TextBytes("move"))
+    index := job.status.total
+    while index > 0 {
+        index -= 1
+        record := job.items[index].history
+        if record != null { history[history_count] = record; history_count += 1; job.items[index].history = null }
+    }
+}
+
+HistoryFind :: (record: *History, suffix: string) -> s32 {
+    if record == null || record.capacity <= 0 { return -1 }
+    slot := cast(s32)(HistoryHash(suffix) & cast(u32)(record.capacity - 1))
+    root_length := TextLength(*record.source[0])
+    while record.slots[slot] != 0 {
+        index := record.slots[slot] - 1
+        if CString(*record.nodes[index].source[root_length]) == suffix { return index }
+        slot = (slot + 1) & (record.capacity - 1)
+    }
+    return -1
+}
+
+Expected :: (source: *s8, info: File.FileInfo) -> bool {
+    if job.expected == null { return true }
+    root_length := TextLength(*job.items[job.index].source[0])
+    index := HistoryFind(job.expected, CString(*source[root_length]))
+    return index >= 0 && Same(job.expected.nodes[index].owned, info) && (index != 0 || Trash.Physical(CString(source), info))
+}
 
 Destructive :: () -> bool {
     return job.kind != 0 || TextEquals(*job.status.operation[0], TextBytes("move"))
@@ -150,6 +276,7 @@ DisposeReplacement :: () -> bool {
     ok := Cleanup()
     Trash.Release(*child.trash)
     ClearNodes()
+    FreeJobHistory()
     ReleaseAllocation(cast(*void)child)
     job = parent
     return ok
@@ -165,6 +292,18 @@ Cleanup :: () -> bool {
         job = child
         child.status.running = 0
         ok = Cleanup()
+        job = parent
+    }
+    if job.undo_child != null {
+        parent := job
+        child := parent.undo_child
+        job = child
+        if child.status.running != 0 {
+            child.status.running = 0
+            child.status.cancelled = 1
+            CopyText(*child.status.error[0], 256, TextBytes("The file transfer was interrupted"))
+        }
+        if !Cleanup() { ok = false }
         job = parent
     }
     if job.cursor.valid { if !File.CloseDirectory(*job.cursor) { ok = false } }
@@ -218,7 +357,7 @@ Fail :: (message: string) {
 
 UniqueTarget :: () -> bool {
     name := Base(*job.items[job.index].source[0])
-    if job.kind == 2 { name = Base(*job.items[job.index].target[0]) }
+    if job.kind == 2 || job.exact_target { name = Base(*job.items[job.index].target[0]) }
     split := TextLength(name)
     index: s32 = 1
     while name[index] != 0 { if name[index] == 46 && !Directory(job.items[job.index].info) { split = index }; index += 1 }
@@ -229,7 +368,7 @@ UniqueTarget :: () -> bool {
         index = 0
         while index < split { candidate[index] = name[index]; index += 1 }
         suffix := TextBytes(" (copy ")
-        if job.kind == 2 { suffix = TextBytes(" (restored ") }
+        if job.kind == 2 || job.exact_target { suffix = TextBytes(" (restored ") }
         used := split + CopyText(*candidate[split], 1024 - split, suffix)
         used += FormatInteger(*candidate[used], 1024 - used, attempt)
         used += CopyText(*candidate[used], 1024 - used, TextBytes(")"))
@@ -245,6 +384,14 @@ Next :: (skipped: bool) {
     if !skipped && (job.kind == 2 || job.kind == 3) && !Trash.Forget(*job.trash) {
         Fail("The operation finished, but the recovery record could not be removed"); return
     }
+    if !skipped && ((job.kind == 0 && !job.suppress_history) || job.record_history) {
+        job.items[job.index].history = SaveHistory()
+        if job.items[job.index].history == null {
+            job.history_failed = true
+            FreeHistory(job.replacement_history)
+            job.replacement_history = null
+        }
+    }
     Trash.Release(*job.trash)
     job.trash = .{}
     job.conflict_info = .{}
@@ -259,7 +406,7 @@ Next :: (skipped: bool) {
     job.phase = 0
     job.status.conflict = 0
     job.status.conflict_destination[0] = 0
-    if job.index >= job.status.total { job.status.running = 0 }
+    if job.index >= job.status.total { job.status.running = 0; PublishHistory() }
 }
 
 OpenStaging :: () -> bool {
@@ -316,6 +463,7 @@ AddNode :: (source: *s8, info: File.FileInfo, parent: s32) -> bool {
 
 PlanStart :: () {
     item := *job.items[job.index]
+    if !Expected(*item.source[0], item.info) { Fail("The completed transfer changed before it could be undone"); return }
     if (job.kind == 2 || job.kind == 3) && !Trash.Owns(*job.trash, "", item.info) {
         Fail("The payload is not owned by this Trash record"); return
     }
@@ -327,6 +475,7 @@ PlanStart :: () {
 
 PlanStep :: () {
     if job.plan_index >= job.node_count {
+        if job.expected != null && job.node_count != job.expected.count { Fail("The completed transfer's folder contents changed"); return }
         if job.kind == 3 { job.check_index = job.node_count; job.phase = 8; return }
         if !OpenStaging() { Fail("Could not create the private staging entry"); return }
         job.node_index = 0
@@ -353,7 +502,8 @@ PlanStep :: () {
     if !Join(*node.source[0], cast(*s8)(*entry.name[0]), *source[0]) { Fail("A source path is too long"); return }
     info := File.PathInfo(CString(*source[0]))
     if !Supported(info) { Fail("The folder contains an unsupported file or device"); return }
-    if job.kind != 0 && !Identity(entry.info, info) { Fail("The source entry changed during enumeration"); return }
+    if !Expected(*source[0], info) { Fail("The completed transfer's folder contents changed"); return }
+    if (job.kind != 0 || job.expected != null) && !Identity(entry.info, info) { Fail("The source entry changed during enumeration"); return }
     if job.kind == 2 || job.kind == 3 {
         root_length := TextLength(*job.items[job.index].source[0])
         if !Trash.Owns(*job.trash, CString(*source[root_length]), info) {
@@ -414,13 +564,13 @@ BeginItem :: () {
         PlanStart(); return
     }
     if job.kind == 3 { PlanStart(); return }
-    if job.kind == 2 { CopyText(*job.target[0], 1024, *item.target[0]) }
+    if job.kind == 2 || job.exact_target { CopyText(*job.target[0], 1024, *item.target[0]) }
     else if !Join(*job.directory[0], Base(*item.source[0]), *job.target[0]) { Fail("The destination name is too long"); return }
     duplicate := TextEquals(*job.status.operation[0], TextBytes("duplicate"))
     if duplicate {
         if !UniqueTarget() { Fail("Could not find an unused copy name"); return }
     } else if File.PathExists(CString(*job.target[0])) {
-        if job.kind == 2 {
+        if job.kind == 2 || job.exact_target {
             if !UniqueTarget() { Fail("Could not find an unused restored name"); return }
             PlanStart(); return
         }
@@ -738,7 +888,9 @@ Start :: (operation: *s8, sources: **s8, count: s32, destination: *s8, recovery:
     if job != null {
         if !Cleanup() { ReleaseAllocation(cast(*void)next); return 0 }
         if !DisposeReplacement() { ReleaseAllocation(cast(*void)next); return 0 }
+        if !DisposeUndoChild() { ReleaseAllocation(cast(*void)next); return 0 }
         ClearNodes()
+        FreeJobHistory()
         ReleaseAllocation(cast(*void)job)
     }
     job = next
@@ -766,6 +918,7 @@ BeginReplacement :: () {
         Fail("The destination changed before it could be preserved in Trash"); return
     }
     job.replacement = child
+    child.record_history = true
     job.phase = 9
 }
 
@@ -787,10 +940,188 @@ ArchiveStep :: () {
         if error[0] == 0 { CopyText(*error[0], 256, TextBytes("The old destination could not be preserved in Trash")) }
         Fail(CString(*error[0])); return
     }
+    parent.replacement_history = child.items[0].history
+    child.items[0].history = null
+    if parent.replacement_history == null { parent.history_failed = true }
     cleaned := DisposeReplacement()
     if !cleaned { Fail("The old destination is in Trash, but its transfer could not be closed"); return }
     parent.replacement_done = true
     parent.phase = 6
+}
+
+DisposeUndoChild :: () -> bool {
+    if job.undo_child == null { return true }
+    parent := job
+    child := parent.undo_child
+    parent.undo_child = null
+    job = child
+    ok := Cleanup()
+    if !DisposeReplacement() { ok = false }
+    Trash.Release(*child.trash)
+    ClearNodes()
+    FreeJobHistory()
+    ReleaseAllocation(cast(*void)child)
+    job = parent
+    return ok
+}
+
+ParentPath :: (value: *s8, output: *s8) -> bool {
+    CopyText(output, 1024, value)
+    split := TextLength(output)
+    while split > 0 && output[split - 1] != 47 { split -= 1 }
+    if split == 0 { return false }
+    if split > 1 { output[split - 1] = 0 } else { output[1] = 0 }
+    return true
+}
+
+HistoryPath :: (record: *History, index: s32, output: *s8) -> bool {
+    root_length := TextLength(*record.source[0])
+    suffix := *record.nodes[index].source[root_length]
+    used := CopyText(output, 1024, *record.result[0])
+    if used + TextLength(suffix) >= 1024 { return false }
+    CopyText(*output[used], 1024 - used, suffix)
+    return true
+}
+
+UndoCheck :: (record: *History) -> bool {
+    if record == null || record.count <= 0 { Fail("The Undo snapshot is missing"); return false }
+    if record.recovery.recorded && !Trash.Valid(*record.recovery) { Fail("The replacement's Trash record changed"); return false }
+    if job.check_index >= record.count { return true }
+    path: [1024]s8
+    if !HistoryPath(record, job.check_index, *path[0]) { Fail("An Undo path is too long"); return false }
+    CopyText(*job.status.current[0], 1024, *path[0])
+    current := File.PathInfo(CString(*path[0]))
+    if !Same(record.nodes[job.check_index].owned, current) || (job.check_index == 0 && !Trash.Physical(CString(*path[0]), current)) {
+        Fail("A completed transfer or its replacement backup changed"); return false
+    }
+    job.check_index += 1
+    return false
+}
+
+UndoReverse :: (record: *History) {
+    directory: [1024]s8
+    source: [1]*s8
+    source[0] = *record.result[0]
+    operation := TextBytes("trash")
+    kind: s32 = 1
+    if job.undo_move {
+        operation = TextBytes("move")
+        kind = 0
+        if !ParentPath(*record.source[0], *directory[0]) || !NativeFiles.EnsureDirectory(*directory[0]) {
+            Fail("The original directory could not be recreated"); return
+        }
+    } else if !Trash.Root(*directory[0], true) { Fail("The copied result could not be preserved in Trash"); return }
+    child := Prepare(operation, *source[0], 1, *directory[0], null, kind)
+    if child == null { Fail("The completed result could not be undone"); return }
+    child.expected = record
+    child.suppress_history = true
+    if job.undo_move { child.exact_target = true; CopyText(*child.items[0].target[0], 1024, *record.source[0]) }
+    job.undo_child = child
+    job.undo_stage = 2
+}
+
+UndoRestore :: (record: *History) {
+    backup := record.backup
+    root: [1024]s8
+    directory: [1024]s8
+    entry := cast(*Trash.Entry)AllocateZeroed(1, size_of(Trash.Entry))
+    ok := entry != null && ParentPath(*backup.recovery.path[0], *root[0]) &&
+        Trash.Read(*root[0], *backup.recovery.name[0], entry) &&
+        Same(backup.recovery.record_info, entry.record_info) && Trash.Load(entry) &&
+        ParentPath(*record.result[0], *directory[0]) && NativeFiles.EnsureDirectory(*directory[0])
+    source: [1]*s8
+    child: *CopyJob = null
+    if ok {
+        source[0] = *entry.data[0]
+        child = Prepare(TextBytes("restore"), *source[0], 1, *directory[0], entry, 2)
+    }
+    if child == null {
+        if entry != null { Trash.Release(entry) }
+        ReleaseAllocation(cast(*void)entry)
+        Fail("The replacement backup could not be restored"); return
+    }
+    // Prepare transferred the ledger to the child; the saved snapshot owns
+    // no live handles or recovery allocations.
+    ReleaseAllocation(cast(*void)entry)
+    child.expected = backup
+    child.suppress_history = true
+    CopyText(*child.items[0].target[0], 1024, *record.result[0])
+    job.undo_child = child
+    job.undo_stage = 4
+}
+
+UndoComplete :: () {
+    FreeHistory(job.items[job.index].history)
+    job.items[job.index].history = null
+    job.status.completed += 1
+    job.index += 1
+    job.check_index = 0
+    job.undo_stage = 1
+    if job.index >= job.status.total { job.status.running = 0 }
+}
+
+UndoChildStep :: () {
+    parent := job
+    child := parent.undo_child
+    if child == null { Fail("The Undo operation is missing"); return }
+    before := child.status.bytes
+    job = child
+    Advance()
+    job = parent
+    parent.status.bytes += child.status.bytes - before
+    CopyText(*parent.status.current[0], 1024, *child.status.current[0])
+    if child.status.running != 0 { return }
+    if child.status.error[0] != 0 || child.status.completed != 1 {
+        message: [256]s8
+        CopyText(*message[0], 256, *child.status.error[0])
+        if message[0] == 0 { CopyText(*message[0], 256, TextBytes("The Undo operation did not finish")) }
+        Fail(CString(*message[0])); return
+    }
+    if !DisposeUndoChild() { Fail("The Undo transfer could not be closed"); return }
+    if parent.undo_stage == 2 && parent.items[parent.index].history.backup != null {
+        parent.undo_stage = 3
+        parent.check_index = 0
+    } else { UndoComplete() }
+}
+
+UndoStep :: () {
+    if job.undo_stage == 0 {
+        if job.plan_index >= job.status.total { job.undo_stage = 1; job.check_index = 0; return }
+        record := job.items[job.plan_index].history
+        if job.undo_part == 0 {
+            if !UndoCheck(record) { return }
+            job.undo_part = 1
+        } else {
+            if record.backup != null && !UndoCheck(record.backup) { return }
+            job.undo_part = 0
+            job.plan_index += 1
+        }
+        job.check_index = 0
+    } else if job.undo_stage == 1 {
+        record := job.items[job.index].history
+        if UndoCheck(record) { UndoReverse(record); job.check_index = 0 }
+    } else if job.undo_stage == 3 {
+        record := job.items[job.index].history
+        if UndoCheck(record.backup) { UndoRestore(record); job.check_index = 0 }
+    } else { UndoChildStep() }
+}
+
+UndoRetry :: () -> s32 {
+    if job.undo_child != null {
+        parent := job
+        job = parent.undo_child
+        result := NativeCopyRetry()
+        job = parent
+        if result == 0 { return 0 }
+    } else {
+        job.check_index = 0
+        job.undo_part = 0
+        if job.undo_stage == 0 { job.plan_index = job.index }
+    }
+    job.status.running = 1
+    job.status.cancelled = 0
+    job.status.error[0] = 0
+    return 1
 }
 
 Advance :: () {
@@ -805,6 +1136,7 @@ Advance :: () {
     else if job.phase == 7 { MoveCheck() }
     else if job.phase == 8 { RemoveSource() }
     else if job.phase == 9 { ArchiveStep() }
+    else if job.phase == 10 { UndoStep() }
 }
 
 #scope_export
@@ -832,13 +1164,42 @@ NativeCopyFinish :: () {
     if job == null { return }
     Cleanup()
     DisposeReplacement()
+    DisposeUndoChild()
     Trash.Release(*job.trash)
     ClearNodes()
+    FreeJobHistory()
     ReleaseAllocation(cast(*void)job)
     job = null
+    ClearHistory()
 }
 
 NativeCopyConflicts :: () -> s32 { conflicts = true; return 1 }
+
+NativeCopyUndo :: () -> s32 {
+    if history_count <= 0 || (job != null && job.status.running != 0) { return 0 }
+    next := cast(*CopyJob)AllocateZeroed(1, size_of(CopyJob))
+    if next == null { return 0 }
+    if job != null {
+        if !Cleanup() || !DisposeReplacement() || !DisposeUndoChild() { ReleaseAllocation(cast(*void)next); return 0 }
+        ClearNodes()
+        FreeJobHistory()
+        ReleaseAllocation(cast(*void)job)
+    }
+    next.kind = 4
+    next.phase = 10
+    next.undo_move = history_move
+    sequence += 1
+    if sequence == 0 { sequence = 1 }
+    next.status.id = sequence
+    next.status.running = 1
+    next.status.total = history_count
+    CopyText(*next.status.operation[0], 16, TextBytes("undo"))
+    index: s32 = 0
+    while index < history_count { next.items[index].history = history[index]; history[index] = null; index += 1 }
+    history_count = 0
+    job = next
+    return 1
+}
 
 #scope_file
 ResumePublished :: () {
@@ -858,6 +1219,7 @@ NativeCopyRetry :: () -> s32 {
     // A failed cleanup may leave a foreign entry in the private stage. Do
     // not discard the ownership snapshot or start another copy over it.
     if !Cleanup() { return 0 }
+    if job.kind == 4 { return UndoRetry() }
     if !Identity(job.destination_info, File.PathInfo(CString(*job.destination[0]))) { return 0 }
     if job.kind == 2 || job.kind == 3 {
         if !Trash.Load(*job.trash) { return 0 }

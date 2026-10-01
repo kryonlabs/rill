@@ -41,6 +41,7 @@ transfer: FileTransferStatus;
 resolution: s32;
 finished: s32;
 retried: s32;
+undone: s32;
 trash_count: s32 = 40;
 trash_scan_fail: bool;
 trash_restore_fail: bool;
@@ -87,6 +88,7 @@ Poll :: (out: *FileTransferStatus) -> s32 { out.* = transfer; return cast(s32)(t
 Resolve :: (answer: s32, all: s32) -> s32 { unused all; resolution = answer; transfer.conflict = 0; return 1 }
 Finish :: () { finished += 1 }
 Retry :: () -> s32 { retried += 1; transfer.running = 1; transfer.cancelled = 0; transfer.error[0] = 0; return 1 }
+Undo :: () -> s32 { undone += 1; transfer.id += cast(u32)1; transfer.running = 1; transfer.error[0] = 0; CopyText(*transfer.operation[0], 16, TextBytes("undo")); return 1 }
 TrashList :: (out: *FileTrashEntry, capacity: s32) -> s32 {
     if trash_scan_fail { return -1 }
     count := trash_count
@@ -172,6 +174,7 @@ Cases :: () -> s32 {
     platform.file_transfer_resolve = Resolve
     platform.file_transfer_finish = Finish
     platform.file_transfer_retry = Retry
+    platform.file_transfer_undo = Undo
     platform.file_operation = Operation
     platform.file_trash_list = TrashList
     platform.file_trash_restore = TrashRestore
@@ -254,6 +257,9 @@ Cases :: () -> s32 {
     transfer.running = 0; transfer.conflict = 0; transfer.cancelled = 1
     CopyText(*transfer.error[0], 256, TextBytes("The file transfer was cancelled"))
     if !Idle(4770) || !ClickKey(cast(u64)220210, 4800) || retried != 1 || transfer.running != 1 || transfer.error[0] != 0 { return 38 }
+    transfer.running = 0
+    if !Idle(4840) || !ClickKey(cast(u64)220211, 4860) || undone != 1 || transfer.running != 1 ||
+        !TextEquals(*transfer.operation[0], TextBytes("undo")) { return 39 }
     transfer.running = 0; state.transfer_visible = false
     // Poll the completed conflict before sending the next desktop gesture.
     if !Idle(4900) || !ClickItem(2, 0, 5000) || !ClickItem(2, 0, 5200) || !Idle(5400) ||

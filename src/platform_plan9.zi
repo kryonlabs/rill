@@ -521,6 +521,7 @@ RillPlatformCurrent :: () -> *RillPlatformServices {
         services.file_transfer_conflicts = NativeCopyConflicts
         services.file_transfer_resolve = NativeCopyResolve
         services.file_transfer_retry = NativeCopyRetry
+        services.file_transfer_undo = NativeCopyUndo
         services.file_clipboard_copy = NativeFileClipboardCopy
         services.file_clipboard_paste = NativeFileClipboardPaste
         services.file_trash_list = Trash.List
