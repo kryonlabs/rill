@@ -261,11 +261,12 @@ Cases :: () -> s32 {
     trash_scan_fail = true
     if !ClickKey(cast(u64)220303, 6100) || !Idle(6300) || state.trash_count != 39 || state.trash_error[0] == 0 { return 32 }
     trash_scan_fail = false
-    if !ClickKey(cast(u64)220308, 6400) || !Idle(6600) || !state.trash_confirm || trash_emptied != 0 ||
-        !ClickKey(cast(u64)220311, 6700) || state.trash_confirm || trash_emptied != 0 { return 33 }
-    if !Idle(6850) || !ClickKey(cast(u64)220308, 6900) || !Idle(7100) || !ClickKey(cast(u64)220310, 7200) ||
-        !Idle(7400) || trash_emptied != 1 || state.trash_count != 0 { return 34 }
-    if !Draw(Vector2.{}, false, false, false, false, KeyEscape, 0, 7500) || state.action != 0 { return 35 }
+    if !ClickKey(cast(u64)220303, 6400) || !Idle(6600) || state.trash_count != 39 || state.trash_error[0] != 0 { return 36 }
+    if !ClickKey(cast(u64)220308, 6700) || !Idle(6900) || !state.trash_confirm || trash_emptied != 0 ||
+        !ClickKey(cast(u64)220311, 7000) || state.trash_confirm || trash_emptied != 0 { return 33 }
+    if !Idle(7150) || !ClickKey(cast(u64)220308, 7200) || !Idle(7400) || !ClickKey(cast(u64)220310, 7500) ||
+        !Idle(7700) || trash_emptied != 1 || state.trash_count != 0 { return 34 }
+    if !Draw(Vector2.{}, false, false, false, false, KeyEscape, 0, 7800) || state.action != 0 { return 35 }
     DesktopFilesClose(*state, *platform)
     if state.files != null || state.trash_entries != null || finished != 1 { return 22 }
     CloseSession(session)
