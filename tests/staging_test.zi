@@ -1,0 +1,330 @@
+#import "file_transfer_plan9"
+#import "platform_plan9"
+#import "platform_types"
+#import "native_memory"
+File :: #import "std/file_plan9";
+Process :: #import "std/process_plan9";
+Staging :: #import "file_staging_plan9";
+
+#scope_file
+root: [1024]s8;
+path: [1024]s8;
+directory: [1024]s8;
+source: [1024]s8;
+target: [1024]s8;
+name: [96]s8;
+buffer: [32768]u8;
+receipt: Staging.Receipt;
+status: FileTransferStatus;
+error: [256]s8;
+libc :: #system_library "libc";
+ForkRaw :: (flags: s32) -> s32 #foreign libc "rfork";
+PipeRaw :: (descriptors: *s32) -> s32 #foreign libc "pipe";
+ReadRaw :: (descriptor: s32, bytes: *void, count: s32) -> s32 #foreign libc "read";
+WriteRaw :: (descriptor: s32, bytes: *void, count: s32) -> s32 #foreign libc "write";
+CloseRaw :: (descriptor: s32) -> s32 #foreign libc "close";
+AwaitRaw :: (bytes: *s8, count: s32) -> s32 #foreign libc "await";
+ExitRaw :: (status: *s8) #foreign libc "exits";
+BindRaw :: (source: *s8, destination: *s8, flags: s32) -> s32 #foreign libc "bind";
+UnmountRaw :: (source: *s8, destination: *s8) -> s32 #foreign libc "unmount";
+MountRaw :: (fd: s32, auth: s32, destination: *s8, flags: s32, specification: *s8) -> s32 #foreign libc "mount";
+OpenRaw :: (path: *s8, mode: s32) -> s32 #foreign libc "open";
+
+Path :: (suffix: string) -> string {
+    used := CopyText(*path[0], 1024, *root[0])
+    CopyText(*path[used], 1024 - used, TextBytes(suffix))
+    return CString(*path[0])
+}
+PutPath :: (value: string, count: s64, seed: s32) -> bool {
+    file := File.OpenReplace(value)
+    if !file.valid { return false }
+    offset: s64 = 0
+    while offset < count {
+        amount := count - offset
+        if amount > 32768 { amount = 32768 }
+        for index: 0..amount - 1 { buffer[index] = cast(u8)((offset + index + seed) % 251) }
+        if File.WriteAt(file, buffer[0:amount], offset) != amount { File.CloseFile(file); return false }
+        offset += amount
+    }
+    return File.CloseFile(file)
+}
+Put :: (suffix: string, count: s64, seed: s32) -> bool { return PutPath(Path(suffix), count, seed) }
+ContentPath :: (value: string, count: s64, seed: s32) -> bool {
+    file := File.OpenRead(value)
+    if !file.valid { return false }
+    if File.HandleInfo(file).length != count { File.CloseFile(file); return false }
+    offset: s64 = 0
+    while offset < count {
+        amount := count - offset
+        if amount > 32768 { amount = 32768 }
+        if File.ReadAt(file, buffer[0:amount], offset) != amount { File.CloseFile(file); return false }
+        for index: 0..amount - 1 {
+            if buffer[index] != cast(u8)((offset + index + seed) % 251) { File.CloseFile(file); return false }
+        }
+        offset += amount
+    }
+    return File.CloseFile(file)
+}
+Content :: (suffix: string, count: s64, seed: s32) -> bool { return ContentPath(Path(suffix), count, seed) }
+StageName :: (pid: s32, id: s32) {
+    used := CopyText(*name[0], 96, TextBytes(".transfer-"))
+    used += FormatInteger(*name[used], 96 - used, pid)
+    used += CopyText(*name[used], 96 - used, TextBytes("-"))
+    used += FormatInteger(*name[used], 96 - used, id)
+    CopyText(*name[used], 96 - used, TextBytes("-0-0"))
+}
+Own :: (suffix: string, desired: string, folder: bool) -> bool {
+    CopyText(*directory[0], 1024, TextBytes(Path(suffix)))
+    if !File.CreatePrivateDirectory(CString(*directory[0])) { return false }
+    StageName(Process.CurrentProcessId(), 7)
+    used := CopyText(*target[0], 1024, *directory[0])
+    target[used] = 47
+    CopyText(*target[used + 1], 1023 - used, *name[0])
+    file: File.FileHandle
+    if folder { file = File.CreatePrivateDirectoryHandle(CString(*target[0])) }
+    else { file = File.CreatePrivateExclusive(CString(*target[0]), false) }
+    if !file.valid { return false }
+    info := File.HandleInfo(file)
+    if !File.CloseFile(file) || !Staging.Create(*directory[0], *name[0], TextBytes(desired), *source[0], info, 0, *receipt) { return false }
+    if !folder { return PutPath(CString(*receipt.stage[0]), 37, 11) && Staging.Checkpoint(*receipt, File.PathInfo(CString(*receipt.stage[0]))) }
+    return true
+}
+Child :: (platform: *RillPlatformServices) -> s32 {
+    sources: [1]*s8
+    sources[0] = *source[0]
+    CopyText(*directory[0], 1024, TextBytes(Path("/destination")))
+    if platform.file_transfer_start(TextBytes("move"), *sources[0], 1, *directory[0]) == 0 { return 1 }
+    polls: s32 = 0
+    while polls < 4096 {
+        if platform.file_transfer_poll(*status) == 0 || status.running == 0 { return 2 }
+        if status.bytes == cast(u64)32768 { break }
+        polls += 1
+    }
+    if polls == 4096 || platform.file_recover_staging(*directory[0], *error[0], 256) != -1 || error[0] == 0 { return 3 }
+    if !Own("/foldercase", "Docs.with.dots", true) { return 4 }
+    used := CopyText(*target[0], 1024, *receipt.stage[0])
+    CopyText(*target[used], 1024 - used, TextBytes("/empty"))
+    if !File.CreatePrivateDirectory(CString(*target[0])) { return 5 }
+    CopyText(*target[used], 1024 - used, TextBytes("/.hidden"))
+    if !PutPath(CString(*target[0]), 37, 11) { return 6 }
+    file := File.OpenRead(CString(*receipt.stage[0]))
+    if !file.valid || !File.SetFileAttributes(file, cast(u32)493, cast(u32)1700000000) || !File.CloseFile(file) { return 7 }
+    if !Staging.Checkpoint(*receipt, File.PathInfo(CString(*receipt.stage[0]))) { return 24 }
+    if !Own("/orphan", "done.txt", false) { return 8 }
+    used = CopyText(*target[0], 1024, *directory[0])
+    CopyText(*target[used], 1024 - used, TextBytes("/done.txt"))
+    if !File.RenameNoReplace(CString(*receipt.stage[0]), CString(*target[0])) { return 9 }
+    if !Own("/damaged", "damaged.txt", false) || !PutPath(CString(*receipt.path[0]), 3, 79) { return 10 }
+    if !Own("/copied", "copied.txt", false) { return 11 }
+    file = File.OpenRead(CString(*receipt.path[0]))
+    if !file.valid { return 12 }
+    amount := File.ReadAt(file, buffer[:], 0)
+    if !File.CloseFile(file) || amount < 68 || !File.RemoveFile(CString(*receipt.path[0])) { return 13 }
+    file = File.OpenReplace(CString(*receipt.path[0]))
+    if !file.valid || File.WriteAt(file, buffer[0:amount], 0) != amount ||
+        !File.SetFileAttributes(file, cast(u32)384, 0) || !File.CloseFile(file) { return 14 }
+    if !Own("/wrongroot", "wrong.txt", false) || !File.RemoveFile(CString(*receipt.stage[0])) ||
+        !PutPath(CString(*receipt.stage[0]), 7, 79) { return 15 }
+    if !Own("/bound", "bound.txt", true) { return 16 }
+    if !Own("/collision", "old.txt", false) || !Put("/collision/old (partial copy 1).txt", 7, 79) { return 17 }
+    if !Own("/remountcase", "mount.txt", false) { return 23 }
+    if !Own("/latewrite", "late.txt", false) || !PutPath(CString(*receipt.stage[0]), 7, 79) { return 25 }
+    if !Own("/same-size", "same.txt", false) { return 26 }
+    file = File.OpenUpdate(CString(*receipt.path[0]))
+    changed: [1]u8
+    changed[0] = 0
+    if !file.valid || File.WriteAt(file, changed[:], 92) != 1 ||
+        !File.SetFileAttributes(file, cast(u32)384, receipt.info.modified) || !File.CloseFile(file) ||
+        Staging.Forget(*receipt) || Staging.Checkpoint(*receipt, File.PathInfo(CString(*receipt.stage[0]))) { return 27 }
+    if !Own("/wrongparent", "other.txt", false) { return 18 }
+    file = File.OpenRead(CString(*receipt.path[0]))
+    if !file.valid { return 19 }
+    amount = File.ReadAt(file, buffer[:], 0)
+    if !File.CloseFile(file) || amount < 68 || !File.RemoveFile(CString(*receipt.path[0])) { return 20 }
+    used = CopyText(*target[0], 1024, TextBytes(Path("/movedparent/")))
+    CopyText(*target[used], 1024 - used, *name[0])
+    file = File.CreatePrivateExclusive(CString(*target[0]), false)
+    if !file.valid || !File.CloseFile(file) { return 21 }
+    used = TextLength(*target[0])
+    CopyText(*target[used], 1024 - used, TextBytes(".record"))
+    file = File.OpenReplace(CString(*target[0]))
+    if !file.valid || File.WriteAt(file, buffer[0:amount], 0) != amount ||
+        !File.SetFileAttributes(file, cast(u32)384, 0) || !File.CloseFile(file) { return 22 }
+    return 0
+}
+Recover :: (platform: *RillPlatformServices, suffix: string, expected: s32, refused: bool) -> bool {
+    CopyText(*directory[0], 1024, TextBytes(Path(suffix)))
+    return platform.file_recover_staging(*directory[0], *error[0], 256) == expected && (error[0] != 0) == refused
+}
+Remaining :: (suffix: string, expected: s32) -> bool {
+    cursor := File.OpenDirectory(Path(suffix))
+    if !cursor.valid { return false }
+    count: s32 = 0
+    while true {
+        item := File.NextDirectoryEntry(*cursor)
+        if !item.valid { break }
+        if TextStartsWith(cast(*s8)(*item.name[0]), ".transfer-") { count += 1 }
+    }
+    failed := cursor.failed
+    return File.CloseDirectory(*cursor) && !failed && count == expected
+}
+Remount :: (platform: *RillPlatformServices, pid: s32) -> s32 {
+    mount: [1024]s8
+    mounted_directory: [1024]s8
+    original_stage: [1024]s8
+    mounted_stage: [1024]s8
+    CopyText(*mount[0], 1024, TextBytes(Path("/remount")))
+    if !File.CreatePrivateDirectory(CString(*mount[0])) { return 50 }
+    before := File.PathInfo(Path("/remountcase"))
+    fd := OpenRaw(TextBytes("/srv/boot"), 2)
+    if fd < 0 { return 51 }
+    if MountRaw(fd, -1, *mount[0], 0, TextBytes("")) < 0 { CloseRaw(fd); return 52 }
+    used := CopyText(*mounted_directory[0], 1024, *mount[0])
+    mounted_directory[used] = 47
+    used += 1
+    used += CopyText(*mounted_directory[used], 1024 - used, *root[1])
+    CopyText(*mounted_directory[used], 1024 - used, TextBytes("/remountcase"))
+    after := File.PathInfo(CString(*mounted_directory[0]))
+    result: s32 = 0
+    if !after.valid || before.device == after.device || before.identity != after.identity || before.type != after.type { result = 53 }
+    StageName(pid, 7)
+    used = CopyText(*original_stage[0], 1024, TextBytes(Path("/remountcase/")))
+    CopyText(*original_stage[used], 1024 - used, *name[0])
+    used = CopyText(*mounted_stage[0], 1024, *mounted_directory[0])
+    mounted_stage[used] = 47
+    CopyText(*mounted_stage[used + 1], 1023 - used, *name[0])
+    if result == 0 {
+        if BindRaw(*mounted_stage[0], *original_stage[0], 0) < 0 { result = 54 }
+        else {
+            refused := Recover(platform, "/remountcase", 0, true)
+            if UnmountRaw(*mounted_stage[0], *original_stage[0]) != 0 || !refused { result = 55 }
+        }
+    }
+    if result == 0 && (platform.file_recover_staging(*mounted_directory[0], *error[0], 256) != 1 || error[0] != 0 ||
+        !Content("/remountcase/mount (partial copy 1).txt", 37, 11) || !Remaining("/remountcase", 0)) { result = 56 }
+    if UnmountRaw(null, *mount[0]) != 0 { return 57 }
+    return result
+}
+NativeTransfers :: (platform: *RillPlatformServices) -> s32 {
+    sources: [1]*s8
+    sources[0] = *source[0]
+    CopyText(*directory[0], 1024, TextBytes(Path("/success")))
+    StageName(Process.CurrentProcessId(), 1)
+    used := CopyText(*target[0], 1024, *directory[0])
+    target[used] = 47
+    used += 1
+    used += CopyText(*target[used], 1024 - used, *name[0])
+    CopyText(*target[used], 1024 - used, TextBytes(".record"))
+    if !PutPath(CString(*target[0]), 7, 79) || platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, *directory[0]) == 0 { return 40 }
+    polls: s32 = 0
+    while polls < 4096 {
+        if platform.file_transfer_poll(*status) == 0 { return 41 }
+        if status.running == 0 { break }
+        polls += 1
+    }
+    if polls == 4096 || status.error[0] != 0 || status.completed != 1 || !ContentPath(CString(*target[0]), 7, 79) ||
+        !Content("/success/Space's $x; 文档.txt", 100003, 11) || !Remaining("/success", 1) { return 42 }
+    platform.file_transfer_finish()
+    CopyText(*directory[0], 1024, TextBytes(Path("/cancel")))
+    if platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, *directory[0]) == 0 { return 43 }
+    polls = 0
+    while polls < 4096 {
+        if platform.file_transfer_poll(*status) == 0 || status.running == 0 { return 44 }
+        if status.bytes == cast(u64)32768 { break }
+        polls += 1
+    }
+    platform.file_transfer_cancel()
+    if polls == 4096 || platform.file_transfer_poll(*status) == 0 || status.cancelled != 1 || !Remaining("/cancel", 0) { return 45 }
+    return 0
+}
+Cases :: () -> s32 {
+    if ForkRaw(1) < 0 { return 98 }
+    value := EnvironmentValue(TextBytes("RILL_TEST_ROOT"))
+    if value == null || value[0] != 47 || TextLength(value) > 800 { return 99 }
+    CopyText(*root[0], 1024, value); ReleaseAllocation(cast(*void)value)
+    if !File.CreatePrivateDirectory(Path("/source")) || !File.CreatePrivateDirectory(Path("/destination")) ||
+        !File.CreatePrivateDirectory(Path("/foreign")) || !File.CreatePrivateDirectory(Path("/movedparent")) ||
+        !File.CreatePrivateDirectory(Path("/success")) || !File.CreatePrivateDirectory(Path("/cancel")) ||
+        !Put("/foreign/secret.bin", 7, 79) || !Put("/source/Space's $x; 文档.txt", 100003, 11) { return 97 }
+    CopyText(*source[0], 1024, TextBytes(Path("/source/Space's $x; 文档.txt")))
+    platform := RillPlatformCurrent()
+    if platform == null || platform.file_recover_staging == null { return 96 }
+    ready: [2]s32
+    resume: [2]s32
+    if PipeRaw(*ready[0]) < 0 || PipeRaw(*resume[0]) < 0 { return 95 }
+    pid := ForkRaw(16 | 4)
+    if pid < 0 { return 94 }
+    signal: [1]u8
+    if pid == 0 {
+        CloseRaw(ready[0]); CloseRaw(resume[1])
+        result := Child(platform)
+        signal[0] = cast(u8)result
+        WriteRaw(ready[1], cast(*void)(*signal[0]), 1)
+        CloseRaw(ready[1])
+        ReadRaw(resume[0], cast(*void)(*signal[0]), 1)
+        // Deliberately omit transfer shutdown to simulate desktop exit.
+        if result != 0 { ExitRaw(TextBytes("staging fixture failed")) }
+        ExitRaw(null)
+        return 93
+    }
+    CloseRaw(ready[1]); CloseRaw(resume[0])
+    got := ReadRaw(ready[0], cast(*void)(*signal[0]), 1)
+    CloseRaw(ready[0])
+    fixture := cast(s32)signal[0]
+    live := got == 1 && fixture == 0 && Recover(platform, "/destination", 0, false) && Remaining("/destination", 2)
+    owner: [64]s8
+    owner_used := CopyText(*owner[0], 64, TextBytes("/proc/"))
+    FormatInteger(*owner[owner_used], 64 - owner_used, Process.CurrentProcessId())
+    ownership: bool = false
+    if live && BindRaw(*owner[0], TextBytes("/proc"), 0) >= 0 {
+        refused := Recover(platform, "/destination", -1, true) && Remaining("/destination", 2)
+        ownership = UnmountRaw(null, TextBytes("/proc")) == 0 && refused
+    }
+    WriteRaw(resume[1], cast(*void)(*signal[0]), 1)
+    CloseRaw(resume[1])
+    waited: [512]s8
+    if AwaitRaw(*waited[0], 512) <= 0 { return 92 }
+    if fixture != 0 { print("staging child fixture: %\n", fixture); return 91 }
+    if !live || !ownership { return 1 }
+    if !Recover(platform, "/destination", 1, false) || !Remaining("/destination", 0) ||
+        !Content("/destination/Space's $x; 文档 (partial copy 1).txt", 32768, 11) ||
+        !Content("/source/Space's $x; 文档.txt", 100003, 11) || !Recover(platform, "/destination", 0, false) { return 2 }
+    if !Recover(platform, "/foldercase", 1, false) || !Remaining("/foldercase", 0) ||
+        !File.DirectoryExists(Path("/foldercase/Docs.with.dots (partial copy 1)/empty")) ||
+        !Content("/foldercase/Docs.with.dots (partial copy 1)/.hidden", 37, 11) { return 3 }
+    info := File.PathInfo(Path("/foldercase/Docs.with.dots (partial copy 1)"))
+    if info.mode != cast(u32)0x800001ed || info.modified != cast(u32)1700000000 { return 4 }
+    if !Recover(platform, "/orphan", 0, false) || !Remaining("/orphan", 0) || !Content("/orphan/done.txt", 37, 11) { return 5 }
+    if !Recover(platform, "/collision", 1, false) || !Remaining("/collision", 0) ||
+        !Content("/collision/old (partial copy 1).txt", 7, 79) || !Content("/collision/old (partial copy 2).txt", 37, 11) { return 6 }
+    if !Recover(platform, "/damaged", 0, true) || !Remaining("/damaged", 2) { return 70 }
+    if !Recover(platform, "/copied", 0, true) || !Remaining("/copied", 2) { return 71 }
+    if !Recover(platform, "/wrongroot", 0, true) || !Remaining("/wrongroot", 2) { return 72 }
+    if !Recover(platform, "/movedparent", 0, true) || !Remaining("/movedparent", 2) { return 73 }
+    if !Recover(platform, "/latewrite", 0, true) || !Remaining("/latewrite", 2) { return 74 }
+    if !Recover(platform, "/same-size", 0, true) || !Remaining("/same-size", 2) { return 75 }
+    StageName(pid, 7)
+    used := CopyText(*target[0], 1024, TextBytes(Path("/bound/")))
+    CopyText(*target[used], 1024 - used, *name[0])
+    foreign: [1024]s8
+    CopyText(*foreign[0], 1024, TextBytes(Path("/foreign")))
+    if BindRaw(*foreign[0], *target[0], 0) < 0 { return 8 }
+    refused := Recover(platform, "/bound", 0, true) && Content("/foreign/secret.bin", 7, 79)
+    if UnmountRaw(*foreign[0], *target[0]) != 0 || !refused || !Recover(platform, "/bound", 1, false) { return 9 }
+    if !Put("/destination/.transfer-0-2-1-0", 7, 79) || !Recover(platform, "/destination", 0, true) ||
+        !Content("/destination/.transfer-0-2-1-0", 7, 79) { return 10 }
+    if !Recover(platform, "/missing", -1, true) { return 11 }
+    remounted := Remount(platform, pid)
+    if remounted != 0 { return remounted }
+    return NativeTransfers(platform)
+}
+
+#scope_export
+#program_export
+main :: () -> s32 {
+    result := Cases()
+    NativeCopyFinish()
+    if result == 0 { print("rill-staging-test-ok\n") }
+    else { print("rill-staging-test-failed: %\n", result) }
+    return result
+}

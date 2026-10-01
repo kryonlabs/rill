@@ -4,6 +4,7 @@ File :: #import "file_plan9";
 Process :: #import "process_plan9";
 Paths :: #import "path";
 Trash :: #import "file_trash_plan9";
+Staging :: #import "file_staging_plan9";
 NativeFiles :: #import "native_files";
 #import "std/byte_text_linux"
 #import "platform_types"
@@ -39,6 +40,7 @@ CopyJob :: struct {
     destination_info: File.FileInfo
     target: [1024]s8
     staging: [1024]s8
+    receipt: Staging.Receipt
     input: File.FileHandle
     output: File.FileHandle
     offset: s64
@@ -337,6 +339,7 @@ Cleanup :: () -> bool {
         } else { ok = false }
     }
     if job.node_count == 0 || !job.nodes[0].created { job.staging[0] = 0 }
+    if job.staging[0] == 0 && !Staging.Forget(*job.receipt) { ok = false }
     if job.kind == 1 && job.trash.reserved && !job.trash.published {
         if ok { if !Trash.Forget(*job.trash) { ok = false } }
         else { Trash.Close(*job.trash) }
@@ -381,6 +384,9 @@ UniqueTarget :: () -> bool {
 }
 
 Next :: (skipped: bool) {
+    if !Staging.Forget(*job.receipt) {
+        Fail("The operation finished, but its staging receipt could not be removed"); return
+    }
     if !skipped && (job.kind == 2 || job.kind == 3) && !Trash.Forget(*job.trash) {
         Fail("The operation finished, but the recovery record could not be removed"); return
     }
@@ -423,6 +429,7 @@ OpenStaging :: () -> bool {
         FormatInteger(*name[used], 96 - used, attempt)
         candidate: [1024]s8
         if !Join(*job.directory[0], *name[0], *candidate[0]) { return false }
+        if !Staging.Available(*job.directory[0], *name[0]) { attempt += 1; continue }
         created: File.FileHandle
         directory := Directory(job.nodes[0].info)
         if directory { created = File.CreatePrivateDirectoryHandle(CString(*candidate[0])) }
@@ -432,7 +439,8 @@ OpenStaging :: () -> bool {
             job.nodes[0].created = true
             job.nodes[0].owned = File.HandleInfo(created)
             if directory { job.nodes[0].directory = created } else { job.output = created }
-            return job.nodes[0].owned.valid
+            return job.nodes[0].owned.valid && Staging.Create(*job.directory[0], *name[0], Base(*job.target[0]),
+                *job.items[job.index].source[0], job.nodes[0].owned, job.kind, *job.receipt)
         }
         attempt += 1
     }
@@ -715,6 +723,9 @@ Publish :: () {
             node.directory.valid = false
         }
         index += 1
+    }
+    if !Staging.Forget(*job.receipt) {
+        CopyText(*job.status.error[0], 256, TextBytes("The copy was published but its staging receipt could not be removed"))
     }
     if job.status.error[0] != 0 { job.status.running = 0; return }
     if !valid { Fail("The copy is complete, but the destination changed before the source could be moved"); return }
@@ -1137,9 +1148,22 @@ Advance :: () {
     else if job.phase == 8 { RemoveSource() }
     else if job.phase == 9 { ArchiveStep() }
     else if job.phase == 10 { UndoStep() }
+    if job.status.running != 0 && job.staging[0] != 0 && job.node_count > 0 {
+        data := job.nodes[0].owned
+        if job.nodes[0].directory.valid { data = File.HandleInfo(job.nodes[0].directory) }
+        else if job.output.valid { data = File.HandleInfo(job.output) }
+        if !Staging.Checkpoint(*job.receipt, data) { Fail("Could not checkpoint the partial copy's recovery receipt") }
+    }
 }
 
 #scope_export
+NativeRecoverStaging :: (directory: *s8, error: *s8, capacity: s32) -> s32 {
+    if job != null && job.status.running != 0 {
+        CopyText(error, capacity, TextBytes("Another file operation is still running")); return -1
+    }
+    return Staging.Recover(directory, error, capacity)
+}
+
 NativeCopyStart :: (operation: *s8, sources: **s8, count: s32, destination: *s8) -> s32 {
     if !TextEquals(operation, TextBytes("trash")) { return Start(operation, sources, count, destination, null, 0) }
     root: [1024]s8

@@ -99,14 +99,15 @@ WaitBytes :: (platform: *RillPlatformServices, status: *FileTransferStatus) -> b
     return false
 }
 
-FindStaging :: () -> bool {
+FindStaging :: (payload: bool) -> bool {
     cursor := File.OpenDirectory(CString(*destination[0]))
     if !cursor.valid { return false }
     found := false
     while true {
         entry := File.NextDirectoryEntry(*cursor)
         if !entry.valid { break }
-        if TextStartsWith(cast(*s8)(*entry.name[0]), ".transfer-") {
+        if TextStartsWith(cast(*s8)(*entry.name[0]), ".transfer-") &&
+            (!payload || (entry.info.mode & cast(u32)0x80000000) != 0) {
             used := CopyText(*stage[0], 1024, *destination[0])
             stage[used] = 47
             CopyText(*stage[used + 1], 1023 - used, cast(*s8)(*entry.name[0]))
@@ -209,20 +210,20 @@ Moves :: (platform: *RillPlatformServices) -> s32 {
         !WaitBytes(platform, *status) || !File.DirectoryExists(Path("/source/Move")) ||
         File.PathExists(Path("/destination/Move")) || !Drain(platform, *status) || status.error[0] != 0 ||
         status.completed != 1 || status.bytes != cast(u64)100040 || File.PathExists(Path("/source/Move")) ||
-        !WritableCopy("/destination/Move") || FindStaging() { return 28 }
+        !WritableCopy("/destination/Move") || FindStaging(false) { return 28 }
 
     if !Folder("/source/Protected") { return 29 }
     Choose("/source/Protected")
     if platform.file_transfer_start(TextBytes("move"), *sources[0], 1, *destination[0]) == 0 ||
         !Drain(platform, *status) || status.error[0] == 0 || status.completed != 0 ||
-        !Copied("/destination/Protected") || !Copied("/source/Protected") || FindStaging() { return 30 }
+        !Copied("/destination/Protected") || !Copied("/source/Protected") || FindStaging(false) { return 30 }
 
     if !Folder("/source/Late") || !Writable("/source/Late") { return 31 }
     Choose("/source/Late")
     if platform.file_transfer_start(TextBytes("move"), *sources[0], 1, *destination[0]) == 0 ||
         !WaitPublished(platform, *status, "/destination/Late") || !Put("/source/Late/foreign.txt", 7) ||
         !Drain(platform, *status) || status.error[0] == 0 || !Content("/source/Late/foreign.txt", 7) ||
-        !WritableCopy("/destination/Late") || FindStaging() { return 32 }
+        !WritableCopy("/destination/Late") || FindStaging(false) { return 32 }
 
     if !Folder("/source/Overlap") || !Writable("/source/Overlap") { return 33 }
     Choose("/source/Overlap")
@@ -255,7 +256,7 @@ Run :: () -> s32 {
         !WaitBytes(platform, *status) || File.PathExists(Path("/destination/Folder.with.dots")) ||
         !Drain(platform, *status) || status.error[0] != 0 || status.completed != 1 ||
         status.bytes != cast(u64)100040 || !Copied("/destination/Folder.with.dots") ||
-        !Copied("/source/Folder.with.dots") || FindStaging() { return 2 }
+        !Copied("/source/Folder.with.dots") || FindStaging(false) { return 2 }
     if platform.file_transfer_start(TextBytes("duplicate"), *sources[0], 1, *destination[0]) == 0 ||
         !Drain(platform, *status) || status.error[0] != 0 || !Copied("/destination/Folder.with.dots (copy 1)") { return 3 }
     if platform.file_transfer_conflicts() == 0 || platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, *destination[0]) == 0 ||
@@ -275,7 +276,7 @@ Run :: () -> s32 {
     Choose("/source/Cycle")
     if BindRaw(*source[0], TextBytes(Path("/source/Cycle/loop")), 0) < 0 { return 25 }
     cycle_failed := platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, *destination[0]) != 0 &&
-        Drain(platform, *status) && status.error[0] != 0 && !File.PathExists(Path("/destination/Cycle")) && !FindStaging()
+        Drain(platform, *status) && status.error[0] != 0 && !File.PathExists(Path("/destination/Cycle")) && !FindStaging(false)
     if UnmountRaw(*source[0], TextBytes(Path("/source/Cycle/loop"))) != 0 || !cycle_failed { return 26 }
 
     if !Folder("/source/Cancel") { return 8 }
@@ -283,25 +284,25 @@ Run :: () -> s32 {
     if platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, *destination[0]) == 0 || !WaitBytes(platform, *status) { return 9 }
     platform.file_transfer_cancel()
     if platform.file_transfer_poll(*status) == 0 || status.running != 0 || status.cancelled != 1 ||
-        File.PathExists(Path("/destination/Cancel")) || !Copied("/source/Cancel") || FindStaging() { return 10 }
+        File.PathExists(Path("/destination/Cancel")) || !Copied("/source/Cancel") || FindStaging(false) { return 10 }
 
     if !Folder("/source/Changed") { return 11 }
     Choose("/source/Changed")
     if platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, *destination[0]) == 0 || !WaitBytes(platform, *status) ||
         !Put("/source/Changed/Nested/Space's $x; 文档.txt", 3) || !Drain(platform, *status) || status.error[0] == 0 ||
-        File.PathExists(Path("/destination/Changed")) || !Content("/source/Changed/Nested/Space's $x; 文档.txt", 3) || FindStaging() { return 12 }
+        File.PathExists(Path("/destination/Changed")) || !Content("/source/Changed/Nested/Space's $x; 文档.txt", 3) || FindStaging(false) { return 12 }
 
     if !Folder("/source/Race") { return 13 }
     Choose("/source/Race")
     if platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, *destination[0]) == 0 || !WaitBytes(platform, *status) ||
         !File.CreateDirectory(Path("/destination/Race")) || !Put("/destination/Race/foreign.txt", 7) ||
         !Drain(platform, *status) || status.error[0] == 0 || !Content("/destination/Race/foreign.txt", 7) ||
-        !Copied("/source/Race") || FindStaging() { return 14 }
+        !Copied("/source/Race") || FindStaging(false) { return 14 }
 
     if !Folder("/source/Foreign") { return 15 }
     Choose("/source/Foreign")
     if platform.file_transfer_start(TextBytes("copy"), *sources[0], 1, *destination[0]) == 0 ||
-        !WaitBytes(platform, *status) || !FindStaging() { return 16 }
+        !WaitBytes(platform, *status) || !FindStaging(true) { return 16 }
     foreign: [1024]s8
     if !PutPath(StageChild("foreign.txt", *foreign[0]), 9) { return 17 }
     platform.file_transfer_cancel()
@@ -311,7 +312,7 @@ Run :: () -> s32 {
     // have preserved it, and can finish its own cleanup after it disappears.
     if !File.RemoveFile(CString(*foreign[0])) { return 19 }
     platform.file_transfer_finish()
-    if FindStaging() { return 20 }
+    if FindStaging(false) { return 20 }
 
     Choose("/source/Folder.with.dots")
     if !File.CreateDirectory(Path("/clipboard")) || SetEnvironment(TextBytes("RILL_SNARF_PATH"), TextBytes(Path("/snarf"))) != 0 ||

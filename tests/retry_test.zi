@@ -288,7 +288,8 @@ Stages :: (platform: *RillPlatformServices) -> s32 {
     while true {
         child := File.NextDirectoryEntry(*cursor)
         if !child.valid { break }
-        if TextStartsWith(cast(*s8)(*child.name[0]), ".transfer-") {
+        if TextStartsWith(cast(*s8)(*child.name[0]), ".transfer-") &&
+            (child.info.mode & cast(u32)0x80000000) != 0 {
             used := CopyText(*foreign[0], 1024, *destination[0])
             used += CopyText(*foreign[used], 1024 - used, TextBytes("/"))
             used += CopyText(*foreign[used], 1024 - used, cast(*s8)(*child.name[0]))

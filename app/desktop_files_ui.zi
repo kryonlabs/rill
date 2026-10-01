@@ -253,6 +253,12 @@ DesktopFileGrid :: (session: Session, work: Rectangle, state: *DesktopFilesState
         state.files = cast(*DesktopFiles)AllocateZeroed(1, size_of(DesktopFiles))
         if state.files == null { Status(app, "Could not allocate desktop files"); return }
         DesktopFilesInitialize(state.files, platform)
+        if platform != null && platform.file_recover_staging != null && platform.desktop_directory != null {
+            error: [256]s8
+            recovered := platform.file_recover_staging(platform.desktop_directory(), *error[0], 256)
+            if error[0] != 0 { Status(app, CString(*error[0])) }
+            else if recovered > 0 { Status(app, "Recovered partial copies on the desktop") }
+        }
         if platform != null && platform.file_transfer_conflicts != null { platform.file_transfer_conflicts() }
         state.press_index = -1
         state.started = true

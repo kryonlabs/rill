@@ -42,6 +42,8 @@ resolution: s32;
 finished: s32;
 retried: s32;
 undone: s32;
+recoveries: s32;
+recovery_error: bool;
 trash_count: s32 = 40;
 trash_scan_fail: bool;
 trash_restore_fail: bool;
@@ -50,6 +52,13 @@ trash_emptied: s32;
 last_trash_name: [256]s8;
 
 Root :: () -> *s8 { return root }
+Recover :: (directory: *s8, error: *s8, size: s32) -> s32 {
+    if !TextEquals(directory, root) { return -1 }
+    recoveries += 1
+    if recovery_error { CopyText(error, size, TextBytes("Unverified staging entries were preserved")); return 1 }
+    error[0] = 0
+    return 2
+}
 Files :: (out: *RillLauncher, capacity: s32) -> s32 {
     if scan_fail { return -1 }
     if capacity < 2 { return 0 }
@@ -166,6 +175,7 @@ Cases :: () -> s32 {
     RillShellInit(*app.shell)
     platform.settings_root = Root
     platform.desktop_directory = Root
+    platform.file_recover_staging = Recover
     platform.list_desktop_files = Files
     platform.open_path = Open
     platform.file_clipboard_copy = Copy
@@ -181,7 +191,8 @@ Cases :: () -> s32 {
     platform.file_trash_empty = TrashEmpty
     if !OpenRaster(480, 300) { return 2 }
     session = SessionOpen()
-    if !Idle(1000) || state.files == null || state.files.count != 5 || !CaptureConfigured() { return 3 }
+    if !Idle(1000) || state.files == null || state.files.count != 5 || recoveries != 1 ||
+        !TextEquals(*app.shell.status[0], TextBytes("Recovered partial copies on the desktop")) || !CaptureConfigured() { return 3 }
     #if #defined(PLAN9_BUILD) {
         first_icon := CString(*state.files.items[3].launcher.icon_path[0])
         second_icon := CString(*state.files.items[4].launcher.icon_path[0])
@@ -281,8 +292,14 @@ Cases :: () -> s32 {
     if !Idle(7150) || !ClickKey(cast(u64)220308, 7200) || !Idle(7400) || !ClickKey(cast(u64)220310, 7500) ||
         !Idle(7700) || trash_emptied != 1 || state.trash_count != 0 { return 34 }
     if !Draw(Vector2.{}, false, false, false, false, KeyEscape, 0, 7800) || state.action != 0 { return 35 }
+    if recoveries != 1 { return 40 }
     DesktopFilesClose(*state, *platform)
     if state.files != null || state.trash_entries != null || finished != 1 { return 22 }
+    recovery_error = true
+    if !Idle(8000) || recoveries != 2 || state.files == null || state.files.count != 5 ||
+        !TextEquals(*app.shell.status[0], TextBytes("Unverified staging entries were preserved")) { return 41 }
+    if !Idle(8100) || recoveries != 2 { return 42 }
+    DesktopFilesClose(*state, *platform)
     CloseSession(session)
     CloseRaster()
     RillShellDispose(*app.shell)

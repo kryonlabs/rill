@@ -1,0 +1,382 @@
+// A receipt identifies one private sibling by its server-provided Qid.
+// Recovery renames that sibling and preserves all of its partial contents.
+File :: #import "std/file_plan9";
+Paths :: #import "std/path";
+Process :: #import "std/process_plan9";
+CRC :: #import "std/zip";
+Trash :: #import "file_trash_plan9";
+#import "std/byte_text_linux"
+#import "native_memory"
+
+#scope_export
+Receipt :: struct {
+    path: [1024]s8
+    stage: [1024]s8
+    name: [96]s8
+    target: [1024]s8
+    source: [1024]s8
+    info: File.FileInfo
+    data: File.FileInfo
+    directory: File.FileInfo
+    pid: s32
+    kind: s32
+    checksum: u32
+    owned: bool
+    valid: bool
+}
+
+#scope_file
+Header :: 92;
+Limit :: 2240;
+Suffix :: ".record";
+
+Same :: (left: File.FileInfo, right: File.FileInfo) -> bool {
+    return Trash.Identity(left, right) && left.version == right.version && left.mode == right.mode &&
+        left.modified == right.modified && left.length == right.length
+}
+Supported :: (info: File.FileInfo) -> bool {
+    return info.valid && info.type == cast(u16)77 && info.length >= 0 && (info.mode & cast(u32)0x7ffffe00) == 0
+}
+Join :: (directory: *s8, name: *s8, output: *s8) -> bool {
+    used := TextLength(directory)
+    extra: s32 = 1
+    if used == 1 { extra = 0 }
+    if used == 0 || name == null || name[0] == 0 || used + extra + TextLength(name) >= 1024 { return false }
+    CopyText(output, 1024, directory)
+    if extra != 0 { output[used] = 47; used += 1 }
+    CopyText(*output[used], 1024 - used, name)
+    return true
+}
+Name :: (name: *s8, pid: s32) -> bool {
+    if pid <= 0 || !TextStartsWith(name, ".transfer-") || TextLength(name) >= 96 { return false }
+    at: s32 = 10
+    part: s32 = 0
+    while part < 4 {
+        if name[at] < 48 || name[at] > 57 { return false }
+        number: s64 = 0
+        while name[at] >= 48 && name[at] <= 57 {
+            number = number * 10 + cast(s64)(name[at] - 48)
+            if number > 2147483647 { return false }
+            at += 1
+        }
+        if part == 0 && number != cast(s64)pid { return false }
+        part += 1
+        if part == 4 { return name[at] == 0 }
+        if name[at] != 45 { return false }
+        at += 1
+    }
+    return false
+}
+Target :: (name: *s8) -> bool {
+    count := TextLength(name)
+    if count <= 0 || count >= 1024 || TextEquals(name, TextBytes(".")) || TextEquals(name, TextBytes("..")) { return false }
+    index: s32 = 0
+    while index < count { if name[index] == 47 { return false }; index += 1 }
+    return true
+}
+Put :: (bytes: []u8, at: s32, count: s32, value: u64) {
+    index := count
+    number := value
+    while index > 0 { index -= 1; bytes[at + index] = cast(u8)number; number >>= cast(u64)8 }
+}
+Get :: (bytes: []u8, at: s32, count: s32) -> u64 {
+    value: u64 = 0
+    for index: 0..count - 1 { value = (value << cast(u64)8) | cast(u64)bytes[at + index] }
+    return value
+}
+PutIdentity :: (bytes: []u8, at: s32, info: File.FileInfo) {
+    Put(bytes, at, 2, cast(u64)info.type)
+    Put(bytes, at + 2, 4, cast(u64)info.device)
+    Put(bytes, at + 6, 8, info.identity)
+    bytes[at + 14] = info.identity_type
+}
+GetIdentity :: (bytes: []u8, at: s32) -> File.FileInfo {
+    return .{valid = true, type = cast(u16)Get(bytes, at, 2), device = cast(u32)Get(bytes, at + 2, 4),
+        identity = Get(bytes, at + 6, 8), identity_type = bytes[at + 14]}
+}
+Names :: (directory: *s8, name: *s8, receipt: *Receipt) -> bool {
+    if TextLength(name) >= 96 { return false }
+    marker: [112]s8
+    used := CopyText(*marker[0], 112, name)
+    CopyText(*marker[used], 112 - used, TextBytes(Suffix))
+    CopyText(*receipt.name[0], 96, name)
+    return Join(directory, name, *receipt.stage[0]) && Join(directory, *marker[0], *receipt.path[0])
+}
+CopyBytes :: (bytes: []u8, at: s32, value: *s8) -> s32 {
+    index: s32 = 0
+    while value[index] != 0 { bytes[at + index] = cast(u8)value[index]; index += 1 }
+    return at + index
+}
+ReadText :: (bytes: []u8, at: s32, count: s32, output: *s8, capacity: s32) -> bool {
+    if count <= 0 || count >= capacity { return false }
+    for index: 0..count - 1 { if bytes[at + index] == cast(u8)0 { return false }; output[index] = cast(s8)bytes[at + index] }
+    output[count] = 0
+    return true
+}
+
+Write :: (receipt: *Receipt, file: File.FileHandle) -> bool {
+    before := receipt.info
+    bytes: [2240]u8
+    for index: 0..7 { bytes[index] = "STAGE01\n"[index] }
+    Put(bytes[:], 8, 4, cast(u64)receipt.pid)
+    PutIdentity(bytes[:], 12, receipt.directory)
+    PutIdentity(bytes[:], 27, receipt.info)
+    PutIdentity(bytes[:], 42, receipt.data)
+    bytes[57] = cast(u8)receipt.kind
+    Put(bytes[:], 58, 2, cast(u64)TextLength(*receipt.name[0]))
+    Put(bytes[:], 60, 2, cast(u64)TextLength(*receipt.target[0]))
+    Put(bytes[:], 62, 2, cast(u64)TextLength(*receipt.source[0]))
+    Put(bytes[:], 64, 4, cast(u64)before.modified)
+    Put(bytes[:], 68, 4, cast(u64)receipt.data.version)
+    Put(bytes[:], 72, 4, cast(u64)receipt.data.mode)
+    Put(bytes[:], 76, 4, cast(u64)receipt.data.modified)
+    Put(bytes[:], 80, 8, cast(u64)receipt.data.length)
+    used := CopyBytes(bytes[:], Header, *receipt.name[0])
+    used = CopyBytes(bytes[:], used, *receipt.target[0])
+    used = CopyBytes(bytes[:], used, *receipt.source[0])
+    receipt.checksum = CRC.ZipCRC32(bytes[0:used])
+    Put(bytes[:], 88, 4, cast(u64)receipt.checksum)
+    offset: s64 = 0
+    while offset < used {
+        count := File.WriteAt(file, bytes[offset:used], offset)
+        if count <= 0 { break }
+        offset += count
+    }
+    stamped := offset == used && File.SetFileAttributes(file, cast(u32)384, before.modified)
+    receipt.info = File.HandleInfo(file)
+    return stamped && Trash.Identity(before, receipt.info) && receipt.info.mode == cast(u32)384 &&
+        receipt.info.modified == before.modified && receipt.info.length == used
+}
+
+Unchanged :: (receipt: *Receipt) -> bool {
+    file := File.OpenRead(CString(*receipt.path[0]))
+    if !file.valid { return false }
+    bytes: [2240]u8
+    offset: s64 = 0
+    if Same(receipt.info, File.HandleInfo(file)) && receipt.info.length >= Header && receipt.info.length <= Limit {
+        while offset < receipt.info.length {
+            count := File.ReadAt(file, bytes[offset:receipt.info.length], offset)
+            if count <= 0 { break }
+            offset += count
+        }
+    }
+    same := Same(receipt.info, File.HandleInfo(file))
+    closed := File.CloseFile(file)
+    if !same || !closed || offset < Header || offset != receipt.info.length ||
+        Get(bytes[:], 88, 4) != cast(u64)receipt.checksum { return false }
+    Put(bytes[:], 88, 4, 0)
+    return CRC.ZipCRC32(bytes[0:offset]) == receipt.checksum
+}
+
+#scope_export
+Available :: (directory: *s8, name: *s8) -> bool {
+    receipt: Receipt
+    return Names(directory, name, *receipt) && !File.PathExists(CString(*receipt.stage[0])) &&
+        !File.PathExists(CString(*receipt.path[0]))
+}
+
+Create :: (directory: *s8, name: *s8, target: *s8, source: *s8, data: File.FileInfo, kind: s32, receipt: *Receipt) -> bool {
+    receipt.* = .{}
+    receipt.pid = Process.CurrentProcessId()
+    if !Name(name, receipt.pid) || !Target(target) || kind < 0 || kind > 2 || !Supported(data) ||
+        TextLength(source) <= 1 || TextLength(source) >= 1024 || !Names(directory, name, receipt) { return false }
+    canonical: [1024]u8
+    if Paths.CleanAbsolute(CString(source), canonical[:]) != CString(source) ||
+        Header + TextLength(name) + TextLength(target) + TextLength(source) > Limit { return false }
+    receipt.directory = File.PathInfo(CString(directory))
+    if !Supported(receipt.directory) || (receipt.directory.mode & cast(u32)0x80000000) == 0 ||
+        data.type != receipt.directory.type || data.device != receipt.directory.device ||
+        TextEquals(*receipt.name[0], target) { return false }
+    start := TextLength(directory)
+    if start != 1 { start += 1 }
+    if TextEquals(*receipt.path[start], target) { return false }
+    file := File.CreatePrivateExclusive(CString(*receipt.path[0]), false)
+    if !file.valid { return false }
+    receipt.owned = true
+    receipt.info = File.HandleInfo(file)
+    receipt.data = data
+    receipt.kind = kind
+    CopyText(*receipt.target[0], 1024, target)
+    CopyText(*receipt.source[0], 1024, source)
+    if !Supported(receipt.info) || receipt.info.device != receipt.directory.device {
+        File.CloseFile(file); return false
+    }
+    written := Write(receipt, file)
+    closed := File.CloseFile(file)
+    receipt.valid = written && closed
+    return receipt.valid
+}
+
+Checkpoint :: (receipt: *Receipt, data: File.FileInfo) -> bool {
+    if !receipt.valid || receipt.pid != Process.CurrentProcessId() || !Same(receipt.info, File.PathInfo(CString(*receipt.path[0]))) ||
+        !Trash.Physical(CString(*receipt.path[0]), receipt.info) || !Unchanged(receipt) || !Supported(data) ||
+        !Trash.Identity(receipt.data, data) || !Same(data, File.PathInfo(CString(*receipt.stage[0]))) ||
+        !Trash.Physical(CString(*receipt.stage[0]), data) { return false }
+    if Same(receipt.data, data) { return true }
+    file := File.OpenUpdate(CString(*receipt.path[0]))
+    if !file.valid { return false }
+    if !Same(receipt.info, File.HandleInfo(file)) { File.CloseFile(file); return false }
+    receipt.data = data
+    written := Write(receipt, file)
+    closed := File.CloseFile(file)
+    receipt.valid = written && closed
+    return receipt.valid
+}
+
+Forget :: (receipt: *Receipt) -> bool {
+    if receipt.path[0] == 0 || !receipt.owned { receipt.* = .{}; return true }
+    current := File.PathInfo(CString(*receipt.path[0]))
+    if !current.valid { receipt.* = .{}; return true }
+    if !receipt.info.valid || !Same(receipt.info, current) || !Trash.Physical(CString(*receipt.path[0]), current) ||
+        (receipt.valid && !Unchanged(receipt)) ||
+        !File.RemoveFile(CString(*receipt.path[0])) { return false }
+    receipt.* = .{}
+    return true
+}
+
+Read :: (directory: *s8, name: *s8, receipt: *Receipt) -> bool {
+    receipt.* = .{}
+    if !Names(directory, name, receipt) { return false }
+    file := File.OpenRead(CString(*receipt.path[0]))
+    if !file.valid { return false }
+    before := File.HandleInfo(file)
+    bytes: [2240]u8
+    offset: s64 = 0
+    if Supported(before) && before.mode == cast(u32)384 && before.length >= Header && before.length <= Limit {
+        while offset < before.length {
+            count := File.ReadAt(file, bytes[offset:before.length], offset)
+            if count <= 0 { break }
+            offset += count
+        }
+    }
+    after := File.HandleInfo(file)
+    closed := File.CloseFile(file)
+    if !closed || offset < Header || offset != before.length || !Same(before, after) || !Trash.Physical(CString(*receipt.path[0]), after) { return false }
+    for index: 0..7 { if bytes[index] != "STAGE01\n"[index] { return false } }
+    checksum := Get(bytes[:], 88, 4)
+    Put(bytes[:], 88, 4, 0)
+    if cast(u64)CRC.ZipCRC32(bytes[0:offset]) != checksum { return false }
+    receipt.pid = cast(s32)Get(bytes[:], 8, 4)
+    receipt.kind = cast(s32)bytes[57]
+    length := cast(s32)Get(bytes[:], 58, 2)
+    target_length := cast(s32)Get(bytes[:], 60, 2)
+    source_length := cast(s32)Get(bytes[:], 62, 2)
+    if Header + length + target_length + source_length != offset || receipt.kind > 2 ||
+        !ReadText(bytes[:], Header, length, *receipt.name[0], 96) || !Name(*receipt.name[0], receipt.pid) ||
+        !TextEquals(*receipt.name[0], name) || !ReadText(bytes[:], Header + length, target_length, *receipt.target[0], 1024) ||
+        !Target(*receipt.target[0]) || !ReadText(bytes[:], Header + length + target_length, source_length, *receipt.source[0], 1024) { return false }
+    canonical: [1024]u8
+    if Paths.CleanAbsolute(CString(*receipt.source[0]), canonical[:]) != CString(*receipt.source[0]) || TextLength(*receipt.source[0]) <= 1 { return false }
+    store := File.PathInfo(CString(directory))
+    old_store := GetIdentity(bytes[:], 12)
+    old_record := GetIdentity(bytes[:], 27)
+    old_data := GetIdentity(bytes[:], 42)
+    old_data.version = cast(u32)Get(bytes[:], 68, 4)
+    old_data.mode = cast(u32)Get(bytes[:], 72, 4)
+    old_data.modified = cast(u32)Get(bytes[:], 76, 4)
+    old_data.length = cast(s64)Get(bytes[:], 80, 8)
+    if !Supported(store) || (store.mode & cast(u32)0x80000000) == 0 || old_store.type != store.type ||
+        old_record.type != old_store.type || old_record.device != old_store.device ||
+        old_data.type != old_store.type || old_data.device != old_store.device { return false }
+    old_store.device = store.device
+    old_record.device = store.device
+    old_data.device = store.device
+    if !Trash.Identity(old_store, store) || !Trash.Identity(old_record, after) ||
+        after.modified != cast(u32)Get(bytes[:], 64, 4) { return false }
+    receipt.directory = store
+    receipt.info = after
+    receipt.data = old_data
+    receipt.checksum = cast(u32)checksum
+    receipt.owned = true
+    receipt.valid = true
+    return true
+}
+
+#scope_file
+OwnerAlive :: (pid: s32) -> bool {
+    name: [64]s8
+    used := CopyText(*name[0], 64, TextBytes("/proc/"))
+    FormatInteger(*name[used], 64 - used, pid)
+    return File.PathExists(CString(*name[0]))
+}
+Recovered :: (directory: *s8, receipt: *Receipt) -> bool {
+    name: [1024]s8
+    target: [1024]s8
+    count := TextLength(*receipt.target[0])
+    split := count
+    if (receipt.data.identity_type & cast(u8)128) == cast(u8)0 {
+        index: s32 = 1
+        while index < count { if receipt.target[index] == 46 { split = index }; index += 1 }
+    }
+    attempt: s32 = 1
+    while attempt <= 999 {
+        used: s32 = 0
+        if count < 200 && TextLength(directory) + count + 32 < 1024 {
+            while used < split { name[used] = receipt.target[used]; used += 1 }
+            used += CopyText(*name[used], 1024 - used, TextBytes(" (partial copy "))
+            used += FormatInteger(*name[used], 1024 - used, attempt)
+            used += CopyText(*name[used], 1024 - used, TextBytes(")"))
+            CopyText(*name[used], 1024 - used, *receipt.target[split])
+        } else {
+            used = CopyText(*name[0], 1024, TextBytes("Partial copy "))
+            used += FormatInteger(*name[used], 1024 - used, attempt)
+            name[used] = 0
+        }
+        if !Join(directory, *name[0], *target[0]) { return false }
+        if !File.PathExists(CString(*target[0])) && File.RenameNoReplace(CString(*receipt.stage[0]), CString(*target[0])) { return true }
+        attempt += 1
+    }
+    return false
+}
+
+#scope_export
+Recover :: (directory: *s8, error: *s8, capacity: s32) -> s32 {
+    CopyText(error, capacity, TextBytes(""))
+    canonical: [1024]u8
+    clean := Paths.CleanAbsolute(CString(directory), canonical[:])
+    process_root := File.PathInfo("/proc")
+    if clean.count == 0 || !process_root.valid || process_root.type != cast(u16)112 ||
+        process_root.identity != cast(u64)0 || (process_root.identity_type & cast(u8)128) == cast(u8)0 || !File.DirectoryExists(clean) {
+        CopyText(error, capacity, TextBytes("The recovery directory or process ownership could not be verified")); return -1
+    }
+    directory = cast(*s8)(*canonical[0])
+    cursor := File.OpenDirectory(clean)
+    if !cursor.valid { CopyText(error, capacity, TextBytes("Could not list staging copies")); return -1 }
+    recovered: s32 = 0
+    refused: bool = false
+    receipt := cast(*Receipt)AllocateZeroed(1, size_of(Receipt))
+    if receipt == null { File.CloseDirectory(*cursor); CopyText(error, capacity, TextBytes("Could not allocate the recovery snapshot")); return -1 }
+    while true {
+        child := File.NextDirectoryEntry(*cursor)
+        if !child.valid { break }
+        value := cast(*s8)(*child.name[0])
+        if !TextStartsWith(value, ".transfer-") { continue }
+        // Both the sibling and its receipt appear in this snapshot. The
+        // first visit may rename the sibling and remove the receipt.
+        visited: [1024]s8
+        if !Join(directory, value, *visited[0]) { refused = true; continue }
+        if !File.PathExists(CString(*visited[0])) { continue }
+        name: [112]s8
+        CopyText(*name[0], 112, value)
+        count := TextLength(*name[0])
+        marker := count > 7 && TextEquals(*name[count - 7], TextBytes(Suffix))
+        if marker { name[count - 7] = 0 }
+        if !Read(directory, *name[0], receipt) { refused = true; continue }
+        if OwnerAlive(receipt.pid) { continue }
+        data := File.PathInfo(CString(*receipt.stage[0]))
+        if !data.valid {
+            if !Forget(receipt) { refused = true }
+            continue
+        }
+        if !Supported(data) || !Same(receipt.data, data) || !Trash.Physical(CString(*receipt.stage[0]), data) ||
+            !Recovered(directory, receipt) { refused = true; continue }
+        recovered += 1
+        if !Forget(receipt) { refused = true }
+    }
+    failed := cursor.failed
+    closed := File.CloseDirectory(*cursor)
+    ReleaseAllocation(cast(*void)receipt)
+    if failed || !closed { CopyText(error, capacity, TextBytes("Could not list every staging copy")); return -1 }
+    if refused { CopyText(error, capacity, TextBytes("Unverified or redirected staging entries were preserved")) }
+    return recovered
+}

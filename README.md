@@ -138,8 +138,21 @@ verified Trash backups. Undo advances through ordinary transfer polls and
 can be cancelled and retried after partial progress. Changed results, unknown
 folder contents, redirected paths, and changed backups are preserved and
 reported. Closing the desktop releases the journal; another completed Copy,
-Duplicate, or Move batch replaces it. Undo does not provide Redo. Recovery of interrupted unpublished
-staging entries remains pending; unsupported operations refuse to start.
+Duplicate, or Move batch replaces it. Undo does not provide Redo.
+Native transfers now save a private receipt beside each staging copy. Desktop
+startup recovers verified copies whose owner has exited as visible
+`(partial copy 1)` files or folders, keeping their existing contents and choosing
+another name when occupied. Recovery never removes the original source or
+changes a published destination. It removes leftover receipts after publication,
+skips live owners, and preserves unverified, damaged, or redirected staging
+entries with an error. Receipts bind the parent directory, receipt, and staging
+root identities and the last checkpoint's root metadata. A fixed receipt
+timestamp also rejects ordinary copied receipts when a server reuses a deleted
+file's Qid. Recovery can reanchor the same filesystem after a new mount.
+Recovery scans the requested directory; it does not resume interrupted moves,
+restore the in-memory Undo journal, or search nested Trash entries. Partial
+copies may be incomplete. An interrupted or torn checkpoint is preserved with
+an error. Unsupported operations refuse to start.
 Native desktop icons now load PNG through the same Kryon `Image` surface.
 Kryon's native provider supports grayscale, palette, RGB, and alpha PNGs,
 including Adam7 interlace, and evicts older cached assets as needed. The
@@ -148,14 +161,20 @@ streams, native image compatibility, and rendered pixels from source and
 saved IR. PNGs are limited to 64 MiB and 4096 pixels per axis; color profiles
 and gamma are ignored, and 16-bit samples are reduced to their high byte.
 The Linux transfer implementation remains C. The Taiji native gate's
-`file_transfer`, `folder_transfer`, `trash`, `replacement`, `retry`, and `undo` suites check actual contents,
-metadata, clipboard filenames, cancellation, collisions, source and
+`file_transfer`, `folder_transfer`, `trash`, `replacement`, `retry`, `undo`, and
+`staging` suites check actual contents, metadata, clipboard filenames,
+cancellation, collisions, source and
 destination changes, recovery after releasing the transfer, damaged headers
 and inventories, a fresh native filesystem mount, and preservation of foreign
 staging entries and bound Trash payloads from both source and saved IR.
 Replacement checks also cover batch choices, changes during archiving,
 cancellation around backup publication, recovery after a failed publication,
 and Cut/Paste clipboard completion.
+Staging checks cover an exited native transfer, live-owner exclusion, partial
+contents, hidden and empty folders, name collisions, publication leftovers,
+damaged and copied receipts, changed roots, fresh filesystem mounts, redirected
+paths, and preservation of unrecognized staging names. Startup recovery messages also run through the
+desktop file UI checks.
 `make desktop-files-ui-test` checks the file controls from source and saved IR.
 
 Native document opening now uses `src/document_open.zi` and
