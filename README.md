@@ -81,7 +81,7 @@ screen, and unused C bridge were removed. Available control panels, displays,
 input devices, panel configuration storage, and wallpapers depend on platform
 services. Several of those services still need native Plan 9 implementations;
 their controls remain unavailable until then. Native wallpaper loading still
-uses Plan 9 image files through Kryon's asset-backed `Image` surface.
+accepts PNG and Plan 9 image files through Kryon's asset-backed `Image` surface.
 
 Desktop files now use `src/desktop_files.zi` and `app/desktop_files_ui.zi`.
 The model retains selection and icon positions across directory refreshes;
@@ -103,8 +103,15 @@ changes or cannot be removed, leaving the published copy in place. Cut/Paste
 clears an unchanged clipboard selection only after every selected item moves
 successfully. Native Trash, Replace, retry, and undo remain pending;
 unsupported operations refuse to start.
-The Linux transfer implementation remains C. Native file icons also need PNG
-asset support. The Taiji native gate's `file_transfer` and `folder_transfer`
+Native desktop icons now load PNG through the same Kryon `Image` surface.
+Kryon's native provider supports grayscale, palette, RGB, and alpha PNGs,
+including Adam7 interlace, and evicts older cached assets as needed. The
+Taiji gate checks real desktop icon dimensions, 33 reference images, malformed
+streams, native image compatibility, and rendered pixels from source and
+saved IR. PNGs are limited to 64 MiB and 4096 pixels per axis; color profiles
+and gamma are ignored, and 16-bit samples are reduced to their high byte.
+The Linux transfer implementation remains C. The Taiji native gate's
+`file_transfer` and `folder_transfer`
 suites check actual contents, metadata, clipboard filenames, cancellation,
 collisions, source and destination changes, and preservation of foreign
 staging entries from both source and saved IR.

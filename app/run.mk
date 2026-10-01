@@ -8,7 +8,7 @@ HEADERS=`{ls $GEN/*.h}
 BIN=/$objtype/bin
 OUT=build/rill-run.$O.out
 CFLAGS=-FTVw
-LIB=/$objtype/lib/libdraw.a /$objtype/lib/libmemdraw.a /$objtype/lib/libthread.a
+LIB=/$objtype/lib/libdraw.a /$objtype/lib/libmemdraw.a /$objtype/lib/libthread.a /$objtype/lib/libflate.a
 
 all:V: $OUT
 

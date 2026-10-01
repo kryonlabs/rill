@@ -145,6 +145,12 @@ Cases :: () -> s32 {
     if !OpenRaster(480, 300) { return 2 }
     session = SessionOpen()
     if !Idle(1000) || state.files == null || state.files.count != 5 || !CaptureConfigured() { return 3 }
+    #if #defined(PLAN9_BUILD) {
+        first_icon := CString(*state.files.items[3].launcher.icon_path[0])
+        second_icon := CString(*state.files.items[4].launcher.icon_path[0])
+        if ImageWidth(first_icon) != 512 || ImageHeight(first_icon) != 512 ||
+            ImageWidth(second_icon) != 320 || ImageHeight(second_icon) != 64 { return 27 }
+    }
     if !ClickItem(3, 0, 1100) || !state.files.items[3].selected || open_count != 0 { return 4 }
     if !ClickItem(3, 0, 1300) || open_count != 1 { return 5 }
     if !ClickItem(4, KeyModifierControl, 2000) || !state.files.items[3].selected || !state.files.items[4].selected { return 6 }
