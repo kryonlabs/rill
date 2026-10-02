@@ -2,9 +2,11 @@
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
-ziran=${ZIRAN:-"$root/../../ziranlang/ziran/build/bin/ziran"}
-std=${ZIRAN_STD:-"$root/../../ziranlang/ziran/std"}
-kryon=${KRYON_DIR:-"$root/../kryon"}
+ziran=${ZIRAN:-"$root/scripts/ziran.sh"}
+lock_flags=
+if [ ! -f "$root/ziran.local.toml" ]; then lock_flags=--locked; fi
+std=${ZIRAN_STD:-"$("$ziran" pkg path ziran $lock_flags)/std"}
+kryon=${KRYON_DIR:-"$("$ziran" pkg path kryon $lock_flags)"}
 mkdir -p build/ziran
 work=$(mktemp -d "$root/build/ziran/settings-ui-test.XXXXXX")
 trap 'rm -rf "$work"' EXIT HUP INT TERM

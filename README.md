@@ -404,8 +404,14 @@ native Plan 9 integration remain unfinished.
 
 ## Build
 
-Rill uses the current Kryon checkout at `../kryon`. Update that checkout to
-Kryon's latest `master` before building. The desktop file shortcuts require
+Rill's canonical repository is [`taijiosnet/rill`](https://github.com/taijiosnet/rill).
+`ziran.toml` declares its toolchain and Kryon dependency, and `ziran.lock` pins
+them. The Makefile and test scripts resolve them through `scripts/ziran.sh`
+and `ziran pkg path`. For local development, the ignored `ziran.local.toml`
+uses `[overrides]` with `ziran = "../../ziranlang/ziran"` and
+`kryon = "../../kryonlabs/kryon"`. Without that file, the wrapper uses the exact lock.
+
+The legacy desktop file shortcuts require
 Kryon's Linux libdraw keyboard fix `edf2e5ab` or a descendant. The build generates Kryon's runtime
 and headers under Rill's `build/` directory. Kryon's optional sync support is
 disabled by default; use `KRYON_WITH_SYNC=1` when building with sync-enabled
@@ -421,9 +427,16 @@ make
 Override paths when needed:
 
 ```sh
-make KRYON_DIR=/mnt/storage/Projects/kryon \
+make KRYON_DIR=/mnt/storage/Projects/kryonlabs/kryon \
      PLAN9PORT_DIR=/mnt/storage/Projects/plan9port
 ```
+
+The full Linux application still contains legacy Kryon archive/header build
+steps. Moving the repository and resolving dependencies does not complete
+that runtime migration; replacing those steps and the remaining handwritten
+application code is the follow-up Ziran/Kryon migration. The focused Ziran
+checks can be run independently with targets such as `shell-test`,
+`persistence-test`, `run-test`, and `applications-test`.
 
 Run tests:
 

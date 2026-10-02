@@ -1,0 +1,11 @@
+[package]
+name = "rill"
+module_roots = ["src", "app", "tests"]
+
+[toolchain]
+git = "https://github.com/ziranlang/ziran.git"
+ref = "master"
+
+[dependencies.kryon]
+git = "https://github.com/kryonlabs/kryon.git"
+ref = "master"

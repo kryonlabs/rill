@@ -3474,7 +3474,7 @@ linux_open_settings(const char *category)
         {"network", {"nm-connection-editor", "connman-gtk", NULL}},
         {"bluetooth", {"blueman-manager", NULL}},
         {"audio", {"pavucontrol", "mate-volume-control", NULL}},
-        {"terminal", {"xdg-terminal-exec", "x-terminal-emulator", "kapsule", "xterm", NULL}},
+        {"terminal", {"xdg-terminal-exec", "x-terminal-emulator", "t9", "xterm", NULL}},
     };
     if(category == NULL)
         return 0;

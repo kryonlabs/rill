@@ -2,7 +2,7 @@
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
-ziran=${ZIRAN:-"$root/../ziran/build/bin/ziran"}
+ziran=${ZIRAN:-"$root/scripts/ziran.sh"}
 mkdir -p "$root/build/ziran"
 work=$(mktemp -d "$root/build/ziran/shell-test.XXXXXX")
 trap 'rm -rf "$work"' EXIT HUP INT TERM

@@ -1,11 +1,12 @@
 APP_NAME := rill
 .DEFAULT_GOAL := all
-KRYON_DIR ?= ../kryon
+ZIRAN ?= ./scripts/ziran.sh
+LOCK_FLAGS := $(if $(wildcard ziran.local.toml),,--locked)
+KRYON_DIR ?= $(shell $(ZIRAN) pkg path kryon $(LOCK_FLAGS))
 PLAN9PORT_DIR ?= $(if $(PLAN9),$(PLAN9),../../plan9port)
 KRYON_BACKEND ?= libdraw
 KRYON_WITH_SYNC ?= 0
-ZIRAN_DIR ?= ../../ziranlang/ziran
-ZIRAN ?= $(ZIRAN_DIR)/build/bin/ziran
+ZIRAN_DIR ?= $(shell $(ZIRAN) pkg path ziran $(LOCK_FLAGS))
 
 SHELL_MODULES := native_memory platform_types shell_types shell run_dialog applications preferences clock date_time_types date_time_linux calendar
 SHELL_GEN := build/ziran/c

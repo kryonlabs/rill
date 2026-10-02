@@ -1,4 +1,6 @@
 build/
+backup/
+ziran.local.toml
 vendor/
 *.o
 *.8
